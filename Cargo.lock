@@ -360,6 +360,10 @@ dependencies = [
 [[package]]
 name = "vardefm-link"
 version = "0.1.0"
+dependencies = [
+ "vardefm-dsp",
+ "vardefm-modem",
+]
 
 [[package]]
 name = "vardefm-modem"

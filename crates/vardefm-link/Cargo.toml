@@ -1,7 +1,10 @@
 [package]
 name = "vardefm-link"
+description = "VardeFM ARQ link layer: connect, reliable byte stream, turn-taking, disconnect"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+vardefm-dsp.workspace = true
+vardefm-modem.workspace = true
