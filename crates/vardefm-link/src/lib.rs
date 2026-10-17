@@ -65,7 +65,7 @@ impl Default for LinkConfig {
             response_timeout_s: 1.2,
             connect_attempts: 5,
             max_retries: 8,
-            disconnect_grace_s: 1.0,
+            disconnect_grace_s: 0.3,
             keepalive_s: 30.0,
             start_level: 1,
             max_level: LEVELS.len() as u8 - 1,
@@ -168,6 +168,8 @@ pub struct Link {
     state: State,
     events: Vec<LinkEvent>,
     last_buffer: usize,
+    /// Report BUFFER at the next `take_events` even if unchanged (after host data).
+    force_buffer: bool,
     rng: Prng,
     /// A burst to send once even though we are disconnected (Disc after ABORT, DiscAck re-sends).
     oneshot: Option<Burst>,
@@ -191,6 +193,7 @@ impl Link {
             state: State::Idle,
             events: Vec::new(),
             last_buffer: 0,
+            force_buffer: false,
             rng: Prng::new(seed),
             oneshot: None,
             closed: None,
@@ -228,7 +231,7 @@ impl Link {
             State::Connected(s) => s.tx_buf.len(),
             _ => 0,
         };
-        if buf != self.last_buffer {
+        if buf != self.last_buffer || std::mem::take(&mut self.force_buffer) {
             self.last_buffer = buf;
             self.events.push(LinkEvent::Buffer(buf));
         }
@@ -284,10 +287,13 @@ impl Link {
 
     /// Bytes from the host's data port. Ignored when not connected. Like VARA,
     /// data written after DISCONNECT is still sent (until our Disc goes out).
+    /// Every accepted write is followed by a BUFFER report, so a host can tell
+    /// that a report is newer than its write.
     pub fn send_data(&mut self, data: &[u8]) {
         if let State::Connected(s) = &mut self.state {
             if s.disc_tries == 0 {
                 s.tx_buf.extend(data);
+                self.force_buffer = true;
             }
         }
     }

@@ -213,7 +213,7 @@ Each command gets `OK`, or `WRONG` if it is invalid.
 | `DISCONNECTED` | Session closed for any reason: DISCONNECT, ABORT, peer closed, link lost, or connect failed. |
 | `PENDING` | Called side: a connect request for us arrived (followed by `CONNECTED`). |
 | `CANCELPENDING` | Reserved; not sent yet. |
-| `BUFFER <n>` | Bytes queued and not yet acknowledged, sent whenever *n* changes (including `BUFFER 0`). |
+| `BUFFER <n>` | Bytes queued and not yet acknowledged. Sent after every read from the data port (even if *n* is unchanged), and whenever acknowledgements change *n*, down to `BUFFER 0`. A report that follows a write therefore already counts that write. |
 | `PTT ON` / `PTT OFF` | Transmitter keyed / released. |
 | `BUSY ON` / `BUSY OFF` | Channel activity heard (audio above the squelch threshold, or a frame being received). |
 | `IAMALIVE` | Every 60 s. |
@@ -222,6 +222,19 @@ Each command gets `OK`, or `WRONG` if it is invalid.
 While connected, bytes written are sent and received bytes are delivered. Any byte value
 is allowed. Bytes written while not connected are dropped. Data written after
 `DISCONNECT` is still sent, as in VARA, until the closing `Disc` goes out.
+
+**Ordering across the two sockets.** Every byte written to the data port before
+`DISCONNECT` was sent on the command port is transmitted, whether or not a `BUFFER`
+report counted it yet. The modem holds `DISCONNECT` back until its data-port reader has
+found the socket empty (at most 0.5 s). `DISCONNECT` and `ABORT` arriving after the link
+has already ended get `OK` and have no effect. In particular, no second `DISCONNECTED`
+is sent.
+
+**Advice for hosts (also for real VARA, which has the same two-socket design):** before
+`DISCONNECT`, wait for a `BUFFER 0` that arrives *after* your last data write. A
+`BUFFER 0` read just after a write may be stale. After `DISCONNECTED`, keep reading the
+data port briefly (about 0.5 s), because received data and the `DISCONNECTED` line
+travel on different sockets.
 
 ### 4.4 Differences from VARA
 - `CONNECT … via <digis>` (VARA FM digipeating) is not supported (`WRONG`).

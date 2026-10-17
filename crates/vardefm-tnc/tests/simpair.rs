@@ -227,6 +227,86 @@ fn connect_to_nobody_fails_in_bounded_time() {
     sp.stop();
 }
 
+/// HamBBS regression: DISCONNECT sent right after a data write (no wait for
+/// BUFFER 0) must still deliver every byte written before it. Simulation runs as
+/// fast as possible, the worst case for the race between the two sockets.
+/// Between sessions, DISCONNECT and ABORT for the ended link must be ignored.
+#[test]
+fn disconnect_right_after_write_delivers_everything() {
+    let sp = SimPair::start(SimPairConfig {
+        mode: "wide".into(),
+        cnr_db: Some(35.0),
+        seed: 6,
+        speed: 0.0,
+        a_port: 0,
+        b_port: 0,
+        verbose: std::env::var("VARDEFM_SIM_VERBOSE").is_ok(),
+        ..SimPairConfig::default()
+    })
+    .unwrap();
+    let mut a = Host::connect("A", sp.addrs[0]);
+    let mut b = Host::connect("B", sp.addrs[1]);
+    b.command("MYCALL LA2BBB");
+    b.command("LISTEN ON");
+    a.command("MYCALL LA1AAA");
+    let mut expected = Vec::new();
+    for (round, size) in [1usize, 700, 3000, 5000, 64].into_iter().enumerate() {
+        a.command("CONNECT LA1AAA LA2BBB");
+        a.expect("CONNECTED");
+        b.expect("CONNECTED");
+        let data = payload(size, 100 + round as u32);
+        expected.extend_from_slice(&data);
+        a.write(&data);
+        a.send("DISCONNECT"); // immediately, no BUFFER wait
+        assert_eq!(a.reply(), "OK");
+        a.expect("DISCONNECTED");
+        b.expect("DISCONNECTED");
+        let got = b.wait_rx(expected.len());
+        assert_eq!(got, expected, "round {round}: B is missing data");
+
+        // Stale commands for the ended link: OK, and nothing else happens.
+        let mark = a.seen.len();
+        a.command("DISCONNECT");
+        a.command("ABORT");
+        thread::sleep(Duration::from_millis(50));
+        while let Ok(l) = a.lines.try_recv() {
+            a.seen.push(l);
+        }
+        assert!(
+            !a.seen[mark..].iter().any(|l| l == "DISCONNECTED" || l == "WRONG"),
+            "round {round}: stale DISCONNECT/ABORT had an effect: {:?}",
+            &a.seen[mark..]
+        );
+    }
+    sp.stop();
+}
+
+/// Every write to the data port is followed by a BUFFER report, so a host can
+/// wait for a report newer than its last write before disconnecting.
+#[test]
+fn buffer_report_follows_every_write() {
+    let sp = sim("narrow", Some(30.0), 0.0, 7);
+    let mut a = Host::connect("A", sp.addrs[0]);
+    let mut b = Host::connect("B", sp.addrs[1]);
+    b.command("MYCALL LA2BBB");
+    b.command("LISTEN ON");
+    a.command("MYCALL LA1AAA");
+    a.command("CONNECT LA1AAA LA2BBB");
+    a.expect("CONNECTED");
+    for i in 0..5 {
+        // Drain anything already queued so the BUFFER we see is new.
+        thread::sleep(Duration::from_millis(30));
+        while let Ok(l) = a.lines.try_recv() {
+            a.seen.push(l);
+        }
+        a.write(&payload(10, i));
+        let l = a.expect("BUFFER ");
+        let n: usize = l[7..].parse().unwrap();
+        assert!(n > 0, "write {i}: report after the write still says {l}");
+    }
+    sp.stop();
+}
+
 #[test]
 fn wrong_commands_and_abort() {
     let sp = sim("narrow", Some(30.0), 0.0, 5);
