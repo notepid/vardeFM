@@ -32,7 +32,9 @@ not yet tested on the air. See [docs/RADIO.md](docs/RADIO.md) to set up a radio.
 
 ## Download
 
-Prebuilt binaries are on the [releases page](https://github.com/notepid/vardeFM/releases):
+Prebuilt binaries are on the [releases page](https://github.com/notepid/vardeFM/releases).
+Each archive includes a user guide, [packaging/README.md](packaging/README.md), covering
+installation, radio setup and use with Pat, Winlink Express and HamBBS.
 
 | File | For |
 |---|---|
