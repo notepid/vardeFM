@@ -5,49 +5,30 @@
 An open-source, cross-platform high-speed data modem for FM radios. It aims to be a
 drop-in alternative to VARA FM for Winlink and similar apps.
 
-The name comes from *varde*, Norwegian for the cairns and beacon fires that once relayed warnings from
-mountaintop to mountaintop.
+The name comes from *varde*, Norwegian for the cairns and beacon fires that once relayed
+warnings from mountaintop to mountaintop.
 
 - **Open:** the waveform and protocol are documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
-- **Cross-platform:** written in Rust. Targets Linux, Windows, macOS and Raspberry Pi.
+- **Cross-platform:** written in Rust. Runs on Windows, Linux and Raspberry Pi.
 - **App compatible:** VardeFM offers VARA's TCP command/data interface, so VARA clients
   such as Pat and Winlink Express can talk to it. See "Host interface" in the protocol
   document for the differences from VARA.
 - **Not on-air compatible with VARA:** both stations need VardeFM.
 
-## Status
+## Download and use
 
-Works end to end in simulation. Sound card and PTT support is built (milestone 6), but
-not yet tested on the air. See [docs/RADIO.md](docs/RADIO.md) to set up a radio.
+Get the archive for your system from the [releases page](https://github.com/notepid/vardeFM/releases):
 
-| Milestone | State |
+| Archive | For |
 |---|---|
-| 1. Workspace, FM channel simulator, WAV tools | done (VARA baseline measurement still to do) |
-| 2. OFDM PHY (sync, equalization, tracking) | done |
-| 3. LDPC FEC + speed levels | done |
-| 4. ARQ link layer | done |
-| 5. VARA-compatible TCP interface + `sim-pair` | done |
-| 6. Sound card, PTT (CM108/CM119, RTS/DTR, rigctld, VOX) | built; on-air testing next |
-| 7. Raspberry Pi + packaging | |
+| `windows_amd64.zip` | Windows 10/11, 64-bit |
+| `linux_amd64.tar.gz` | Linux PC, 64-bit (Debian 12 / Ubuntu 22.04 or newer) |
+| `linux_arm64.tar.gz` | Raspberry Pi 3/4/5/Zero 2 W, 64-bit Raspberry Pi OS (Bookworm or newer) |
+| `linux_armv7.tar.gz` | Raspberry Pi 2/3/4/Zero 2 W, 32-bit Raspberry Pi OS |
 
-## Download
-
-Prebuilt binaries are on the [releases page](https://github.com/notepid/vardeFM/releases).
-Each archive includes a user guide, [packaging/README.md](packaging/README.md), covering
-installation, radio setup and use with Pat, Winlink Express and HamBBS.
-
-| File | For |
-|---|---|
-| `vardefm_<version>_windows_amd64.zip` | Windows 10/11, 64-bit |
-| `vardefm_<version>_linux_amd64.tar.gz` | Linux PC, 64-bit (Debian 12 / Ubuntu 22.04 or newer) |
-| `vardefm_<version>_linux_arm64.tar.gz` | Raspberry Pi 3/4/5/Zero 2 W with 64-bit Raspberry Pi OS (Bookworm or newer) |
-| `vardefm_<version>_linux_armv7.tar.gz` | Raspberry Pi 2/3/4/Zero 2 W with 32-bit Raspberry Pi OS |
-
-The original Pi Zero and Pi 1 (ARMv6) are not supported. On Linux, install the included
-`99-vardefm-cm108.rules` for CM108 PTT (see [docs/RADIO.md](docs/RADIO.md)). Check `uname -m`
-on a Pi: `aarch64` needs the arm64 build, `armv7l` the armv7 build.
-
-To build from source: install Rust, plus `libasound2-dev` on Linux, then `cargo build --release`.
+Each archive includes the user guide ([packaging/README.md](packaging/README.md)). It covers
+installation, connecting a radio, PTT, and setting up Pat, Winlink Express and HamBBS.
+[docs/RADIO.md](docs/RADIO.md) goes deeper into the radio setup.
 
 ## Modes
 
@@ -59,7 +40,20 @@ To build from source: install Rust, plus `libasound2-dev` on Linux, then `cargo 
 Net rate includes error correction and burst overhead. The link picks the speed level
 from the measured signal quality.
 
-## Workspace
+## Development
+
+### Building
+
+Install Rust (https://rustup.rs), plus `libasound2-dev` and `pkg-config` on Linux. Then:
+
+```sh
+cargo build --release      # binary in target/release/vardefm
+cargo test                 # all tests, about 20 s
+```
+
+CI also requires `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` to pass.
+
+### Workspace
 
 ```
 crates/vardefm-dsp     OFDM modulator/demodulator, constellations, filters
@@ -69,39 +63,19 @@ crates/vardefm-link    ARQ link layer (connect, reliable byte stream, disconnect
 crates/vardefm-sim     FM radio channel simulator
 crates/vardefm-tnc     VARA-compatible TCP interface, station logic, sim-pair, radio engine
 crates/vardefm-audio   sound card input/output (cpal)
-crates/vardefm-ptt     PTT: CM108/CM119/AIOC GPIO, serial RTS/DTR, Hamlib rigctld
+crates/vardefm-ptt     PTT: CM108/CM119/AIOC GPIO (after Dire Wolf), serial RTS/DTR, Hamlib rigctld
 crates/vardefm-cli     `vardefm` command-line tool
+packaging/             user guide and udev rules shipped in the release archives
 ```
 
-## On a real radio
-
-```powershell
-.	arget
-eleaseardefm devices                       # sound cards, CM108 PTT devices, serial ports
-.	arget
-eleaseardefm ptt-test --ptt cm108          # key the radio for 2 s
-.	arget
-eleaseardefm tone --ptt cm108              # 1 kHz tone to set deviation
-.	arget
-eleaseardefm monitor --audio-in "USB"      # receive level meter + burst decoder
-.	arget
-eleaseardefm modem --audio-in "USB" --audio-out "USB" --ptt cm108
-```
-
-The full procedure is in [docs/RADIO.md](docs/RADIO.md). PTT methods: `cm108[:<gpio>][@<path>]`,
-`rts:<port>`, `dtr:<port>` (prefix `-` to invert), `rigctld[:<host>:<port>]`, `none`/`vox`.
-The CM108 support follows Dire Wolf's implementation by WB2OSZ.
-
-## Virtual radio pair (`sim-pair`)
+### Virtual radio pair (`sim-pair`)
 
 Two VardeFM modems in one process, joined by the FM channel simulator. Each has its own
-VARA TCP ports, so two host applications (Pat, a BBS, your own code) can connect to each
-other with no radios.
+VARA TCP ports, so two host applications can connect to each other with no radios.
 
-```powershell
-cargo build --release
-# Station A on 8300/8301, station B on 8310/8311, narrow mode, 18 dB CNR, 40 ppm clock error
-.\target\release\vardefm sim-pair --cnr 18 --ppm -40 --record wavs
+```sh
+# Station A on 8300/8301, station B on 8310/8311, 18 dB CNR, 40 ppm clock error
+vardefm sim-pair --cnr 18 --ppm -40 --record wavs
 ```
 
 | Option | Meaning |
@@ -121,28 +95,24 @@ It prints one line per transmission and per reception:
    23.08s A rx Data       cw  7/7  SNR  17.6 dB
 ```
 
-## Measuring the modem
+### Measuring the modem
 
-```powershell
+```sh
 # Frames through a simulated FM link at 12 dB carrier-to-noise, 80 ppm clock error
-.\target\release\vardefm sim --mode narrow --mod qpsk --cnr 12 --ppm 80
+vardefm sim --mode narrow --mod qpsk --cnr 12 --ppm 80
 
 # Bit-error table over signal level for every modulation (uncoded)
-.\target\release\vardefm sweep --mode wide
+vardefm sweep --mode wide
 
 # Over real radios: play test.wav into one radio, record the other at 48 kHz, decode
-.\target\release\vardefm tx-wav --mode narrow --mod qpsk --out test.wav
-.\target\release\vardefm rx-wav --mode narrow --mod qpsk --in recording.wav
+vardefm tx-wav --mode narrow --mod qpsk --out test.wav
+vardefm rx-wav --mode narrow --mod qpsk --in recording.wav
 ```
 
 Useful options: `--txdelay` (leader length; it must exceed the radio's key-up time),
 `--tilt=<dB/oct>`, `--rms <level>`. Set `VARDEFM_DUMP=1` to print per-carrier SNR.
 
-## Tests
-
-```sh
-cargo test
-```
+### Tests
 
 - `crates/vardefm-cli/tests/audio.rs`: generates modem audio and decodes it: direct
   loopback, level and polarity changes, WAV round trips, false alarms, noisy simulated
@@ -154,8 +124,7 @@ cargo test
   TCP interface through `sim-pair` and transfer 10 kB each way at several signal levels.
   Set `VARDEFM_SIM_VERBOSE=1` to print every transmission.
 
-To keep the audio from the `audio` tests as WAV files (a relative folder is created in the
-repo root):
+To keep the audio from the `audio` tests as WAV files (the folder is created in the repo root):
 
 ```powershell
 # Windows PowerShell
@@ -173,11 +142,11 @@ cargo test --release -p vardefm-modem level_table -- --ignored --nocapture   # l
 cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture       # LDPC curves
 ```
 
-## Releases (maintainers)
+### Releases
 
-GitHub Actions runs formatting, clippy and the tests on Windows, Linux x86-64 and Linux ARM
-for every push and pull request, and builds all release archives (kept 7 days as workflow
-artifacts). To publish a release:
+GitHub Actions runs the checks and tests on Windows, Linux x86-64 and Linux ARM for every
+push and pull request, and builds all release archives (kept 7 days as workflow artifacts).
+To publish a release:
 
 1. Set `version` in the root `Cargo.toml` (e.g. `0.2.0`), run `cargo build` to update
    `Cargo.lock`, and commit.
@@ -189,4 +158,4 @@ commits. A tag with a suffix such as `v0.2.0-rc1` becomes a pre-release.
 
 ## License
 
-GPL-3.0-or-later; see [LICENSE](LICENSE).
+GPL-3.0-or-later; see [LICENSE](LICENSE). The CM108 PTT support follows Dire Wolf by WB2OSZ.
