@@ -36,10 +36,21 @@ jobs:
             os: ubuntu-22.04-arm
             target: armv7-unknown-linux-gnueabihf
             armhf: true
+            cross: true
             rustflags: -C target-feature=+neon
+          # macOS 11 or newer. Apple Silicon is built natively; Intel is cross-compiled
+          # on the same runner (so it cannot run the smoke test there).
+          - name: darwin_arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: darwin_amd64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            cross: true
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -81,13 +92,18 @@ jobs:
             7z a -tzip "$dir.zip" "$dir" > /dev/null
           else
             cp "../target/${{ matrix.target }}/dist/vardefm" "$dir/"
-            cp ../packaging/linux/*.rules "$dir/"
+            if [ "$RUNNER_OS" = Linux ]; then
+              cp ../packaging/linux/*.rules "$dir/"
+            else
+              # Apple Silicon refuses to run unsigned code; sign ad hoc (no Apple ID needed).
+              codesign --force --sign - "$dir/vardefm"
+            fi
             tar czf "$dir.tar.gz" "$dir"
           fi
           ls -l
 
       - name: Smoke test
-        if: '!matrix.armhf'
+        if: '!matrix.cross'
         shell: bash
         run: |
           ./dist/vardefm_*/vardefm --version

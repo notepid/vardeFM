@@ -9,7 +9,7 @@ The name comes from *varde*, Norwegian for the cairns and beacon fires that once
 warnings from mountaintop to mountaintop.
 
 - **Open:** the waveform and protocol are documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
-- **Cross-platform:** written in Rust. Runs on Windows, Linux and Raspberry Pi.
+- **Cross-platform:** written in Rust. Runs on Windows, Linux, macOS and Raspberry Pi.
 - **App compatible:** VardeFM offers VARA's TCP command/data interface, so VARA clients
   such as Pat and Winlink Express can talk to it. See "Host interface" in the protocol
   document for the differences from VARA.
@@ -25,6 +25,8 @@ Get the archive for your system from the [releases page](https://github.com/note
 | `linux_amd64.tar.gz` | Linux PC, 64-bit (Debian 12 / Ubuntu 22.04 or newer) |
 | `linux_arm64.tar.gz` | Raspberry Pi 3/4/5/Zero 2 W, 64-bit Raspberry Pi OS (Bookworm or newer) |
 | `linux_armv7.tar.gz` | Raspberry Pi 2/3/4/Zero 2 W, 32-bit Raspberry Pi OS |
+| `darwin_arm64.tar.gz` | Mac with Apple Silicon (M1 or newer), macOS 11 or newer |
+| `darwin_amd64.tar.gz` | Intel Mac, macOS 11 or newer |
 
 Each archive includes the user guide ([packaging/README.md](packaging/README.md)). It covers
 installation, connecting a radio, PTT, and setting up Pat, Winlink Express and HamBBS.
@@ -147,7 +149,7 @@ cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture       # L
 
 ### Releases
 
-GitHub Actions runs the checks and tests on Windows, Linux x86-64 and Linux ARM for every
+GitHub Actions runs the checks and tests on Windows, Linux x86-64, Linux ARM and macOS for every
 push and pull request, and builds all release archives (kept 7 days as workflow artifacts).
 To publish a release:
 
@@ -156,7 +158,7 @@ To publish a release:
 2. Tag and push: `git tag v0.2.0; git push origin master v0.2.0`.
 
 The release workflow checks that the tag matches `Cargo.toml`, runs the tests, builds the
-four archives plus `checksums.txt`, and publishes the release with notes generated from the
+six archives plus `checksums.txt`, and publishes the release with notes generated from the
 commits. A tag with a suffix such as `v0.2.0-rc1` becomes a pre-release.
 
 ## License

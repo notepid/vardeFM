@@ -19,7 +19,7 @@ Project page, source code and issues: https://github.com/notepid/vardeFM
 | `README.md` | This guide |
 | `docs/RADIO.md` | Detailed radio setup guide |
 | `docs/PROTOCOL.md` | Technical description of the waveform and protocol |
-| `99-vardefm-cm108.rules` | (Linux) lets normal users key CM108/AIOC PTT |
+| `99-vardefm-cm108.rules` | (Linux only) lets normal users key CM108/AIOC PTT |
 | `LICENSE` | GNU GPL version 3 |
 
 ## 1. Install
@@ -76,6 +76,28 @@ sudo udevadm control --reload-rules
 sudo usermod -aG audio $USER     # then log out and in again
 ```
 
+### macOS
+
+Pick `darwin_arm64` for a Mac with Apple Silicon (M1 or newer; `uname -m` says
+`arm64`) or `darwin_amd64` for an Intel Mac (`x86_64`). macOS 11 Big Sur or newer
+is required. In Terminal:
+
+```sh
+tar xzf vardefm_*_darwin_*.tar.gz
+cd vardefm_*_darwin_*/
+xattr -d com.apple.quarantine vardefm   # only if you downloaded with a browser
+sudo mkdir -p /usr/local/bin
+sudo cp vardefm /usr/local/bin/
+vardefm --version
+```
+
+The program is not notarized by Apple. Without the `xattr` line, macOS says it
+"cannot verify" `vardefm` and refuses to run it. You can also allow it in System
+Settings → Privacy & Security → "Open Anyway".
+
+The first time VardeFM listens to a sound card, macOS asks whether Terminal may use
+the microphone. Allow it, or VardeFM hears only silence. CM108/AIOC PTT needs no setup.
+
 ## 2. Try it without a radio (optional)
 
 `sim-pair` runs two VardeFM stations in one program, joined by a simulated FM radio
@@ -108,7 +130,7 @@ CM108-based USB interface, AIOC, Digirig or SignaLink. Then:
    |---|---|
    | CM108/CM119 USB interface (PTT on GPIO 3), AIOC | `cm108` |
    | ...with PTT on another GPIO pin | `cm108:<pin>`, e.g. `cm108:4` |
-   | Serial port RTS or DTR (Digirig and others) | `rts:COM5`, `dtr:COM5`, Linux: `rts:/dev/ttyUSB0` |
+   | Serial port RTS or DTR (Digirig and others) | `rts:COM5`, `dtr:COM5`, Linux: `rts:/dev/ttyUSB0`, macOS: `rts:/dev/cu.usbserial-…` |
    | ...with inverted logic | `-rts:COM5` |
    | Radio keyed by Hamlib over CAT (start `rigctld` first) | `rigctld` or `rigctld:<host>:<port>` |
    | Raspberry Pi header pin (radio HATs, DIY transistor PTT) | `gpio:<pin>` with the BCM number, e.g. `gpio:17` (header pin 11); `-gpio:17` inverts |
@@ -118,8 +140,8 @@ CM108-based USB interface, AIOC, Digirig or SignaLink. Then:
    ```sh
    vardefm tone --audio-out "USB" --ptt cm108 --seconds 10
    ```
-   Adjust the sound card's playback volume (Windows sound settings, or `alsamixer` on
-   Linux) until the radio deviates about 2.5 kHz. Too much audio is worse than too
+   Adjust the sound card's playback volume (Windows sound settings, `alsamixer` on
+   Linux, Audio MIDI Setup on macOS) until the radio deviates about 2.5 kHz. Too much audio is worse than too
    little. Without a deviation meter, start low and raise it until another radio
    running `vardefm monitor` sees a clean, steady signal.
 
@@ -210,6 +232,9 @@ journalctl -u vardefm -f        # watch the log
 | `devices` lists no CM108 device (Linux) | Install the udev rules from step 1 and re-plug the interface. Check with `ls -l /dev/hidraw*`. |
 | Several interfaces connected | Pick one with `--ptt cm108@<path>`, using a path from `vardefm devices`. |
 | The radio does not transmit | Run `ptt-test`. Try another GPIO pin (`cm108:4`), RTS vs DTR, or inverted logic (`-rts:`, `-gpio:`). |
+| macOS: "vardefm" cannot be opened or verified | Run `xattr -d com.apple.quarantine vardefm`, or allow it in System Settings → Privacy & Security. |
+| macOS: `monitor` shows no level at all | Allow Terminal under System Settings → Privacy & Security → Microphone, then restart Terminal. |
+| macOS: serial PTT hangs when opening the port | Use the `/dev/cu.…` name of the port, not `/dev/tty.…`. |
 | `gpio:` PTT says permission denied | Add your user to the `gpio` group: `sudo usermod -aG gpio $USER`, then log in again. |
 | Transfers on a Pi stall or retry a lot at high speed | Run `vardefm bench` and use the `--max-level` it suggests. |
 | The other station never decodes you | Check the transmit level with `tone`, and raise `--txdelay`. |

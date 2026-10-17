@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         # ubuntu-24.04-arm runs the tests on the same CPU family as a Raspberry Pi.
-        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm]
+        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

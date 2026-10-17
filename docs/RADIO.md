@@ -10,7 +10,7 @@ transmitter (PTT). `vardefm modem` then offers the VARA-compatible TCP ports
 |---|---|
 | CM108/CM119-based USB audio with PTT on a GPIO pin (many DIY and commercial interfaces) | `cm108` (GPIO 3), or `cm108:<gpio>` |
 | AIOC (All-In-One Cable) | `cm108` |
-| Interface with a USB serial port keying on RTS or DTR (e.g. Digirig) | `rts:COM5` / `dtr:COM5` (`/dev/ttyUSB0` on Linux); prefix `-` to invert |
+| Interface with a USB serial port keying on RTS or DTR (e.g. Digirig) | `rts:COM5` / `dtr:COM5` (`/dev/ttyUSB0` on Linux, `/dev/cu.usbserial-…` on macOS); prefix `-` to invert |
 | Radio keyed over CAT by Hamlib | `rigctld` or `rigctld:<host>:<port>` (start `rigctld` first) |
 | Raspberry Pi (or other Linux board) with PTT wired to a header pin, e.g. a radio HAT | `gpio:<pin>` (BCM number: `gpio:17` = header pin 11), `gpio:<chip>:<line>`; prefix `-` to invert |
 | VOX (e.g. SignaLink), or the host application keys the radio | `none` |
@@ -32,6 +32,10 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c76", GROUP="audio", MODE="0660"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", GROUP="audio", MODE="0660"
 ```
+
+**macOS:** CM108 devices and serial ports work without setup. For serial PTT use
+the `/dev/cu.…` name of the port; opening `/dev/tty.…` can hang. macOS asks once
+whether Terminal may use the microphone; allow it, or the receiver hears silence.
 
 **GPIO on Linux:** the pin is used through `/dev/gpiochip*`. On Raspberry Pi OS
 your user needs to be in group `gpio` (the default user already is):
