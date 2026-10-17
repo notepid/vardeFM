@@ -1,0 +1,12 @@
+[package]
+name = "varde-sim"
+description = "FM radio channel simulator for testing Varde"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+num-complex.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+varde-dsp.workspace = true

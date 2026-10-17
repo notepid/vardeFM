@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/varde-dsp", "crates/varde-sim", "crates/varde-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/your-callsign/varde"
+
+[workspace.dependencies]
+num-complex = "0.4"
+rustfft = "6.2"
+rand = "0.8"
+rand_distr = "0.4"
+hound = "3.5"
+clap = { version = "4", features = ["derive"] }
+varde-dsp = { path = "crates/varde-dsp" }
+varde-sim = { path = "crates/varde-sim" }
+
+[profile.release]
+debug = 1
+
+[profile.dev]
+opt-level = 2

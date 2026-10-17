@@ -1,0 +1,17 @@
+[package]
+name = "varde-cli"
+description = "Test and measurement tool for Varde"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "varde"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+hound.workspace = true
+num-complex.workspace = true
+varde-dsp.workspace = true
+varde-sim.workspace = true
