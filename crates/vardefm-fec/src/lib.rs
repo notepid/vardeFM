@@ -13,7 +13,7 @@ pub fn bytes_to_bits(bytes: &[u8]) -> Vec<u8> {
 
 /// Bits (MSB first) to bytes. The length must be a multiple of 8.
 pub fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
-    bits.chunks_exact(8).map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1))).collect()
+    bits.as_chunks::<8>().0.iter().map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1))).collect()
 }
 
 /// Whitening sequence: XORed onto data bits so long runs of equal bytes do not

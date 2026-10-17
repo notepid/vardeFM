@@ -92,7 +92,7 @@ jobs:
           ./dist/vardefm_*/vardefm --version
           ./dist/vardefm_*/vardefm --help > /dev/null
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vardefm_${{ matrix.name }}
           path: |
