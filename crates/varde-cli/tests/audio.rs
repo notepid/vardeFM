@@ -23,8 +23,13 @@ fn channel(mode: &str) -> FmChannelConfig {
 /// Save audio for inspection if VARDE_TEST_WAV_DIR is set.
 fn dump(name: &str, tx: &[f32], rx: &[f32]) {
     if let Ok(dir) = std::env::var("VARDE_TEST_WAV_DIR") {
+        // Cargo runs tests from the crate folder, so anchor relative paths at the repo root.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = root.join(dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let dir = std::path::Path::new(&dir);
+        let dir = dir.canonicalize().unwrap();
+        let shown = dir.display().to_string();
+        eprintln!("saving {name} audio to {}", shown.trim_start_matches(r"\\?\"));
         write_wav(dir.join(format!("{name}_tx.wav")), FS, tx).unwrap();
         write_wav(dir.join(format!("{name}_rx.wav")), FS, rx).unwrap();
     }

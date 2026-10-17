@@ -78,9 +78,15 @@ cargo test
 - radio key-up time
 - many frames in one long recording
 
-To keep the audio from each test as WAV files:
+To keep the audio from each test as WAV files (a relative folder is created in the repo root):
+
+```powershell
+# Windows PowerShell
+$env:VARDE_TEST_WAV_DIR = "wavs"; cargo test --test audio; Remove-Item Env:VARDE_TEST_WAV_DIR
+```
 
 ```sh
+# Linux / macOS / Git Bash
 VARDE_TEST_WAV_DIR=wavs cargo test --test audio
 ```
 
