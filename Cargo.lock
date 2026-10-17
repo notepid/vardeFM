@@ -351,6 +351,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "vardefm-fec"
+version = "0.1.0"
+dependencies = [
+ "vardefm-dsp",
+]
+
+[[package]]
+name = "vardefm-link"
+version = "0.1.0"
+
+[[package]]
+name = "vardefm-modem"
+version = "0.1.0"
+dependencies = [
+ "vardefm-dsp",
+ "vardefm-fec",
+ "vardefm-sim",
+]
+
+[[package]]
 name = "vardefm-sim"
 version = "0.1.0"
 dependencies = [
@@ -359,6 +379,10 @@ dependencies = [
  "rand_distr",
  "vardefm-dsp",
 ]
+
+[[package]]
+name = "vardefm-tnc"
+version = "0.1.0"
 
 [[package]]
 name = "wasi"

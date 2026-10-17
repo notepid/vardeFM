@@ -1,0 +1,9 @@
+[package]
+name = "vardefm-fec"
+description = "LDPC error correction and CRCs for VardeFM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vardefm-dsp.workspace = true

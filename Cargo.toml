@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vardefm-dsp", "crates/vardefm-sim", "crates/vardefm-cli"]
+members = ["crates/vardefm-dsp", "crates/vardefm-fec", "crates/vardefm-modem", "crates/vardefm-link", "crates/vardefm-sim", "crates/vardefm-tnc", "crates/vardefm-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,10 @@ hound = "3.5"
 clap = { version = "4", features = ["derive"] }
 vardefm-dsp = { path = "crates/vardefm-dsp" }
 vardefm-sim = { path = "crates/vardefm-sim" }
+vardefm-fec = { path = "crates/vardefm-fec" }
+vardefm-modem = { path = "crates/vardefm-modem" }
+vardefm-link = { path = "crates/vardefm-link" }
+vardefm-tnc = { path = "crates/vardefm-tnc" }
 
 [profile.release]
 debug = 1

@@ -1,0 +1,13 @@
+[package]
+name = "vardefm-modem"
+description = "VardeFM bursts: header, speed levels, coded payload and streaming receiver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vardefm-dsp.workspace = true
+vardefm-fec.workspace = true
+
+[dev-dependencies]
+vardefm-sim.workspace = true
