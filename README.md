@@ -59,6 +59,9 @@ cargo build --release
 ./target/release/varde rx-wav --mode narrow --mod qpsk --in recording.wav
 ```
 
+Useful options: `--txdelay` (leader length; it must exceed the radio's key-up time),
+`--tilt=<dB/oct>`, `--rms <level>`. Set `VARDE_DUMP=1` to print per-carrier SNR.
+
 ## Tests
 
 ```sh
@@ -80,9 +83,6 @@ To keep the audio from each test as WAV files:
 ```sh
 VARDE_TEST_WAV_DIR=wavs cargo test --test audio
 ```
-
-Useful options: `--txdelay` (leader length; it must exceed the radio's key-up time),
-`--tilt=<dB/oct>`, `--rms <level>`. Set `VARDE_DUMP=1` to print per-carrier SNR.
 
 ## License
 
