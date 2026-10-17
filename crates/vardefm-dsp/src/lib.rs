@@ -1,4 +1,4 @@
-//! Signal processing for the Varde modem: OFDM, constellations and filters.
+//! Signal processing for the VardeFM modem: OFDM, constellations and filters.
 
 pub mod filter;
 pub mod ofdm;

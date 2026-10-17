@@ -1,6 +1,6 @@
 [package]
-name = "varde-dsp"
-description = "OFDM modem DSP for Varde"
+name = "vardefm-dsp"
+description = "OFDM modem DSP for VardeFM"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

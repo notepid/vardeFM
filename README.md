@@ -1,16 +1,16 @@
-# Varde
+# VardeFM
 
 An open-source, cross-platform high-speed data modem for FM radios. It aims to be a
 drop-in alternative to VARA FM for Winlink and similar apps.
 
-*Varde* is Norwegian for the cairns and beacon fires that once relayed warnings from
+The name comes from *varde*, Norwegian for the cairns and beacon fires that once relayed warnings from
 mountaintop to mountaintop.
 
 - **Open:** the waveform and protocol are documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - **Cross-platform:** written in Rust. Targets Linux, Windows, macOS and Raspberry Pi.
-- **App compatible (planned):** Varde will offer the same TCP command/data interface as VARA,
+- **App compatible (planned):** VardeFM will offer the same TCP command/data interface as VARA,
   so Winlink Express, Pat and other VARA clients can use it unchanged.
-- **Not on-air compatible with VARA:** both stations need Varde.
+- **Not on-air compatible with VARA:** both stations need VardeFM.
 
 ## Status
 
@@ -38,9 +38,9 @@ Raw rate is before error correction and protocol overhead.
 ## Workspace
 
 ```
-crates/varde-dsp   OFDM modulator/demodulator, constellations, filters
-crates/varde-sim   FM radio channel simulator
-crates/varde-cli   `varde` test tool
+crates/vardefm-dsp   OFDM modulator/demodulator, constellations, filters
+crates/vardefm-sim   FM radio channel simulator
+crates/vardefm-cli   `vardefm` test tool
 ```
 
 ## Trying it
@@ -49,18 +49,18 @@ crates/varde-cli   `varde` test tool
 cargo build --release
 
 # Frames through a simulated FM link at 12 dB carrier-to-noise, 80 ppm clock error
-./target/release/varde sim --mode narrow --mod qpsk --cnr 12 --ppm 80
+./target/release/vardefm sim --mode narrow --mod qpsk --cnr 12 --ppm 80
 
 # Bit-error table over signal level for every modulation
-./target/release/varde sweep --mode wide
+./target/release/vardefm sweep --mode wide
 
 # Over real radios: play test.wav into one radio, record the other at 48 kHz, decode
-./target/release/varde tx-wav --mode narrow --mod qpsk --out test.wav
-./target/release/varde rx-wav --mode narrow --mod qpsk --in recording.wav
+./target/release/vardefm tx-wav --mode narrow --mod qpsk --out test.wav
+./target/release/vardefm rx-wav --mode narrow --mod qpsk --in recording.wav
 ```
 
 Useful options: `--txdelay` (leader length; it must exceed the radio's key-up time),
-`--tilt=<dB/oct>`, `--rms <level>`. Set `VARDE_DUMP=1` to print per-carrier SNR.
+`--tilt=<dB/oct>`, `--rms <level>`. Set `VARDEFM_DUMP=1` to print per-carrier SNR.
 
 ## Tests
 
@@ -68,7 +68,7 @@ Useful options: `--txdelay` (leader length; it must exceed the radio's key-up ti
 cargo test
 ```
 
-`crates/varde-cli/tests/audio.rs` generates modem audio and decodes it. It covers:
+`crates/vardefm-cli/tests/audio.rs` generates modem audio and decodes it. It covers:
 - direct loopback
 - level and polarity changes
 - 16-bit WAV round trips
@@ -82,12 +82,12 @@ To keep the audio from each test as WAV files (a relative folder is created in t
 
 ```powershell
 # Windows PowerShell
-$env:VARDE_TEST_WAV_DIR = "wavs"; cargo test --test audio; Remove-Item Env:VARDE_TEST_WAV_DIR
+$env:VARDEFM_TEST_WAV_DIR = "wavs"; cargo test --test audio; Remove-Item Env:VARDEFM_TEST_WAV_DIR
 ```
 
 ```sh
 # Linux / macOS / Git Bash
-VARDE_TEST_WAV_DIR=wavs cargo test --test audio
+VARDEFM_TEST_WAV_DIR=wavs cargo test --test audio
 ```
 
 ## License

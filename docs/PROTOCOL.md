@@ -1,4 +1,4 @@
-# Varde Protocol Specification
+# VardeFM Protocol Specification
 
 **Status: draft v0.** Everything here may change until v1.0. Only the physical layer
 exists so far. Error correction, framing, ARQ and the host interface will be added as

@@ -1,10 +1,10 @@
-//! Helpers shared by the `varde` tool and the integration tests:
+//! Helpers shared by the `vardefm` tool and the integration tests:
 //! known test payloads, frame generation, error counting and WAV I/O.
 
 use num_complex::Complex32;
 use std::path::Path;
-use varde_dsp::prng::Prng;
-use varde_dsp::{Frame, Modulation, Ofdm};
+use vardefm_dsp::prng::Prng;
+use vardefm_dsp::{Frame, Modulation, Ofdm};
 
 /// Known test payload for frame number `f`.
 pub fn test_bits(ofdm: &Ofdm, m: Modulation, nsym: usize, f: usize) -> Vec<u8> {

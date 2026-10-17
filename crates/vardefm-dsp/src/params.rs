@@ -1,4 +1,4 @@
-/// Waveform parameters for one Varde mode.
+/// Waveform parameters for one VardeFM mode.
 #[derive(Clone, Debug)]
 pub struct OfdmParams {
     pub name: &'static str,

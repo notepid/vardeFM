@@ -1,12 +1,12 @@
 //! End-to-end tests: generate modem audio, pass it through a channel, decode it.
 //!
-//! Set `VARDE_TEST_WAV_DIR=<folder>` to save the audio of each test as WAV files
+//! Set `VARDEFM_TEST_WAV_DIR=<folder>` to save the audio of each test as WAV files
 //! (`<test>_tx.wav` and `<test>_rx.wav`) for listening or inspection in Audacity.
 
 use std::f32::consts::PI;
-use varde_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
-use varde_dsp::{Modulation, Ofdm, OfdmParams};
-use varde_sim::{transmit, FmChannelConfig};
+use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
+use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
+use vardefm_sim::{transmit, FmChannelConfig};
 
 const FS: u32 = 48_000;
 const NSYM: usize = 30;
@@ -20,9 +20,9 @@ fn channel(mode: &str) -> FmChannelConfig {
     FmChannelConfig::by_name(mode).unwrap()
 }
 
-/// Save audio for inspection if VARDE_TEST_WAV_DIR is set.
+/// Save audio for inspection if VARDEFM_TEST_WAV_DIR is set.
 fn dump(name: &str, tx: &[f32], rx: &[f32]) {
-    if let Ok(dir) = std::env::var("VARDE_TEST_WAV_DIR") {
+    if let Ok(dir) = std::env::var("VARDEFM_TEST_WAV_DIR") {
         // Cargo runs tests from the crate folder, so anchor relative paths at the repo root.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dir = root.join(dir);
@@ -97,7 +97,7 @@ fn level_and_polarity_do_not_matter() {
 
 #[test]
 fn survives_16bit_wav_roundtrip() {
-    let dir = std::env::temp_dir().join(format!("varde-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("vardefm-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.wav");
     for mode in ["narrow", "wide"] {
@@ -120,7 +120,7 @@ fn survives_16bit_wav_roundtrip() {
 #[test]
 fn no_frames_found_in_non_modem_audio() {
     let n = FS as usize * 2;
-    let mut rng = varde_dsp::prng::Prng::new(99);
+    let mut rng = vardefm_dsp::prng::Prng::new(99);
     let noise: Vec<f32> = (0..n).map(|_| (rng.next_u32() as f32 / u32::MAX as f32 - 0.5) * 0.6).collect();
     let tone = |f: f32| (0..n).map(|i| 0.3 * (2.0 * PI * f * i as f32 / FS as f32).sin()).collect::<Vec<f32>>();
     let cases: Vec<(&str, Vec<f32>)> = vec![

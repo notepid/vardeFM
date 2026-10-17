@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 use std::f32::consts::PI;
-use varde_dsp::filter::{design_lowpass_fir, fir_complex, resample_cubic, Chain, FirstOrder};
+use vardefm_dsp::filter::{design_lowpass_fir, fir_complex, resample_cubic, Chain, FirstOrder};
 
 #[derive(Clone, Debug)]
 pub struct FmChannelConfig {

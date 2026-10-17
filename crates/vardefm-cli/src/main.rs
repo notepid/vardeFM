@@ -1,12 +1,12 @@
-//! `varde` — test and measurement tool for the Varde modem.
+//! `vardefm` — test and measurement tool for the VardeFM modem.
 
 use clap::{Parser, Subcommand};
-use varde_dsp::{Modulation, Ofdm, OfdmParams};
-use varde_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
-use varde_sim::{transmit, FmChannelConfig};
+use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
+use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
+use vardefm_sim::{transmit, FmChannelConfig};
 
 #[derive(Parser)]
-#[command(name = "varde", about = "Varde modem test tool")]
+#[command(name = "vardefm", about = "VardeFM modem test tool")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -118,7 +118,7 @@ fn run_sim(ofdm: &Ofdm, m: Modulation, nsym: usize, txdelay: f32, cfg: &FmChanne
         st.bits += bits.len();
         match ofdm.detect(&rx, 0).and_then(|b| ofdm.demodulate(&rx, b, nsym)) {
             Some(frame) => {
-                if std::env::var("VARDE_DUMP").is_ok() {
+                if std::env::var("VARDEFM_DUMP").is_ok() {
                     let nv: Vec<String> = frame.noise_var.iter().map(|v| format!("{:.0}", -10.0 * v.log10())).collect();
                     eprintln!("frame {f}: per-carrier SNR dB: {}", nv.join(" "));
                 }

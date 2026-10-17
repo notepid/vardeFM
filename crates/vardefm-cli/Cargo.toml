@@ -1,21 +1,21 @@
 [package]
-name = "varde-cli"
-description = "Test and measurement tool for Varde"
+name = "vardefm-cli"
+description = "Test and measurement tool for VardeFM"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "varde"
+name = "vardefm"
 path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
 hound.workspace = true
 num-complex.workspace = true
-varde-dsp.workspace = true
-varde-sim.workspace = true
+vardefm-dsp.workspace = true
+vardefm-sim.workspace = true
 
 [lib]
-name = "varde_cli"
+name = "vardefm_cli"
 path = "src/lib.rs"
