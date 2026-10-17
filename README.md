@@ -15,7 +15,8 @@ mountaintop to mountaintop.
 
 ## Status
 
-Works end to end in simulation; not yet tested on real radios.
+Works end to end in simulation. Sound card and PTT support is built (milestone 6), but
+not yet tested on the air. See [docs/RADIO.md](docs/RADIO.md) to set up a radio.
 
 | Milestone | State |
 |---|---|
@@ -24,7 +25,7 @@ Works end to end in simulation; not yet tested on real radios.
 | 3. LDPC FEC + speed levels | done |
 | 4. ARQ link layer | done |
 | 5. VARA-compatible TCP interface + `sim-pair` | done |
-| 6. Sound card, PTT, on-air testing | next |
+| 6. Sound card, PTT (CM108/CM119, RTS/DTR, rigctld, VOX) | built; on-air testing next |
 | 7. Raspberry Pi + packaging | |
 
 ## Modes
@@ -45,9 +46,25 @@ crates/vardefm-fec     LDPC codes, CRCs, scrambling, interleaving
 crates/vardefm-modem   bursts: header, speed levels, coded payload, streaming receiver
 crates/vardefm-link    ARQ link layer (connect, reliable byte stream, disconnect)
 crates/vardefm-sim     FM radio channel simulator
-crates/vardefm-tnc     VARA-compatible TCP interface, station logic, sim-pair
+crates/vardefm-tnc     VARA-compatible TCP interface, station logic, sim-pair, radio engine
+crates/vardefm-audio   sound card input/output (cpal)
+crates/vardefm-ptt     PTT: CM108/CM119/AIOC GPIO, serial RTS/DTR, Hamlib rigctld
 crates/vardefm-cli     `vardefm` command-line tool
 ```
+
+## On a real radio
+
+```powershell
+.	argeteleaseardefm devices                       # sound cards, CM108 PTT devices, serial ports
+.	argeteleaseardefm ptt-test --ptt cm108          # key the radio for 2 s
+.	argeteleaseardefm tone --ptt cm108              # 1 kHz tone to set deviation
+.	argeteleaseardefm monitor --audio-in "USB"      # receive level meter + burst decoder
+.	argeteleaseardefm modem --audio-in "USB" --audio-out "USB" --ptt cm108
+```
+
+The full procedure is in [docs/RADIO.md](docs/RADIO.md). PTT methods: `cm108[:<gpio>][@<path>]`,
+`rts:<port>`, `dtr:<port>` (prefix `-` to invert), `rigctld[:<host>:<port>]`, `none`/`vox`.
+The CM108 support follows Dire Wolf's implementation by WB2OSZ.
 
 ## Virtual radio pair (`sim-pair`)
 
@@ -105,6 +122,8 @@ cargo test
   loopback, level and polarity changes, WAV round trips, false alarms, noisy simulated
   links, clock offset, key-up time, many frames in one recording.
 - `crates/vardefm-link/src/tests.rs`: the ARQ link over a fake lossy channel.
+- `crates/vardefm-tnc/src/radio/tests.rs`: the real-radio engine with fake sound cards
+  and PTT. It checks that audio only plays while keyed, the PTT tail, and the watchdog.
 - `crates/vardefm-tnc/tests/simpair.rs`: end to end. Two host clients talk over the VARA
   TCP interface through `sim-pair` and transfer 10 kB each way at several signal levels.
   Set `VARDEFM_SIM_VERBOSE=1` to print every transmission.

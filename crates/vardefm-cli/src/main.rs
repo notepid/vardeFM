@@ -1,6 +1,10 @@
 //! `vardefm` — test and measurement tool for the VardeFM modem.
 
 use clap::{Parser, Subcommand};
+
+mod radio_cmds;
+
+use vardefm_audio::Channel;
 use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
 use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
 use vardefm_sim::{transmit, FmChannelConfig};
@@ -92,6 +96,90 @@ enum Cmd {
     RxWav {
         #[command(flatten)]
         modem: ModemArgs,
+        #[arg(long = "in")]
+        input: String,
+    },
+    /// Run the modem on a real radio, with VARA-compatible TCP ports
+    Modem {
+        /// narrow (mic/speaker) or wide (9600 data port)
+        #[arg(long, default_value = "narrow")]
+        mode: String,
+        /// Input sound card (any unique part of its name; default: system default)
+        #[arg(long)]
+        audio_in: Option<String>,
+        /// Output sound card (default: system default)
+        #[arg(long)]
+        audio_out: Option<String>,
+        /// Input channel: left or right
+        #[arg(long, default_value = "left")]
+        in_channel: Channel,
+        /// Output channel: left, right or both
+        #[arg(long, default_value = "both")]
+        out_channel: Channel,
+        /// PTT: none, vox, cm108[:<gpio>][@<path>], rts:<port>, dtr:<port>, -rts:<port>, rigctld[:<host>:<port>]
+        #[arg(long, default_value = "none")]
+        ptt: String,
+        /// Leader before each burst, seconds (radio key-up time plus margin)
+        #[arg(long, default_value_t = 0.15)]
+        txdelay: f32,
+        /// Seconds PTT stays on after the last sample
+        #[arg(long, default_value_t = 0.05)]
+        txtail: f32,
+        /// Transmit level multiplier (also see the `tone` command)
+        #[arg(long, default_value_t = 1.0)]
+        tx_gain: f32,
+        /// Address to listen on
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Command port (data port = +1)
+        #[arg(long, default_value_t = 8300)]
+        port: u16,
+        /// Save every transmitted burst as a WAV file in this folder
+        #[arg(long)]
+        record: Option<String>,
+        /// Do not print a line per burst
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// List sound cards, CM108/CM119-type PTT devices and serial ports
+    Devices,
+    /// Key the transmitter briefly to check the PTT wiring
+    PttTest {
+        /// PTT method (as for `modem --ptt`)
+        #[arg(long)]
+        ptt: String,
+        #[arg(long, default_value_t = 2.0)]
+        seconds: f32,
+    },
+    /// Transmit a test tone to set the transmit level (FM deviation)
+    Tone {
+        #[arg(long)]
+        audio_out: Option<String>,
+        #[arg(long, default_value = "both")]
+        out_channel: Channel,
+        #[arg(long, default_value = "none")]
+        ptt: String,
+        #[arg(long, default_value_t = 1000.0)]
+        freq: f32,
+        /// Amplitude, 0..1 (1.0 = full scale = the modem's peak level)
+        #[arg(long, default_value_t = 1.0)]
+        level: f32,
+        #[arg(long, default_value_t = 10.0)]
+        seconds: f32,
+    },
+    /// Show the receive level and decode any VardeFM bursts heard
+    Monitor {
+        #[arg(long)]
+        audio_in: Option<String>,
+        #[arg(long, default_value = "left")]
+        in_channel: Channel,
+        #[arg(long, default_value = "narrow")]
+        mode: String,
+    },
+    /// Decode VardeFM bursts from a 48 kHz WAV recording
+    Decode {
+        #[arg(long, default_value = "narrow")]
+        mode: String,
         #[arg(long = "in")]
         input: String,
     },
@@ -246,6 +334,37 @@ fn main() {
             write_wav(&out, ofdm.p.fs as u32, &audio).unwrap_or_else(|e| die(&e.to_string()));
             println!("wrote {frames} frames to {out}");
         }
+        Cmd::Modem { mode, audio_in, audio_out, in_channel, out_channel, ptt, txdelay, txtail, tx_gain, host, port, record, quiet } => {
+            let ptt = ptt.parse().unwrap_or_else(|m: String| die(&m));
+            let cfg = vardefm_tnc::radio::RadioConfig {
+                mode,
+                host,
+                port,
+                audio_in,
+                audio_out,
+                in_channel,
+                out_channel,
+                ptt,
+                txdelay_s: txdelay,
+                txtail_s: txtail,
+                tx_gain,
+                record: record.map(Into::into),
+                verbose: !quiet,
+            };
+            let stop = radio_cmds::stop_flag();
+            if let Err(err) = vardefm_tnc::radio::run(cfg, stop) {
+                die(&err.to_string());
+            }
+        }
+        Cmd::Devices => radio_cmds::devices().unwrap_or_else(|m| die(&m)),
+        Cmd::PttTest { ptt, seconds } => radio_cmds::ptt_test(&ptt, seconds).unwrap_or_else(|m| die(&m)),
+        Cmd::Tone { audio_out, out_channel, ptt, freq, level, seconds } => {
+            radio_cmds::tone(audio_out.as_deref(), out_channel, &ptt, freq, level, seconds).unwrap_or_else(|m| die(&m))
+        }
+        Cmd::Monitor { audio_in, in_channel, mode } => {
+            radio_cmds::monitor(audio_in.as_deref(), in_channel, &mode).unwrap_or_else(|m| die(&m))
+        }
+        Cmd::Decode { mode, input } => radio_cmds::decode(&input, &mode).unwrap_or_else(|m| die(&m)),
         Cmd::SimPair { mode, cnr, ppm, keyup, txdelay, seed, speed, host, a_port, b_port, record } => {
             if keyup >= txdelay {
                 die("--txdelay must be longer than --keyup");

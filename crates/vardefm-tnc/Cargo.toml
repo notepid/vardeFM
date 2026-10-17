@@ -11,4 +11,6 @@ vardefm-dsp.workspace = true
 vardefm-modem.workspace = true
 vardefm-link.workspace = true
 vardefm-sim.workspace = true
+vardefm-audio.workspace = true
+vardefm-ptt.workspace = true
 [dev-dependencies]
