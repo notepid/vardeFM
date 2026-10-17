@@ -1105,14 +1105,14 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "vardefm-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cpal",
 ]
 
 [[package]]
 name = "vardefm-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-dsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "num-complex",
  "rustfft",
@@ -1137,14 +1137,14 @@ dependencies = [
 
 [[package]]
 name = "vardefm-fec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vardefm-dsp",
 ]
 
 [[package]]
 name = "vardefm-link"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vardefm-dsp",
  "vardefm-modem",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-modem"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vardefm-dsp",
  "vardefm-fec",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-ptt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gpiocdev",
  "hidapi",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-sim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "num-complex",
  "rand",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-tnc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hound",
  "vardefm-audio",
