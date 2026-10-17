@@ -123,3 +123,23 @@ fn level_table() {
         }
     }
 }
+
+#[test]
+fn threaded_decoding_matches_single_thread() {
+    // A noisy link where some codewords fail: the result must not depend on the thread count.
+    let params = OfdmParams::by_name("narrow").unwrap();
+    let b = burst(6, 9, 11);
+    let cfg = FmChannelConfig { cnr_db: Some(17.0), seed: 5, ..FmChannelConfig::by_name("narrow").unwrap() };
+    let audio = transmit(&cfg, &Modem::new(params.clone(), 0.1).modulate(&b));
+    let mut results = Vec::new();
+    for threads in [1, 2, 4, 16] {
+        let mut m = Modem::new(params.clone(), 0.1);
+        m.decode_threads = threads;
+        let got = receive(&mut Receiver::new(Arc::new(m)), &audio);
+        assert_eq!(got.len(), 1);
+        results.push(got[0].payload.clone());
+    }
+    let ok = results[0].iter().filter(|p| p.is_some()).count();
+    assert!(ok > 0 && ok < 9, "want a mix of good and failed codewords, got {ok}/9");
+    assert!(results.iter().all(|r| *r == results[0]));
+}

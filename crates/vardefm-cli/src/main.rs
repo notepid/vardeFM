@@ -2,6 +2,7 @@
 
 use clap::{Parser, Subcommand};
 
+mod bench;
 mod radio_cmds;
 
 use vardefm_audio::Channel;
@@ -116,7 +117,7 @@ enum Cmd {
         /// Output channel: left, right or both
         #[arg(long, default_value = "both")]
         out_channel: Channel,
-        /// PTT: none, vox, cm108[:<gpio>][@<path>], rts:<port>, dtr:<port>, -rts:<port>, rigctld[:<host>:<port>]
+        /// PTT: none, vox, cm108[:<gpio>][@<path>], rts:<port>, dtr:<port>, -rts:<port>, rigctld[:<host>:<port>], gpio:<pin>
         #[arg(long, default_value = "none")]
         ptt: String,
         /// Leader before each burst, seconds (radio key-up time plus margin)
@@ -137,9 +138,21 @@ enum Cmd {
         /// Save every transmitted burst as a WAV file in this folder
         #[arg(long)]
         record: Option<String>,
+        /// Highest speed level (0-6) to send or ask the other station for; lower it on a slow computer (see `bench`)
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(0..=6))]
+        max_level: u8,
         /// Do not print a line per burst
         #[arg(long)]
         quiet: bool,
+    },
+    /// Measure whether this computer decodes fast enough for each mode and speed level
+    Bench {
+        /// narrow, wide or both
+        #[arg(long, default_value = "both")]
+        mode: String,
+        /// Decoder threads (default: one per CPU core)
+        #[arg(long)]
+        threads: Option<usize>,
     },
     /// List sound cards, CM108/CM119-type PTT devices and serial ports
     Devices,
@@ -347,6 +360,7 @@ fn main() {
             host,
             port,
             record,
+            max_level,
             quiet,
         } => {
             let ptt = ptt.parse().unwrap_or_else(|m: String| die(&m));
@@ -363,12 +377,22 @@ fn main() {
                 txtail_s: txtail,
                 tx_gain,
                 record: record.map(Into::into),
+                max_level,
                 verbose: !quiet,
             };
             let stop = radio_cmds::stop_flag();
             if let Err(err) = vardefm_tnc::radio::run(cfg, stop) {
                 die(&err.to_string());
             }
+        }
+        Cmd::Bench { mode, threads } => {
+            let modes: &[&str] = match mode.as_str() {
+                "both" => &["narrow", "wide"],
+                "narrow" => &["narrow"],
+                "wide" => &["wide"],
+                _ => die("--mode must be narrow, wide or both"),
+            };
+            bench::bench(modes, threads).unwrap_or_else(|m| die(&m));
         }
         Cmd::Devices => radio_cmds::devices().unwrap_or_else(|m| die(&m)),
         Cmd::PttTest { ptt, seconds } => radio_cmds::ptt_test(&ptt, seconds).unwrap_or_else(|m| die(&m)),

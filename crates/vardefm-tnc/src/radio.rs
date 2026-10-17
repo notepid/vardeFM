@@ -40,6 +40,8 @@ pub struct RadioConfig {
     pub tx_gain: f32,
     /// Save every transmitted burst as a WAV file in this folder.
     pub record: Option<PathBuf>,
+    /// Highest speed level to send or request (limits the decoding load on slow computers).
+    pub max_level: u8,
     pub verbose: bool,
 }
 
@@ -58,6 +60,7 @@ impl Default for RadioConfig {
             txtail_s: 0.05,
             tx_gain: 1.0,
             record: None,
+            max_level: LEVELS.len() as u8 - 1,
             verbose: true,
         }
     }
@@ -100,37 +103,31 @@ pub struct RadioEngine<S: AudioSink> {
     pub station: Station,
     ptt: Box<dyn Ptt>,
     out: S,
-    tx_gain: f32,
+    /// Transmit level multiplier (default 1).
+    pub tx_gain: f32,
     /// Seconds PTT stays on after the last sample has left the queue.
     tail_s: f64,
     rx_pos: u64,
     tx: Option<Tx>,
     tx_count: u64,
-    record: Option<PathBuf>,
+    /// Save every transmitted burst as a WAV file in this folder.
+    pub record: Option<PathBuf>,
     /// Log lines (one per burst sent or received), drained by the caller.
     pub log: Vec<String>,
 }
 
 impl<S: AudioSink> RadioEngine<S> {
-    pub fn new(
-        modem: Arc<Modem>,
-        ptt: Box<dyn Ptt>,
-        out: S,
-        tx_gain: f32,
-        txtail_s: f32,
-        record: Option<PathBuf>,
-        seed: u32,
-    ) -> Self {
+    pub fn new(modem: Arc<Modem>, link: LinkConfig, ptt: Box<dyn Ptt>, out: S, txtail_s: f32, seed: u32) -> Self {
         Self {
-            station: Station::new("local", modem, LinkConfig::default(), seed),
+            station: Station::new("local", modem, link, seed),
             ptt,
             out,
-            tx_gain,
+            tx_gain: 1.0,
             tail_s: txtail_s as f64,
             rx_pos: 0,
             tx: None,
             tx_count: 0,
-            record,
+            record: None,
             log: Vec::new(),
         }
     }
@@ -227,6 +224,7 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     let params = OfdmParams::by_name(&cfg.mode).ok_or_else(|| io::Error::other("mode must be narrow or wide"))?;
     let modem = Arc::new(Modem::new(params, cfg.txdelay_s));
     let ptt = vardefm_ptt::open(&cfg.ptt)?;
+    let link = LinkConfig { max_level: cfg.max_level, start_level: cfg.max_level.min(1), ..LinkConfig::default() };
     let input = open_input(cfg.audio_in.as_deref(), cfg.in_channel)?;
     let output = open_output(cfg.audio_out.as_deref(), cfg.out_channel)?;
     let port = HostPort::bind(&cfg.host, cfg.port, cfg.port + 1)?;
@@ -237,10 +235,14 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     println!("  audio in : {} ({} Hz{})", input.name, input.device_rate, resample_note(input.device_rate));
     println!("  audio out: {} ({} Hz{})", output.name, output.device_rate, resample_note(output.device_rate));
     println!("  PTT      : {}", ptt.describe());
+    if (cfg.max_level as usize) < LEVELS.len() - 1 {
+        println!("  max level: {} ({})", cfg.max_level, LEVELS[cfg.max_level as usize].name);
+    }
     println!("  host     : command {}, data {}", port.cmd_addr, port.data_addr);
 
-    let mut engine =
-        RadioEngine::new(modem, ptt, output, cfg.tx_gain, cfg.txtail_s, cfg.record.clone(), std::process::id());
+    let mut engine = RadioEngine::new(modem, link, ptt, output, cfg.txtail_s, std::process::id());
+    engine.tx_gain = cfg.tx_gain;
+    engine.record = cfg.record.clone();
     while !stop.load(Ordering::Relaxed) {
         let chunk = input.rx.recv_timeout(Duration::from_millis(50)).ok();
         let host_in: Vec<HostIn> = port.inbox.try_iter().collect();

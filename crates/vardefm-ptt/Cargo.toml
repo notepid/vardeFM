@@ -1,6 +1,6 @@
 [package]
 name = "vardefm-ptt"
-description = "Push-to-talk control for VardeFM: CM108/CM119/AIOC GPIO, serial RTS/DTR, Hamlib rigctld, VOX"
+description = "Push-to-talk control for VardeFM: CM108/CM119/AIOC GPIO, serial RTS/DTR, Hamlib rigctld, Linux GPIO, VOX"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 hidapi.workspace = true
 serialport.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpiocdev = { version = "0.8", default-features = false, features = ["uapi_v2"] }

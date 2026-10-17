@@ -33,6 +33,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
+      - name: Receive benchmark
+        if: runner.arch == 'ARM64'
+        run: cargo run -q --locked -p vardefm-cli -- bench
 
   snapshot:
     name: Build all release targets

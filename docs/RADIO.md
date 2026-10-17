@@ -12,6 +12,7 @@ transmitter (PTT). `vardefm modem` then offers the VARA-compatible TCP ports
 | AIOC (All-In-One Cable) | `cm108` |
 | Interface with a USB serial port keying on RTS or DTR (e.g. Digirig) | `rts:COM5` / `dtr:COM5` (`/dev/ttyUSB0` on Linux); prefix `-` to invert |
 | Radio keyed over CAT by Hamlib | `rigctld` or `rigctld:<host>:<port>` (start `rigctld` first) |
+| Raspberry Pi (or other Linux board) with PTT wired to a header pin, e.g. a radio HAT | `gpio:<pin>` (BCM number: `gpio:17` = header pin 11), `gpio:<chip>:<line>`; prefix `-` to invert |
 | VOX (e.g. SignaLink), or the host application keys the radio | `none` |
 
 CM108-family devices are recognised by USB ID: C-Media `0d8c:0008`–`000f`,
@@ -31,6 +32,11 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c76", GROUP="audio", MODE="0660"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", GROUP="audio", MODE="0660"
 ```
+
+**GPIO on Linux:** the pin is used through `/dev/gpiochip*`. On Raspberry Pi OS
+your user needs to be in group `gpio` (the default user already is):
+`sudo usermod -aG gpio $USER`, then log in again. `gpio:<n>` finds the pin named
+`GPIO<n>` on any chip, so it works on the Pi 5 too.
 
 ## 2. Set up step by step (Windows PowerShell shown)
 
@@ -85,10 +91,22 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", GROUP="a
 If the other station's log shows frames missing their start, raise `--txdelay`.
 A watchdog unkeys the radio if a transmission runs 3 s past its expected length.
 
-## 4. What is not done yet
+## 4. Slow computers (Raspberry Pi)
+
+The receiver decodes each burst after it ends, and the reply waits for that.
+`vardefm bench` measures how long this takes for each speed level, on all CPU
+cores, and says whether this computer keeps up:
+
+```
+vardefm bench
+```
+
+If it recommends a limit, start the modem with it, e.g. `--max-level 4`. The
+modem then never asks the other station for a faster level, and never sends one.
+
+## 5. What is not done yet
 
 - Sound card and CM108 PTT matching is manual when several adapters are
   connected. Dire Wolf matches them automatically on Linux.
-- Raspberry Pi GPIO PTT (planned for milestone 7).
 - The rate-adaptation thresholds come from the channel simulator; on-air
   measurements will refine them.

@@ -66,6 +66,8 @@ pub struct Modem {
     pub ofdm: Ofdm,
     /// Leader length in seconds (must exceed the radio's key-up time).
     pub txdelay: f32,
+    /// Threads used to decode a burst's codewords (default: one per CPU core).
+    pub decode_threads: usize,
     hdr_code: Ldpc,
     codes: Vec<Ldpc>,
     hdr_perm: Vec<usize>,
@@ -87,6 +89,7 @@ impl Modem {
             hdr_perm: permutation(SEED_HDR_INTERLEAVE, HDR_CODE_BITS),
             ofdm,
             txdelay,
+            decode_threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
         }
     }
 
@@ -215,18 +218,36 @@ impl Modem {
         let slots = Self::llrs(level.modulation, symbols, noise_var);
         let total = h.ncw as usize * CW_BITS;
         let perm = permutation(SEED_INTERLEAVE, total);
-        (0..h.ncw as usize)
-            .map(|j| {
-                let llr: Vec<f32> = (0..CW_BITS).map(|i| slots[perm[j * CW_BITS + i]]).collect();
-                let mut bits = code.decode(&llr, DECODE_ITERS)?;
-                for (b, s) in bits.iter_mut().zip(scramble_bits(SEED_SCRAMBLE + j as u32, code.k)) {
-                    *b ^= s;
+        let decode = |j: usize| -> Option<Vec<u8>> {
+            let llr: Vec<f32> = (0..CW_BITS).map(|i| slots[perm[j * CW_BITS + i]]).collect();
+            let mut bits = code.decode(&llr, DECODE_ITERS)?;
+            for (b, s) in bits.iter_mut().zip(scramble_bits(SEED_SCRAMBLE + j as u32, code.k)) {
+                *b ^= s;
+            }
+            let bytes = vardefm_fec::bits_to_bytes(&bits);
+            let (data, tail) = bytes.split_at(bytes.len() - 4);
+            (crc::crc32(data).to_be_bytes() == tail).then(|| data.to_vec())
+        };
+        let ncw = h.ncw as usize;
+        let threads = self.decode_threads.clamp(1, ncw.max(1));
+        if threads == 1 {
+            return (0..ncw).map(decode).collect();
+        }
+        // The whole burst is decoded after it ends, and the reply waits for it:
+        // spread the codewords over the CPU cores (thread t takes t, t+threads, ...).
+        let decode = &decode;
+        let mut out = vec![None; ncw];
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|t| scope.spawn(move || (t..ncw).step_by(threads).map(|j| (j, decode(j))).collect::<Vec<_>>()))
+                .collect();
+            for w in workers {
+                for (j, r) in w.join().expect("decoder thread panicked") {
+                    out[j] = r;
                 }
-                let bytes = vardefm_fec::bits_to_bytes(&bits);
-                let (data, tail) = bytes.split_at(bytes.len() - 4);
-                (crc::crc32(data).to_be_bytes() == tail).then(|| data.to_vec())
-            })
-            .collect()
+            }
+        });
+        out
     }
 }
 

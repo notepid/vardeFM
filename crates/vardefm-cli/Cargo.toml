@@ -17,6 +17,7 @@ vardefm-dsp.workspace = true
 vardefm-sim.workspace = true
 vardefm-tnc.workspace = true
 vardefm-modem.workspace = true
+vardefm-link.workspace = true
 vardefm-audio.workspace = true
 vardefm-ptt.workspace = true
 ctrlc = "3.5"

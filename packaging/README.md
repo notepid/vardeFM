@@ -57,6 +57,16 @@ vardefm --version
 If it says `libasound.so.2: cannot open shared object file`, install the ALSA library:
 `sudo apt install libasound2` (`libasound2t64` on Debian 13 / Ubuntu 24.04 and newer).
 
+On a Raspberry Pi, check that it is fast enough. This takes a few seconds and
+transmits nothing:
+
+```sh
+vardefm bench
+```
+
+It measures each speed level and tells you if you should limit the speed with
+`--max-level` (see step 4). A Pi 4 or 5 is expected to handle every level.
+
 For a CM108/CM119/AIOC interface, allow your user to key the PTT without root.
 Then unplug and re-plug the interface:
 
@@ -101,6 +111,7 @@ CM108-based USB interface, AIOC, Digirig or SignaLink. Then:
    | Serial port RTS or DTR (Digirig and others) | `rts:COM5`, `dtr:COM5`, Linux: `rts:/dev/ttyUSB0` |
    | ...with inverted logic | `-rts:COM5` |
    | Radio keyed by Hamlib over CAT (start `rigctld` first) | `rigctld` or `rigctld:<host>:<port>` |
+   | Raspberry Pi header pin (radio HATs, DIY transistor PTT) | `gpio:<pin>` with the BCM number, e.g. `gpio:17` (header pin 11); `-gpio:17` inverts |
    | VOX (SignaLink and similar) | `none` |
 
 3. **Set the transmit level.** Send a 1 kHz tone on a quiet frequency, or into a dummy load:
@@ -140,6 +151,7 @@ Important options:
 | `--tx-gain <x>` | `1` | Transmit level multiplier, if the sound card volume alone is not enough. |
 | `--in-channel left\|right` | `left` | Which input channel the radio is on. |
 | `--out-channel left\|right\|both` | `both` | Which output channel(s) to send on. |
+| `--max-level <0-6>` | `6` | Highest speed level to use. Lower it if `vardefm bench` says the computer is too slow. |
 | `--port <n>` | `8300` | Command port for the program; the data port is this plus one. |
 | `--host <address>` | `127.0.0.1` | Use `0.0.0.0` to accept programs on other computers. Anyone who can reach the port can transmit, so only do this on a trusted network. |
 | `--quiet` | | Do not print a line per transmission. |
@@ -175,7 +187,7 @@ After=sound.target network.target
 
 [Service]
 User=YOUR_USER
-SupplementaryGroups=audio
+SupplementaryGroups=audio gpio
 ExecStart=/usr/local/bin/vardefm modem --audio-in "USB" --audio-out "USB" --ptt cm108 --quiet
 Restart=on-failure
 
@@ -197,7 +209,9 @@ journalctl -u vardefm -f        # watch the log
 |---|---|
 | `devices` lists no CM108 device (Linux) | Install the udev rules from step 1 and re-plug the interface. Check with `ls -l /dev/hidraw*`. |
 | Several interfaces connected | Pick one with `--ptt cm108@<path>`, using a path from `vardefm devices`. |
-| The radio does not transmit | Run `ptt-test`. Try another GPIO pin (`cm108:4`), RTS vs DTR, or inverted logic (`-rts:`). |
+| The radio does not transmit | Run `ptt-test`. Try another GPIO pin (`cm108:4`), RTS vs DTR, or inverted logic (`-rts:`, `-gpio:`). |
+| `gpio:` PTT says permission denied | Add your user to the `gpio` group: `sudo usermod -aG gpio $USER`, then log in again. |
+| Transfers on a Pi stall or retry a lot at high speed | Run `vardefm bench` and use the `--max-level` it suggests. |
 | The other station never decodes you | Check the transmit level with `tone`, and raise `--txdelay`. |
 | You never decode the other station | Watch `monitor`: is the level moving? Check `--audio-in` and `--in-channel`, and open the squelch. |
 | The connection starts but runs slowly | The signal is weak or distorted. Check both audio levels, and keep the transmit level moderate. |

@@ -6,14 +6,17 @@
 //! | `cm108[:<gpio>][@<hid path>]` | GPIO pin of a CM108/CM119-family USB sound chip (default GPIO 3). |
 //! | `rts:<port>` / `dtr:<port>` | Serial control line, e.g. `rts:COM5`, `dtr:/dev/ttyUSB0`. Prefix `-` to invert (`-rts:COM5`). |
 //! | `rigctld[:<host>:<port>]` | Hamlib's rigctld (CAT), default `localhost:4532`. |
+//! | `gpio:<n>` / `gpio:<chip>:<line>` | Linux GPIO pin, e.g. `gpio:17` on a Raspberry Pi. Prefix `-` to invert. |
 //!
 //! The CM108 method follows Dire Wolf's `cm108.c` (WB2OSZ, GPL-2.0-or-later):
 //! the supported USB IDs, the GPIO numbering and the HID output report
 //! `[report id 0, 0, data, mask, 0]`.
 
 mod cm108;
+mod gpio;
 
 pub use cm108::{find_cm108, is_cm108_family, Cm108, HidDeviceInfo};
+pub use gpio::GpioLine;
 
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
@@ -34,6 +37,7 @@ pub enum PttSpec {
     Cm108 { gpio: u8, path: Option<String> },
     Serial { port: String, line: SerialLine, invert: bool },
     Rigctld { addr: String },
+    Gpio { line: GpioLine, invert: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +74,13 @@ impl FromStr for PttSpec {
             Some(b) => (true, b),
             None => (false, s),
         };
+        if let Some((kind, rest)) = body.split_once(':') {
+            if kind.eq_ignore_ascii_case("gpio") {
+                let line = GpioLine::parse(rest)
+                    .ok_or_else(|| format!("expected gpio:<pin> or gpio:<chip>:<line>, got '{s}'"))?;
+                return Ok(Self::Gpio { line, invert });
+            }
+        }
         if let Some((kind, port)) = body.split_once(':') {
             let line = match kind.to_ascii_lowercase().as_str() {
                 "rts" => Some(SerialLine::Rts),
@@ -92,7 +103,7 @@ impl FromStr for PttSpec {
             return Ok(Self::Rigctld { addr });
         }
         Err(format!(
-            "unknown PTT '{s}'; use none, vox, cm108[:<gpio>][@<path>], rts:<port>, dtr:<port> or rigctld[:<host>:<port>]"
+            "unknown PTT '{s}'; use none, vox, cm108[:<gpio>][@<path>], rts:<port>, dtr:<port>, rigctld[:<host>:<port>] or gpio:<pin>"
         ))
     }
 }
@@ -109,6 +120,7 @@ impl fmt::Display for PttSpec {
                 write!(f, "{}{:?} on {port}", if *invert { "inverted " } else { "" }, line)
             }
             Self::Rigctld { addr } => write!(f, "rigctld at {addr}"),
+            Self::Gpio { line, invert } => write!(f, "{}{line}", if *invert { "inverted " } else { "" }),
         }
     }
 }
@@ -120,6 +132,7 @@ pub fn open(spec: &PttSpec) -> io::Result<Box<dyn Ptt>> {
         PttSpec::Cm108 { gpio, path } => Box::new(Cm108::open(path.as_deref(), *gpio)?),
         PttSpec::Serial { port, line, invert } => Box::new(SerialPtt::open(port, *line, *invert)?),
         PttSpec::Rigctld { addr } => Box::new(Rigctld::open(addr)?),
+        PttSpec::Gpio { line, invert } => gpio::open(line, *invert)?,
     };
     p.set(false)?;
     Ok(p)
@@ -261,7 +274,12 @@ mod tests {
         );
         assert_eq!("rigctld".parse(), Ok(PttSpec::Rigctld { addr: "localhost:4532".into() }));
         assert_eq!("rigctld:10.0.0.5:4532".parse(), Ok(PttSpec::Rigctld { addr: "10.0.0.5:4532".into() }));
-        for bad in ["cm108:9", "cm108x", "rts:", "foo", "rigctld:"] {
+        assert_eq!("gpio:17".parse(), Ok(PttSpec::Gpio { line: GpioLine::Pin(17), invert: false }));
+        assert_eq!(
+            "-GPIO:gpiochip4:23".parse(),
+            Ok(PttSpec::Gpio { line: GpioLine::ChipLine { chip: "gpiochip4".into(), offset: 23 }, invert: true })
+        );
+        for bad in ["cm108:9", "cm108x", "rts:", "foo", "rigctld:", "gpio:", "gpio:x", "gpio::3", "gpio:chip:"] {
             assert!(bad.parse::<PttSpec>().is_err(), "{bad}");
         }
     }

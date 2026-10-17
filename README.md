@@ -63,7 +63,7 @@ crates/vardefm-link    ARQ link layer (connect, reliable byte stream, disconnect
 crates/vardefm-sim     FM radio channel simulator
 crates/vardefm-tnc     VARA-compatible TCP interface, station logic, sim-pair, radio engine
 crates/vardefm-audio   sound card input/output (cpal)
-crates/vardefm-ptt     PTT: CM108/CM119/AIOC GPIO (after Dire Wolf), serial RTS/DTR, Hamlib rigctld
+crates/vardefm-ptt     PTT: CM108/CM119/AIOC GPIO (after Dire Wolf), serial RTS/DTR, Hamlib rigctld, Linux GPIO
 crates/vardefm-cli     `vardefm` command-line tool
 packaging/             user guide and udev rules shipped in the release archives
 ```
@@ -103,6 +103,9 @@ vardefm sim --mode narrow --mod qpsk --cnr 12 --ppm 80
 
 # Bit-error table over signal level for every modulation (uncoded)
 vardefm sweep --mode wide
+
+# Decoding speed of this computer for every mode and level (Raspberry Pi check)
+vardefm bench
 
 # Over real radios: play test.wav into one radio, record the other at 48 kHz, decode
 vardefm tx-wav --mode narrow --mod qpsk --out test.wav

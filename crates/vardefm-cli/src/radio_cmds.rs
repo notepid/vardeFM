@@ -41,6 +41,9 @@ pub fn devices() -> Res {
         }
         Err(err) => println!("  cannot list HID devices: {err}"),
     }
+    if cfg!(target_os = "linux") {
+        println!("GPIO pins: --ptt gpio:<n> keys BCM pin GPIO<n> (e.g. gpio:17 = Raspberry Pi header pin 11)");
+    }
     println!("Serial ports (--ptt rts:<port> or dtr:<port>):");
     let ports = vardefm_ptt::serial_ports();
     if ports.is_empty() {

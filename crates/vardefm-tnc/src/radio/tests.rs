@@ -102,7 +102,7 @@ impl Card {
 
 fn engine(card: &Shared, seed: u32) -> RadioEngine<FakeOut> {
     let modem = Arc::new(Modem::new(OfdmParams::narrow(), 0.15));
-    RadioEngine::new(modem, Box::new(FakePtt(card.clone())), FakeOut(card.clone()), 1.0, 0.05, None, seed)
+    RadioEngine::new(modem, LinkConfig::default(), Box::new(FakePtt(card.clone())), FakeOut(card.clone()), 0.05, seed)
 }
 
 #[derive(Default)]
