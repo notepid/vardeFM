@@ -131,10 +131,8 @@ fn session_over_fake_sound_cards() {
     let mut eng = [engine(&cards[0], 1), engine(&cards[1], 2)];
     let mut host = [HostSide::default(), HostSide::default()];
     let line = |s: &str| HostIn::Line(s.into());
-    let mut inbox: [Vec<HostIn>; 2] = [
-        vec![line("MYCALL LA1AAA"), line("CONNECT LA1AAA LA2BBB")],
-        vec![line("MYCALL LA2BBB"), line("LISTEN ON")],
-    ];
+    let mut inbox: [Vec<HostIn>; 2] =
+        [vec![line("MYCALL LA1AAA"), line("CONNECT LA1AAA LA2BBB")], vec![line("MYCALL LA2BBB"), line("LISTEN ON")]];
     let to_a: Vec<u8> = (0..2000u32).map(|i| (i * 7) as u8).collect();
     let to_b: Vec<u8> = (0..1500u32).map(|i| (i * 13 + 5) as u8).collect();
     let mut air = [vec![0.0f32; CHUNK], vec![0.0f32; CHUNK]];
@@ -193,7 +191,8 @@ fn watchdog_unkeys_a_stuck_sound_card() {
     let card: Shared = Arc::default();
     card.lock().unwrap().stuck = true;
     let mut eng = engine(&card, 3);
-    let mut out = eng.step(None, vec![HostIn::Line("MYCALL LA1AAA".into()), HostIn::Line("CONNECT LA1AAA LA9ZZZ".into())]);
+    let mut out =
+        eng.step(None, vec![HostIn::Line("MYCALL LA1AAA".into()), HostIn::Line("CONNECT LA1AAA LA9ZZZ".into())]);
     let silence = vec![0.0f32; CHUNK];
     let mut keyed_at = None;
     for step in 0..2000 {
@@ -203,8 +202,8 @@ fn watchdog_unkeys_a_stuck_sound_card() {
         if ptt && keyed_at.is_none() {
             keyed_at = Some(step);
         }
-        if keyed_at.is_some() && !ptt {
-            let held = (step - keyed_at.unwrap()) as f64 * 0.01;
+        if let (Some(k), false) = (keyed_at, ptt) {
+            let held = (step - k) as f64 * 0.01;
             assert!(held < 6.0, "held PTT for {held} s");
             assert!(eng.log.iter().any(|l| l.contains("watchdog")));
             return;

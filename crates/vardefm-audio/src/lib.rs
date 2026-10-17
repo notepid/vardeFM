@@ -52,7 +52,12 @@ pub fn list_devices() -> io::Result<(Vec<String>, Vec<String>)> {
     Ok((ins, outs))
 }
 
-fn pick(devices: impl Iterator<Item = cpal::Device>, default: Option<cpal::Device>, name: Option<&str>, what: &str) -> io::Result<cpal::Device> {
+fn pick(
+    devices: impl Iterator<Item = cpal::Device>,
+    default: Option<cpal::Device>,
+    name: Option<&str>,
+    what: &str,
+) -> io::Result<cpal::Device> {
     match name {
         None => default.ok_or_else(|| err(format!("no default {what} device"))),
         Some(want) => {
@@ -61,7 +66,8 @@ fn pick(devices: impl Iterator<Item = cpal::Device>, default: Option<cpal::Devic
             if let Some(d) = all.iter().find(|d| d.to_string().to_lowercase() == want_l) {
                 return Ok(d.clone());
             }
-            let matches: Vec<&cpal::Device> = all.iter().filter(|d| d.to_string().to_lowercase().contains(&want_l)).collect();
+            let matches: Vec<&cpal::Device> =
+                all.iter().filter(|d| d.to_string().to_lowercase().contains(&want_l)).collect();
             match matches.len() {
                 1 => Ok(matches[0].clone()),
                 0 => Err(err(format!("no {what} device matches '{want}' (see `vardefm devices`)"))),
@@ -75,7 +81,10 @@ fn pick(devices: impl Iterator<Item = cpal::Device>, default: Option<cpal::Devic
 }
 
 /// Choose a stream config: 48 kHz if possible, preferring f32 and i16 formats.
-fn choose_config(ranges: Vec<cpal::SupportedStreamConfigRange>, default: Option<cpal::SupportedStreamConfig>) -> io::Result<cpal::SupportedStreamConfig> {
+fn choose_config(
+    ranges: Vec<cpal::SupportedStreamConfigRange>,
+    default: Option<cpal::SupportedStreamConfig>,
+) -> io::Result<cpal::SupportedStreamConfig> {
     let rank = |f: SampleFormat| match f {
         SampleFormat::F32 => 0,
         SampleFormat::I16 => 1,
@@ -89,7 +98,7 @@ fn choose_config(ranges: Vec<cpal::SupportedStreamConfigRange>, default: Option<
         .collect();
     at_rate.sort_by_key(|r| (rank(r.sample_format()), r.channels()));
     if let Some(r) = at_rate.first() {
-        return Ok((*r).clone().with_sample_rate(RATE));
+        return Ok((*(*r)).with_sample_rate(RATE));
     }
     match default {
         Some(d) if rank(d.sample_format()) < 9 => Ok(d),
@@ -176,7 +185,7 @@ where
 {
     let mut rs = (rate != RATE).then(|| Resampler::new(rate, RATE));
     dev.build_input_stream(
-        cfg.clone(),
+        *cfg,
         move |data: &[T], _| {
             let mut out = Vec::with_capacity(data.len() / channels + 8);
             for frame in data.chunks(channels) {
@@ -267,7 +276,7 @@ where
     let mut rs = (rate != RATE).then(|| Resampler::new(RATE, rate));
     let mut pending: VecDeque<f32> = VecDeque::new();
     dev.build_output_stream(
-        cfg.clone(),
+        *cfg,
         move |data: &mut [T], _| {
             let frames = data.len() / channels;
             let mut taken = 0u64;

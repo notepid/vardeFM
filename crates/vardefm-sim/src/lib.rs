@@ -107,9 +107,7 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
 
     // --- FM modulator + RF noise ---
     let mut rng = StdRng::seed_from_u64(cfg.seed);
-    let sigma = cfg
-        .cnr_db
-        .map(|c| (10f32.powf(-c / 10.0) * fs / cfg.if_bandwidth_hz / 2.0).sqrt());
+    let sigma = cfg.cnr_db.map(|c| (10f32.powf(-c / 10.0) * fs / cfg.if_bandwidth_hz / 2.0).sqrt());
     let normal = Normal::new(0.0f32, 1.0).unwrap();
     let mut phase = 0f32;
     let k = 2.0 * PI * cfg.deviation_hz / fs;
@@ -197,8 +195,11 @@ mod probe {
                 for i in seg.clone() {
                     let w = 2.0 * std::f64::consts::PI * 1000.0 * i as f64 / 48_000.0;
                     let (s, c) = w.sin_cos();
-                    ss += s * s; cc += c * c; sc += s * c;
-                    ys += out[i] as f64 * s; yc += out[i] as f64 * c;
+                    ss += s * s;
+                    cc += c * c;
+                    sc += s * c;
+                    ys += out[i] as f64 * s;
+                    yc += out[i] as f64 * c;
                 }
                 let det = ss * cc - sc * sc;
                 let a = (ys * cc - yc * sc) / det;

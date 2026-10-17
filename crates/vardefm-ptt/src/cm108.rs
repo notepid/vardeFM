@@ -98,9 +98,7 @@ impl Cm108 {
         };
         let api = HidApi::new().map_err(io::Error::other)?;
         let c = CString::new(path.clone()).map_err(io::Error::other)?;
-        let dev = api
-            .open_path(&c)
-            .map_err(|e| io::Error::other(format!("cannot open HID device {path}: {e}")))?;
+        let dev = api.open_path(&c).map_err(|e| io::Error::other(format!("cannot open HID device {path}: {e}")))?;
         Ok(Self { dev, path, gpio })
     }
 
@@ -144,7 +142,9 @@ mod tests {
 
     #[test]
     fn device_ids() {
-        for (v, p) in [(0x0d8c, 0x000c), (0x0d8c, 0x0008), (0x0d8c, 0x013a), (0x0d8c, 0x0012), (0x0c76, 0x1607), (0x1209, 0x7388)] {
+        for (v, p) in
+            [(0x0d8c, 0x000c), (0x0d8c, 0x0008), (0x0d8c, 0x013a), (0x0d8c, 0x0012), (0x0c76, 0x1607), (0x1209, 0x7388)]
+        {
             assert!(is_cm108_family(v, p), "{v:04x}:{p:04x}");
         }
         for (v, p) in [(0x0d8c, 0x0014), (0x08bb, 0x2904), (0x1209, 0x0001)] {

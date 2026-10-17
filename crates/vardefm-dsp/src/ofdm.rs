@@ -61,9 +61,7 @@ impl Ofdm {
             (0..nc).partition(|&k| k % p.pilot_spacing == 0 || k == nc - 1);
 
         let mut rng = Prng::new(0x5eed_0001);
-        let pilot_table = (0..PILOT_TABLE_LEN)
-            .map(|_| pilot_idx.iter().map(|_| rng.bpsk()).collect())
-            .collect();
+        let pilot_table = (0..PILOT_TABLE_LEN).map(|_| pilot_idx.iter().map(|_| rng.bpsk()).collect()).collect();
 
         let f0 = p.carrier_freq(0);
         let gains = (0..nc)
@@ -77,7 +75,7 @@ impl Ofdm {
         let pre_a = (0..nc)
             .map(|k| {
                 let v = rng.bpsk();
-                if (p.first_bin + k) % 2 == 0 {
+                if (p.first_bin + k).is_multiple_of(2) {
                     Complex32::new(SQRT_2 * v, 0.0)
                 } else {
                     Complex32::new(0.0, 0.0)
@@ -87,18 +85,8 @@ impl Ofdm {
         let mut rng = Prng::new(0x5eed_00b2);
         let pre_b = (0..nc).map(|_| Complex32::new(rng.bpsk(), 0.0)).collect();
 
-        let mut s = Self {
-            p,
-            fft,
-            ifft,
-            pilot_idx,
-            data_idx,
-            pilot_table,
-            gains,
-            pre_a,
-            pre_b,
-            pre_b_body: Vec::new(),
-        };
+        let mut s =
+            Self { p, fft, ifft, pilot_idx, data_idx, pilot_table, gains, pre_a, pre_b, pre_b_body: Vec::new() };
         let b = s.symbol_time(&s.pre_b);
         let mut body = b[s.p.ncp..].to_vec();
         let e = body.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -154,9 +142,7 @@ impl Ofdm {
         let mut out = Vec::with_capacity(self.frame_len(data.len()) + n_leader * self.p.symbol_len());
         let mut rng = Prng::new(0x5eed_00c3);
         for _ in 0..n_leader {
-            let c: Vec<Complex32> = (0..nc)
-                .map(|_| Complex32::new(rng.bpsk(), rng.bpsk()) * (1.0 / SQRT_2))
-                .collect();
+            let c: Vec<Complex32> = (0..nc).map(|_| Complex32::new(rng.bpsk(), rng.bpsk()) * (1.0 / SQRT_2)).collect();
             out.extend(self.symbol_time(&c));
         }
         out.extend(self.symbol_time(&self.pre_a));
@@ -188,11 +174,7 @@ impl Ofdm {
         let mut x: Vec<Complex32> = rx[pos..pos + n].iter().map(|&v| Complex32::new(v, 0.0)).collect();
         self.fft.process(&mut x);
         let scale = 1.0 / (n as f32).sqrt();
-        Some(
-            (0..self.p.num_carriers)
-                .map(|k| x[self.p.first_bin + k] * scale)
-                .collect(),
-        )
+        Some((0..self.p.num_carriers).map(|k| x[self.p.first_bin + k] * scale).collect())
     }
 
     /// Search `rx` from `from` for a frame. Returns the sample index where the
@@ -295,9 +277,7 @@ impl Ofdm {
         // average over a rotating phase.
         let rot: Complex32 = (1..nc).map(|k| raw[k] * raw[k - 1].conj()).sum();
         let slope = rot.arg();
-        let flat: Vec<Complex32> = (0..nc)
-            .map(|k| raw[k] * Complex32::from_polar(1.0, -slope * k as f32))
-            .collect();
+        let flat: Vec<Complex32> = (0..nc).map(|k| raw[k] * Complex32::from_polar(1.0, -slope * k as f32)).collect();
         let hb: Vec<Complex32> = (0..nc)
             .map(|k| {
                 let lo = flat[k.saturating_sub(1)];
@@ -311,13 +291,7 @@ impl Ofdm {
         let mut cs: Vec<Vec<Complex32>> = Vec::with_capacity(nsym);
         for i in 0..nsym {
             let y = self.carriers_at(rx, base + (i as isize + 1) * l)?;
-            cs.push(
-                self.pilot_idx
-                    .iter()
-                    .enumerate()
-                    .map(|(m, &k)| y[k] / (hb[k] * self.pilot_value(i, m)))
-                    .collect(),
-            );
+            cs.push(self.pilot_idx.iter().enumerate().map(|(m, &k)| y[k] / (hb[k] * self.pilot_value(i, m))).collect());
             ys.push(y);
         }
 
@@ -330,29 +304,20 @@ impl Ofdm {
             let lo = i.saturating_sub(TRACK_HALF_WINDOW);
             let hi = (i + TRACK_HALF_WINDOW + 1).min(nsym);
             let cnt = (hi - lo) as f32;
-            let avg: Vec<Complex32> = (0..np)
-                .map(|m| cs[lo..hi].iter().map(|c| c[m]).sum::<Complex32>() / cnt)
-                .collect();
+            let avg: Vec<Complex32> =
+                (0..np).map(|m| cs[lo..hi].iter().map(|c| c[m]).sum::<Complex32>() / cnt).collect();
             if cnt > 1.0 {
                 let bias = cnt / (cnt - 1.0);
                 for m in 0..np {
                     pilot_err[m] += (cs[i][m] / avg[m] - 1.0).norm_sqr() * bias;
                 }
             }
-            symbols.push(
-                self.data_idx
-                    .iter()
-                    .map(|&k| ys[i][k] / (hb[k] * self.interp_pilots(&avg, k)))
-                    .collect(),
-            );
+            symbols.push(self.data_idx.iter().map(|&k| ys[i][k] / (hb[k] * self.interp_pilots(&avg, k))).collect());
         }
 
         // Noise per data carrier, interpolated from the pilots. The preamble estimate
         // adds its own noise (3/8 of one symbol's, after smoothing) on top.
-        let pilot_var: Vec<f32> = pilot_err
-            .iter()
-            .map(|e| e / nsym.max(1) as f32 * 1.375)
-            .collect();
+        let pilot_var: Vec<f32> = pilot_err.iter().map(|e| e / nsym.max(1) as f32 * 1.375).collect();
         let noise_var: Vec<f32> = self
             .data_idx
             .iter()

@@ -8,17 +8,12 @@ use vardefm_dsp::prng::Prng;
 
 /// Bytes to bits, MSB first.
 pub fn bytes_to_bits(bytes: &[u8]) -> Vec<u8> {
-    bytes
-        .iter()
-        .flat_map(|&b| (0..8).rev().map(move |i| (b >> i) & 1))
-        .collect()
+    bytes.iter().flat_map(|&b| (0..8).rev().map(move |i| (b >> i) & 1)).collect()
 }
 
 /// Bits (MSB first) to bytes. The length must be a multiple of 8.
 pub fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
-    bits.chunks_exact(8)
-        .map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1)))
-        .collect()
+    bits.chunks_exact(8).map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1))).collect()
 }
 
 /// Whitening sequence: XORed onto data bits so long runs of equal bytes do not

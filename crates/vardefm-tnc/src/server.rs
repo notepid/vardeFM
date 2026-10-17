@@ -79,7 +79,11 @@ impl HostPort {
         let data = TcpListener::bind((host, data_port))?;
         let (tx, inbox) = channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let sync = Arc::new(DataSync { epoch: Instant::now(), empty_at: AtomicU64::new(0), connected: AtomicBool::new(false) });
+        let sync = Arc::new(DataSync {
+            epoch: Instant::now(),
+            empty_at: AtomicU64::new(0),
+            connected: AtomicBool::new(false),
+        });
         let port = Self {
             cmd_addr: cmd.local_addr()?,
             data_addr: data.local_addr()?,
@@ -127,7 +131,14 @@ fn write_to(slot: &Slot, bytes: &[u8]) {
     }
 }
 
-fn spawn_acceptor(listener: TcpListener, slot: Slot, tx: Sender<HostIn>, stop: Arc<AtomicBool>, sync: Arc<DataSync>, is_cmd: bool) {
+fn spawn_acceptor(
+    listener: TcpListener,
+    slot: Slot,
+    tx: Sender<HostIn>,
+    stop: Arc<AtomicBool>,
+    sync: Arc<DataSync>,
+    is_cmd: bool,
+) {
     listener.set_nonblocking(true).expect("nonblocking listener");
     thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {

@@ -118,7 +118,18 @@ impl Net {
             if let Some(b) = self.nodes[i].link.poll(now, busy) {
                 let dur = self.modem.burst_seconds(b.header.level, b.header.ncw as usize) as f64;
                 if std::env::var("LINK_TRACE").is_ok() {
-                    eprintln!("{now:7.2} {} TX {:?} ncw={} lvl={} id={} ack={}/{} bm={:b} {:.2}s", ["A", "B"][i], b.header.kind, b.header.ncw, b.header.level, b.header.burst_id, b.header.ack_burst, b.header.ack_offset, b.header.bitmap, dur);
+                    eprintln!(
+                        "{now:7.2} {} TX {:?} ncw={} lvl={} id={} ack={}/{} bm={:b} {:.2}s",
+                        ["A", "B"][i],
+                        b.header.kind,
+                        b.header.ncw,
+                        b.header.level,
+                        b.header.burst_id,
+                        b.header.ack_burst,
+                        b.header.ack_offset,
+                        b.header.bitmap,
+                        dur
+                    );
                 }
                 self.nodes[i].tx = Some((now, now + dur, b));
             }

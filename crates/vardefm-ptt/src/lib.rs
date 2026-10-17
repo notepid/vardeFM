@@ -190,7 +190,8 @@ pub struct Rigctld {
 
 impl Rigctld {
     pub fn open(addr: &str) -> io::Result<Self> {
-        let stream = TcpStream::connect(addr).map_err(|e| io::Error::other(format!("cannot reach rigctld at {addr}: {e}")))?;
+        let stream =
+            TcpStream::connect(addr).map_err(|e| io::Error::other(format!("cannot reach rigctld at {addr}: {e}")))?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         stream.set_nodelay(true)?;
         let reader = BufReader::new(stream.try_clone()?);
@@ -226,13 +227,9 @@ pub fn serial_ports() -> Vec<String> {
         .map(|v| {
             v.into_iter()
                 .map(|p| match p.port_type {
-                    serialport::SerialPortType::UsbPort(u) => format!(
-                        "{}  USB {:04x}:{:04x} {}",
-                        p.port_name,
-                        u.vid,
-                        u.pid,
-                        u.product.unwrap_or_default()
-                    ),
+                    serialport::SerialPortType::UsbPort(u) => {
+                        format!("{}  USB {:04x}:{:04x} {}", p.port_name, u.vid, u.pid, u.product.unwrap_or_default())
+                    }
                     _ => p.port_name,
                 })
                 .collect()

@@ -112,7 +112,15 @@ pub struct RadioEngine<S: AudioSink> {
 }
 
 impl<S: AudioSink> RadioEngine<S> {
-    pub fn new(modem: Arc<Modem>, ptt: Box<dyn Ptt>, out: S, tx_gain: f32, txtail_s: f32, record: Option<PathBuf>, seed: u32) -> Self {
+    pub fn new(
+        modem: Arc<Modem>,
+        ptt: Box<dyn Ptt>,
+        out: S,
+        tx_gain: f32,
+        txtail_s: f32,
+        record: Option<PathBuf>,
+        seed: u32,
+    ) -> Self {
         Self {
             station: Station::new("local", modem, LinkConfig::default(), seed),
             ptt,
@@ -231,7 +239,8 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     println!("  PTT      : {}", ptt.describe());
     println!("  host     : command {}, data {}", port.cmd_addr, port.data_addr);
 
-    let mut engine = RadioEngine::new(modem, ptt, output, cfg.tx_gain, cfg.txtail_s, cfg.record.clone(), std::process::id());
+    let mut engine =
+        RadioEngine::new(modem, ptt, output, cfg.tx_gain, cfg.txtail_s, cfg.record.clone(), std::process::id());
     while !stop.load(Ordering::Relaxed) {
         let chunk = input.rx.recv_timeout(Duration::from_millis(50)).ok();
         let host_in: Vec<HostIn> = port.inbox.try_iter().collect();
@@ -261,7 +270,8 @@ fn resample_note(rate: u32) -> &'static str {
 }
 
 fn write_wav(path: &std::path::Path, samples: &[f32]) -> Result<(), hound::Error> {
-    let spec = hound::WavSpec { channels: 1, sample_rate: RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let spec =
+        hound::WavSpec { channels: 1, sample_rate: RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
     let mut w = hound::WavWriter::create(path, spec)?;
     for &v in samples {
         w.write_sample((v.clamp(-1.0, 1.0) * 32767.0) as i16)?;

@@ -38,7 +38,7 @@ fn dump(name: &str, tx: &[f32], rx: &[f32]) {
 fn pad(audio: &[f32], before: usize, after: usize) -> Vec<f32> {
     let mut v = vec![0.0; before];
     v.extend_from_slice(audio);
-    v.extend(std::iter::repeat(0.0).take(after));
+    v.extend(std::iter::repeat_n(0.0, after));
     v
 }
 
@@ -197,8 +197,14 @@ fn noisy_radio_link() {
             failures.push(format!("{mode} {m:?} @ {cnr} dB: BER {ber:.2e}, lost {lost}"));
         }
     }
-    assert!(failures.is_empty(), "{}", failures.join("
-"));
+    assert!(
+        failures.is_empty(),
+        "{}",
+        failures.join(
+            "
+"
+        )
+    );
 }
 
 #[test]
@@ -222,9 +228,7 @@ fn leader_covers_radio_keyup() {
 
     // Without a leader the preamble is lost while the radio keys up.
     let rx = transmit(&cfg, &make_frame(&ofdm, m, &bits, 0.0));
-    let ok = decode_all(&ofdm, &rx, NSYM)
-        .first()
-        .is_some_and(|(_, f)| count_errors(m, f, &bits) == 0);
+    let ok = decode_all(&ofdm, &rx, NSYM).first().is_some_and(|(_, f)| count_errors(m, f, &bits) == 0);
     assert!(!ok, "frame decoded without a leader");
 
     // With a leader longer than the key-up time it decodes.

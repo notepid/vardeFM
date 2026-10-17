@@ -79,7 +79,10 @@ pub enum LinkEvent {
     Pending,
     CancelPending,
     /// `source` is the calling station.
-    Connected { source: String, destination: String },
+    Connected {
+        source: String,
+        destination: String,
+    },
     Disconnected,
     /// Bytes queued for transmission and not yet acknowledged.
     Buffer(usize),
@@ -245,6 +248,7 @@ impl Link {
     // ------------------------------------------------------------ host commands
 
     /// Start a connection. Fails if the link is not idle.
+    #[allow(clippy::result_unit_err)]
     pub fn connect(&mut self, now: f64, mycall: &str, target: &str) -> Result<(), ()> {
         if !self.is_idle() {
             return Err(());
@@ -309,10 +313,7 @@ impl Link {
     // ------------------------------------------------------------ receive
 
     fn level_for(&self, rx: &RxBurst) -> u8 {
-        let by_snr = SNR_THRESHOLDS_DB
-            .iter()
-            .rposition(|&t| rx.snr_db >= t + SNR_MARGIN_DB)
-            .unwrap_or(0) as u8;
+        let by_snr = SNR_THRESHOLDS_DB.iter().rposition(|&t| rx.snr_db >= t + SNR_MARGIN_DB).unwrap_or(0) as u8;
         let failed = rx.payload.iter().any(|p| p.is_none());
         let cap = if failed { rx.header.level.saturating_sub(1) } else { u8::MAX };
         by_snr.min(cap).min(self.cfg.max_level)
@@ -397,7 +398,16 @@ impl Link {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new_session(&self, id: u8, local: String, remote: String, caller: bool, now: f64, req: u8, peer_req: u8) -> Session {
+    fn new_session(
+        &self,
+        id: u8,
+        local: String,
+        remote: String,
+        caller: bool,
+        now: f64,
+        req: u8,
+        peer_req: u8,
+    ) -> Session {
         Session {
             id,
             local,
@@ -589,9 +599,12 @@ impl Link {
                             s.closing.is_some_and(|t| now >= t + cfg.disconnect_grace_s) && s.tx_buf.is_empty();
                         if ready_to_close {
                             s.phase = Phase::Respond { at: now, kind: Kind::Disc, initiated: true };
-                        } else if s.has_data() || now - s.last_heard > cfg.keepalive_s * if s.caller { 1.0 } else { 1.5 } {
+                        } else if s.has_data()
+                            || now - s.last_heard > cfg.keepalive_s * if s.caller { 1.0 } else { 1.5 }
+                        {
                             // Start a burst on a quiet channel, after a short random wait.
-                            s.phase = Phase::Respond { at: now + 0.05 + backoff * 0.5, kind: Kind::Data, initiated: true };
+                            s.phase =
+                                Phase::Respond { at: now + 0.05 + backoff * 0.5, kind: Kind::Data, initiated: true };
                         }
                         return None;
                     }
@@ -604,7 +617,8 @@ impl Link {
                 }
                 let retry = s.retries;
                 let (burst, info) = s.build(kind, &self.modem, now, cfg.keepalive_s);
-                let needs_reply = matches!(kind, Kind::Disc) || burst.header.ncw > 0 && kind == Kind::Data
+                let needs_reply = matches!(kind, Kind::Disc)
+                    || burst.header.ncw > 0 && kind == Kind::Data
                     || burst.header.flags & FLAG_POLL != 0;
                 if kind == Kind::Disc {
                     s.disc_tries += 1;
@@ -743,11 +757,7 @@ fn merge(mut r: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 fn expand(off: u32, near: u64) -> u64 {
     let base = near - near % OFFSET_MOD;
     let cands = [base.wrapping_sub(OFFSET_MOD), base, base + OFFSET_MOD];
-    cands
-        .into_iter()
-        .map(|c| c.wrapping_add(off as u64))
-        .min_by_key(|&c| c.abs_diff(near))
-        .unwrap()
+    cands.into_iter().map(|c| c.wrapping_add(off as u64)).min_by_key(|&c| c.abs_diff(near)).unwrap()
 }
 
 /// ConnectReq/ConnectAck payload: "VFM1" | len | source | len | destination, zero padded.

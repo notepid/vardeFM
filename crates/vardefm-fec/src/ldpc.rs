@@ -107,9 +107,7 @@ impl Ldpc {
     /// True if `bits` (length n) satisfies every parity check.
     pub fn check(&self, bits: &[u8]) -> bool {
         (0..self.m()).all(|c| {
-            self.check_vars[self.check_ptr[c]..self.check_ptr[c + 1]]
-                .iter()
-                .fold(0u8, |acc, &v| acc ^ bits[v as usize])
+            self.check_vars[self.check_ptr[c]..self.check_ptr[c + 1]].iter().fold(0u8, |acc, &v| acc ^ bits[v as usize])
                 == 0
         })
     }

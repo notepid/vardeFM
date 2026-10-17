@@ -5,13 +5,13 @@ use clap::{Parser, Subcommand};
 mod radio_cmds;
 
 use vardefm_audio::Channel;
-use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
 use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
+use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
 use vardefm_sim::{transmit, FmChannelConfig};
 use vardefm_tnc::simpair::{SimPair, SimPairConfig};
 
 #[derive(Parser)]
-#[command(name = "vardefm", about = "VardeFM modem test tool")]
+#[command(name = "vardefm", version, about = "VardeFM: open FM data modem with a VARA-compatible host interface")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -334,7 +334,21 @@ fn main() {
             write_wav(&out, ofdm.p.fs as u32, &audio).unwrap_or_else(|e| die(&e.to_string()));
             println!("wrote {frames} frames to {out}");
         }
-        Cmd::Modem { mode, audio_in, audio_out, in_channel, out_channel, ptt, txdelay, txtail, tx_gain, host, port, record, quiet } => {
+        Cmd::Modem {
+            mode,
+            audio_in,
+            audio_out,
+            in_channel,
+            out_channel,
+            ptt,
+            txdelay,
+            txtail,
+            tx_gain,
+            host,
+            port,
+            record,
+            quiet,
+        } => {
             let ptt = ptt.parse().unwrap_or_else(|m: String| die(&m));
             let cfg = vardefm_tnc::radio::RadioConfig {
                 mode,

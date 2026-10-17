@@ -7,7 +7,10 @@
 pub enum Command {
     MyCall(Vec<String>),
     Listen(bool),
-    Connect { source: String, target: String },
+    Connect {
+        source: String,
+        target: String,
+    },
     Disconnect,
     Abort,
     Version,
@@ -16,6 +19,7 @@ pub enum Command {
 }
 
 /// Parse one command line. `Err` means the modem answers `WRONG`.
+#[allow(clippy::result_unit_err)]
 pub fn parse(line: &str) -> Result<Command, ()> {
     let words: Vec<&str> = line.split_whitespace().collect();
     let Some(first) = words.first() else { return Err(()) };
@@ -90,7 +94,9 @@ mod tests {
         for ok in ["PUBLIC ON", "COMPRESSION TEXT", "CHAT OFF", "CWID ON", "BW2300", "P2P SESSION", "WINLINK SESSION"] {
             assert_eq!(parse(ok), Ok(Command::Ignored), "{ok}");
         }
-        for bad in ["", "FOO", "LISTEN", "LISTEN MAYBE", "CONNECT LA1ABC", "CONNECT A B via C", "MYCALL X", "MYCALL LA1ABC-0"] {
+        for bad in
+            ["", "FOO", "LISTEN", "LISTEN MAYBE", "CONNECT LA1ABC", "CONNECT A B via C", "MYCALL X", "MYCALL LA1ABC-0"]
+        {
             assert_eq!(parse(bad), Err(()), "{bad}");
         }
     }

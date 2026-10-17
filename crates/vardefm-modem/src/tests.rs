@@ -79,7 +79,8 @@ fn decodes_through_noisy_radio() {
     for (mode, level, cnr) in [("narrow", 1, 12.0), ("narrow", 4, 22.0), ("wide", 1, 18.0), ("wide", 4, 30.0)] {
         let m = modem(mode);
         let b = burst(level, m.max_ncw(level).min(6), 7);
-        let cfg = FmChannelConfig { cnr_db: Some(cnr), clock_offset_ppm: 70.0, ..FmChannelConfig::by_name(mode).unwrap() };
+        let cfg =
+            FmChannelConfig { cnr_db: Some(cnr), clock_offset_ppm: 70.0, ..FmChannelConfig::by_name(mode).unwrap() };
         let rx_audio = transmit(&cfg, &m.modulate(&b));
         let got = receive(&mut Receiver::new(m.clone()), &rx_audio);
         assert_eq!(got.len(), 1, "{mode} level {level}");

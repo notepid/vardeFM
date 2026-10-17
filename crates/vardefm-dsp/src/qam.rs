@@ -82,9 +82,7 @@ impl Modulation {
 
     /// Map a bit stream (length must be a multiple of bits_per_symbol).
     pub fn map_all(self, bits: &[u8]) -> Vec<Complex32> {
-        bits.chunks_exact(self.bits_per_symbol())
-            .map(|c| self.map(c))
-            .collect()
+        bits.chunks_exact(self.bits_per_symbol()).map(|c| self.map(c)).collect()
     }
 
     /// Max-log LLRs (positive means bit 0) for one received symbol.

@@ -41,12 +41,8 @@ pub fn decode_all(ofdm: &Ofdm, rx: &[f32], nsym: usize) -> Vec<(usize, Frame)> {
 
 /// Write mono audio as a 16-bit WAV file.
 pub fn write_wav(path: impl AsRef<Path>, fs: u32, samples: &[f32]) -> Result<(), hound::Error> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: fs,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
+    let spec =
+        hound::WavSpec { channels: 1, sample_rate: fs, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
     let mut w = hound::WavWriter::create(path, spec)?;
     for &v in samples {
         w.write_sample((v.clamp(-1.0, 1.0) * 32767.0) as i16)?;

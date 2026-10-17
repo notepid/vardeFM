@@ -95,12 +95,7 @@ impl Receiver {
                 return Some(true);
             };
             let payload = m.decode_payload(&h, &frame.symbols[hdr_syms..], &frame.noise_var);
-            out.push(RxBurst {
-                header: h,
-                payload,
-                snr_db: frame.snr_db,
-                end_sample: self.base + frame.end as u64,
-            });
+            out.push(RxBurst { header: h, payload, snr_db: frame.snr_db, end_sample: self.base + frame.end as u64 });
             self.search = frame.end.min(self.buf.len());
             return Some(true);
         }

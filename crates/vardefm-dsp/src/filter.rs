@@ -17,35 +17,21 @@ pub struct Biquad {
 
 impl Biquad {
     fn from_coeffs(b: [f32; 3], a: [f32; 3]) -> Self {
-        Self {
-            b0: b[0] / a[0],
-            b1: b[1] / a[0],
-            b2: b[2] / a[0],
-            a1: a[1] / a[0],
-            a2: a[2] / a[0],
-            z1: 0.0,
-            z2: 0.0,
-        }
+        Self { b0: b[0] / a[0], b1: b[1] / a[0], b2: b[2] / a[0], a1: a[1] / a[0], a2: a[2] / a[0], z1: 0.0, z2: 0.0 }
     }
 
     pub fn lowpass(fs: f32, f0: f32, q: f32) -> Self {
         let w0 = 2.0 * PI * f0 / fs;
         let (s, c) = w0.sin_cos();
         let alpha = s / (2.0 * q);
-        Self::from_coeffs(
-            [(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0],
-            [1.0 + alpha, -2.0 * c, 1.0 - alpha],
-        )
+        Self::from_coeffs([(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha])
     }
 
     pub fn highpass(fs: f32, f0: f32, q: f32) -> Self {
         let w0 = 2.0 * PI * f0 / fs;
         let (s, c) = w0.sin_cos();
         let alpha = s / (2.0 * q);
-        Self::from_coeffs(
-            [(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0],
-            [1.0 + alpha, -2.0 * c, 1.0 - alpha],
-        )
+        Self::from_coeffs([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha])
     }
 
     #[inline]
@@ -125,12 +111,7 @@ impl FirstOrder {
     pub fn from_analog(fs: f32, n0: f32, n1: f32, d0: f32, d1: f32) -> Self {
         let k = 2.0 * fs;
         let a0 = d0 + d1 * k;
-        Self {
-            b0: (n0 + n1 * k) / a0,
-            b1: (n0 - n1 * k) / a0,
-            a1: (d0 - d1 * k) / a0,
-            z: 0.0,
-        }
+        Self { b0: (n0 + n1 * k) / a0, b1: (n0 - n1 * k) / a0, a1: (d0 - d1 * k) / a0, z: 0.0 }
     }
 
     /// FM pre-emphasis with time constant `tau` (e.g. 750 us), unity gain at 1 kHz.
@@ -163,11 +144,7 @@ pub fn design_lowpass_fir(ntaps: usize, cutoff_hz: f32, fs: f32) -> Vec<f32> {
     let mut h: Vec<f32> = (0..ntaps)
         .map(|n| {
             let x = n as f32 - m / 2.0;
-            let sinc = if x == 0.0 {
-                2.0 * fc
-            } else {
-                (2.0 * PI * fc * x).sin() / (PI * x)
-            };
+            let sinc = if x == 0.0 { 2.0 * fc } else { (2.0 * PI * fc * x).sin() / (PI * x) };
             let w = 0.42 - 0.5 * (2.0 * PI * n as f32 / m).cos() + 0.08 * (4.0 * PI * n as f32 / m).cos();
             sinc * w
         })

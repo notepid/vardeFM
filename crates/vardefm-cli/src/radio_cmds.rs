@@ -72,13 +72,17 @@ pub fn tone(audio_out: Option<&str>, channel: Channel, spec: &str, freq: f32, le
     let stop = stop_flag();
     let mut ptt = vardefm_ptt::open(&spec).map_err(e)?;
     let mut out = open_output(audio_out, channel).map_err(e)?;
-    println!("Tone {freq} Hz at {:.1} dBFS on '{}' for {seconds} s, PTT {}", 20.0 * level.log10(), out.name, ptt.describe());
+    println!(
+        "Tone {freq} Hz at {:.1} dBFS on '{}' for {seconds} s, PTT {}",
+        20.0 * level.log10(),
+        out.name,
+        ptt.describe()
+    );
     println!("Set the sound card or radio level so this tone gives full FM deviation:");
     println!("about 2.5 kHz on the mic input (narrow) or 3 kHz on the data port (wide).");
     let n = (seconds * RATE as f32) as usize;
-    let audio: Vec<f32> = (0..n)
-        .map(|i| level * (2.0 * std::f32::consts::PI * freq * i as f32 / RATE as f32).sin())
-        .collect();
+    let audio: Vec<f32> =
+        (0..n).map(|i| level * (2.0 * std::f32::consts::PI * freq * i as f32 / RATE as f32).sin()).collect();
     ptt.set(true).map_err(e)?;
     let end = out.play(&audio);
     while out.consumed() < end && !stop.load(Ordering::Relaxed) {
