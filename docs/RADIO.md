@@ -21,7 +21,9 @@ CM108-family devices are recognised by USB ID: C-Media `0d8c:0008`–`000f`,
 Dire Wolf's `cm108.c` by WB2OSZ.
 
 **Linux:** HID devices are root-only by default. Allow your user (in group
-`audio`) to use them, then unplug and re-plug the interface:
+`audio`) to use them, then unplug and re-plug the interface. The release archives
+include this file as `99-vardefm-cm108.rules`; copy it to `/etc/udev/rules.d/` and
+run `sudo udevadm control --reload-rules`:
 
 ```
 # /etc/udev/rules.d/99-vardefm-cm108.rules

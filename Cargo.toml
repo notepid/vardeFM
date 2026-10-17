@@ -6,7 +6,7 @@ members = ["crates/vardefm-dsp", "crates/vardefm-fec", "crates/vardefm-modem", "
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/your-callsign/vardefm"
+repository = "https://github.com/notepid/vardeFM"
 
 [workspace.dependencies]
 num-complex = "0.4"
@@ -32,3 +32,11 @@ debug = 1
 
 [profile.dev]
 opt-level = 2
+
+# Release binaries (GitHub Actions): slower to build, faster to run, which matters on a Pi.
+[profile.dist]
+inherits = "release"
+debug = 0
+strip = true
+lto = true
+codegen-units = 1

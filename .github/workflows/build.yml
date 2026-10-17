@@ -1,0 +1,102 @@
+# Builds the release archives for every platform. Called by ci.yml (snapshot
+# builds on every push) and release.yml (tagged releases).
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version in the archive names, e.g. 0.2.0
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows_amd64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # Ubuntu 22.04 (glibc 2.35): runs on Debian 12 / Raspberry Pi OS Bookworm and newer.
+          - name: linux_amd64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          # 64-bit Raspberry Pi OS (Pi 3, 4, 5, Zero 2 W), built natively on an ARM runner.
+          - name: linux_arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          # 32-bit Raspberry Pi OS (Pi 2, 3, 4, Zero 2 W). Every armv7 Pi has NEON.
+          - name: linux_armv7
+            os: ubuntu-22.04-arm
+            target: armv7-unknown-linux-gnueabihf
+            armhf: true
+            rustflags: -C target-feature=+neon
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-${{ matrix.target }}
+
+      - name: Install ALSA headers
+        if: runner.os == 'Linux' && !matrix.armhf
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - name: Install armhf cross compiler and ALSA
+        if: matrix.armhf
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross libasound2-dev:armhf pkg-config
+          {
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --profile dist --locked --target ${{ matrix.target }} -p vardefm-cli
+
+      - name: Package
+        shell: bash
+        run: |
+          dir="vardefm_${{ inputs.version }}_${{ matrix.name }}"
+          mkdir -p "dist/$dir/docs"
+          cp LICENSE README.md "dist/$dir/"
+          cp docs/*.md "dist/$dir/docs/"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "../target/${{ matrix.target }}/dist/vardefm.exe" "$dir/"
+            7z a -tzip "$dir.zip" "$dir" > /dev/null
+          else
+            cp "../target/${{ matrix.target }}/dist/vardefm" "$dir/"
+            cp ../packaging/linux/*.rules "$dir/"
+            tar czf "$dir.tar.gz" "$dir"
+          fi
+          ls -l
+
+      - name: Smoke test
+        if: '!matrix.armhf'
+        shell: bash
+        run: |
+          ./dist/vardefm_*/vardefm --version
+          ./dist/vardefm_*/vardefm --help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vardefm_${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7

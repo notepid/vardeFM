@@ -1,0 +1,6 @@
+# Lets members of group "audio" key CM108/CM119/SSS/AIOC PTT without root.
+# Install:  sudo cp 99-vardefm-cm108.rules /etc/udev/rules.d/
+#           sudo udevadm control --reload-rules   (then unplug and re-plug the interface)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c76", GROUP="audio", MODE="0660"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", GROUP="audio", MODE="0660"

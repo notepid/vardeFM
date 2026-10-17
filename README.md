@@ -1,5 +1,7 @@
 # VardeFM
 
+[![CI](https://github.com/notepid/vardeFM/actions/workflows/ci.yml/badge.svg)](https://github.com/notepid/vardeFM/actions/workflows/ci.yml)
+
 An open-source, cross-platform high-speed data modem for FM radios. It aims to be a
 drop-in alternative to VARA FM for Winlink and similar apps.
 
@@ -28,6 +30,23 @@ not yet tested on the air. See [docs/RADIO.md](docs/RADIO.md) to set up a radio.
 | 6. Sound card, PTT (CM108/CM119, RTS/DTR, rigctld, VOX) | built; on-air testing next |
 | 7. Raspberry Pi + packaging | |
 
+## Download
+
+Prebuilt binaries are on the [releases page](https://github.com/notepid/vardeFM/releases):
+
+| File | For |
+|---|---|
+| `vardefm_<version>_windows_amd64.zip` | Windows 10/11, 64-bit |
+| `vardefm_<version>_linux_amd64.tar.gz` | Linux PC, 64-bit (Debian 12 / Ubuntu 22.04 or newer) |
+| `vardefm_<version>_linux_arm64.tar.gz` | Raspberry Pi 3/4/5/Zero 2 W with 64-bit Raspberry Pi OS (Bookworm or newer) |
+| `vardefm_<version>_linux_armv7.tar.gz` | Raspberry Pi 2/3/4/Zero 2 W with 32-bit Raspberry Pi OS |
+
+The original Pi Zero and Pi 1 (ARMv6) are not supported. On Linux, install the included
+`99-vardefm-cm108.rules` for CM108 PTT (see [docs/RADIO.md](docs/RADIO.md)). Check `uname -m`
+on a Pi: `aarch64` needs the arm64 build, `armv7l` the armv7 build.
+
+To build from source: install Rust, plus `libasound2-dev` on Linux, then `cargo build --release`.
+
 ## Modes
 
 | Mode | Radio connection | Audio band | Net rate (7 speed levels) |
@@ -55,11 +74,16 @@ crates/vardefm-cli     `vardefm` command-line tool
 ## On a real radio
 
 ```powershell
-.	argeteleaseardefm devices                       # sound cards, CM108 PTT devices, serial ports
-.	argeteleaseardefm ptt-test --ptt cm108          # key the radio for 2 s
-.	argeteleaseardefm tone --ptt cm108              # 1 kHz tone to set deviation
-.	argeteleaseardefm monitor --audio-in "USB"      # receive level meter + burst decoder
-.	argeteleaseardefm modem --audio-in "USB" --audio-out "USB" --ptt cm108
+.	arget
+eleaseardefm devices                       # sound cards, CM108 PTT devices, serial ports
+.	arget
+eleaseardefm ptt-test --ptt cm108          # key the radio for 2 s
+.	arget
+eleaseardefm tone --ptt cm108              # 1 kHz tone to set deviation
+.	arget
+eleaseardefm monitor --audio-in "USB"      # receive level meter + burst decoder
+.	arget
+eleaseardefm modem --audio-in "USB" --audio-out "USB" --ptt cm108
 ```
 
 The full procedure is in [docs/RADIO.md](docs/RADIO.md). PTT methods: `cm108[:<gpio>][@<path>]`,
@@ -147,6 +171,20 @@ cargo test --release -p vardefm-modem level_table -- --ignored --nocapture   # l
 cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture       # LDPC curves
 ```
 
+## Releases (maintainers)
+
+GitHub Actions runs formatting, clippy and the tests on Windows, Linux x86-64 and Linux ARM
+for every push and pull request, and builds all release archives (kept 7 days as workflow
+artifacts). To publish a release:
+
+1. Set `version` in the root `Cargo.toml` (e.g. `0.2.0`), run `cargo build` to update
+   `Cargo.lock`, and commit.
+2. Tag and push: `git tag v0.2.0; git push origin master v0.2.0`.
+
+The release workflow checks that the tag matches `Cargo.toml`, runs the tests, builds the
+four archives plus `checksums.txt`, and publishes the release with notes generated from the
+commits. A tag with a suffix such as `v0.2.0-rc1` becomes a pre-release.
+
 ## License
 
-GPL-3.0-or-later.
+GPL-3.0-or-later; see [LICENSE](LICENSE).
