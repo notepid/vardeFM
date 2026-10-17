@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
 use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
 use vardefm_sim::{transmit, FmChannelConfig};
+use vardefm_tnc::simpair::{SimPair, SimPairConfig};
 
 #[derive(Parser)]
 #[command(name = "vardefm", about = "VardeFM modem test tool")]
@@ -93,6 +94,43 @@ enum Cmd {
         modem: ModemArgs,
         #[arg(long = "in")]
         input: String,
+    },
+    /// Two VardeFM modems (A and B) joined by a simulated FM link, each with its
+    /// own VARA-compatible TCP ports. Runs until stopped with Ctrl-C.
+    SimPair {
+        /// narrow (mic/speaker) or wide (9600 data port)
+        #[arg(long, default_value = "narrow")]
+        mode: String,
+        /// Carrier-to-noise ratio in dB (omit for no noise)
+        #[arg(long)]
+        cnr: Option<f32>,
+        /// Receiver sound-card clock error in ppm (both directions)
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        ppm: f32,
+        /// Radio key-up time, seconds
+        #[arg(long, default_value_t = 0.05)]
+        keyup: f32,
+        /// Leader before each burst, seconds (must exceed --keyup)
+        #[arg(long, default_value_t = 0.1)]
+        txdelay: f32,
+        /// Random seed for the channel noise
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Simulated seconds per real second (0 = as fast as possible)
+        #[arg(long, default_value_t = 1.0)]
+        speed: f64,
+        /// Address to listen on
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Command port of station A (data port = +1)
+        #[arg(long, default_value_t = 8300)]
+        a_port: u16,
+        /// Command port of station B (data port = +1)
+        #[arg(long, default_value_t = 8310)]
+        b_port: u16,
+        /// Save every transmission as NNNN_<A|B>_tx.wav / _rx.wav in this folder
+        #[arg(long)]
+        record: Option<String>,
     },
 }
 
@@ -207,6 +245,39 @@ fn main() {
             }
             write_wav(&out, ofdm.p.fs as u32, &audio).unwrap_or_else(|e| die(&e.to_string()));
             println!("wrote {frames} frames to {out}");
+        }
+        Cmd::SimPair { mode, cnr, ppm, keyup, txdelay, seed, speed, host, a_port, b_port, record } => {
+            if keyup >= txdelay {
+                die("--txdelay must be longer than --keyup");
+            }
+            let cfg = SimPairConfig {
+                mode,
+                cnr_db: cnr,
+                ppm,
+                keyup_s: keyup,
+                txdelay_s: txdelay,
+                seed,
+                speed,
+                host,
+                a_port,
+                b_port,
+                record: record.map(Into::into),
+                verbose: true,
+            };
+            let sp = SimPair::start(cfg.clone()).unwrap_or_else(|e| die(&e.to_string()));
+            println!(
+                "sim-pair: {} mode, CNR {}, {} ppm, key-up {} s, speed {}x",
+                cfg.mode,
+                cnr.map_or("none".into(), |c| format!("{c} dB")),
+                ppm,
+                keyup,
+                speed
+            );
+            for (name, (c, d)) in ["A", "B"].iter().zip(sp.addrs) {
+                println!("  station {name}: command {c}, data {d}");
+            }
+            println!("Ctrl-C to stop.");
+            sp.wait();
         }
         Cmd::RxWav { modem, input } => {
             let (ofdm, m) = modem.build();

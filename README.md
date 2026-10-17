@@ -8,55 +8,88 @@ mountaintop to mountaintop.
 
 - **Open:** the waveform and protocol are documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - **Cross-platform:** written in Rust. Targets Linux, Windows, macOS and Raspberry Pi.
-- **App compatible (planned):** VardeFM will offer the same TCP command/data interface as VARA,
-  so Winlink Express, Pat and other VARA clients can use it unchanged.
+- **App compatible:** VardeFM offers VARA's TCP command/data interface, so VARA clients
+  such as Pat and Winlink Express can talk to it. See "Host interface" in the protocol
+  document for the differences from VARA.
 - **Not on-air compatible with VARA:** both stations need VardeFM.
 
 ## Status
 
-Early development. Done so far:
+Works end to end in simulation; not yet tested on real radios.
 
 | Milestone | State |
 |---|---|
 | 1. Workspace, FM channel simulator, WAV tools | done (VARA baseline measurement still to do) |
-| 2. OFDM PHY (sync, equalization, tracking) | working in simulation |
-| 3. LDPC FEC + speed levels | next |
-| 4. ARQ link layer | |
-| 5. VARA-compatible TCP API | |
-| 6. On-air testing | |
+| 2. OFDM PHY (sync, equalization, tracking) | done |
+| 3. LDPC FEC + speed levels | done |
+| 4. ARQ link layer | done |
+| 5. VARA-compatible TCP interface + `sim-pair` | done |
+| 6. Sound card, PTT, on-air testing | next |
 | 7. Raspberry Pi + packaging | |
 
 ## Modes
 
-| Mode | Radio connection | Audio band | Raw rate (BPSK → 64QAM) |
+| Mode | Radio connection | Audio band | Net rate (7 speed levels) |
 |---|---|---|---|
-| narrow | mic/speaker, any FM radio | ~420–2670 Hz | 1.6 – 9.5 kbit/s |
-| wide | 9600 data port (flat audio) | ~280–6000 Hz | 4.0 – 23.8 kbit/s |
+| narrow | mic/speaker, any FM radio | ~420–2670 Hz | 0.7 – 7.4 kbit/s |
+| wide | 9600 data port (flat audio) | ~280–6000 Hz | 1.9 – 18.7 kbit/s |
 
-Raw rate is before error correction and protocol overhead.
+Net rate includes error correction and burst overhead. The link picks the speed level
+from the measured signal quality.
 
 ## Workspace
 
 ```
-crates/vardefm-dsp   OFDM modulator/demodulator, constellations, filters
-crates/vardefm-sim   FM radio channel simulator
-crates/vardefm-cli   `vardefm` test tool
+crates/vardefm-dsp     OFDM modulator/demodulator, constellations, filters
+crates/vardefm-fec     LDPC codes, CRCs, scrambling, interleaving
+crates/vardefm-modem   bursts: header, speed levels, coded payload, streaming receiver
+crates/vardefm-link    ARQ link layer (connect, reliable byte stream, disconnect)
+crates/vardefm-sim     FM radio channel simulator
+crates/vardefm-tnc     VARA-compatible TCP interface, station logic, sim-pair
+crates/vardefm-cli     `vardefm` command-line tool
 ```
 
-## Trying it
+## Virtual radio pair (`sim-pair`)
 
-```sh
+Two VardeFM modems in one process, joined by the FM channel simulator. Each has its own
+VARA TCP ports, so two host applications (Pat, a BBS, your own code) can connect to each
+other with no radios.
+
+```powershell
 cargo build --release
+# Station A on 8300/8301, station B on 8310/8311, narrow mode, 18 dB CNR, 40 ppm clock error
+.\target\release\vardefm sim-pair --cnr 18 --ppm -40 --record wavs
+```
 
+| Option | Meaning |
+|---|---|
+| `--mode narrow\|wide` | mic/speaker audio or 9600 data port |
+| `--cnr <dB>` | carrier-to-noise ratio (omit for no noise) |
+| `--ppm <n>` | sound-card clock error |
+| `--keyup <s>`, `--txdelay <s>` | radio key-up time and the modem's leader (must be longer) |
+| `--a-port`, `--b-port` | command ports (data = +1); defaults 8300 and 8310 |
+| `--speed <x>` | run x times faster than real time (0 = as fast as possible) |
+| `--record <dir>` | save each transmission as `NNNN_<A\|B>_tx.wav` and `_rx.wav` |
+| `--seed <n>` | noise seed |
+
+It prints one line per transmission and per reception:
+```
+   20.97s B->A Data       64QAM 2/3 cw  7  1338 B (resent    0) retry 0 air 2.09 s
+   23.08s A rx Data       cw  7/7  SNR  17.6 dB
+```
+
+## Measuring the modem
+
+```powershell
 # Frames through a simulated FM link at 12 dB carrier-to-noise, 80 ppm clock error
-./target/release/vardefm sim --mode narrow --mod qpsk --cnr 12 --ppm 80
+.\target\release\vardefm sim --mode narrow --mod qpsk --cnr 12 --ppm 80
 
-# Bit-error table over signal level for every modulation
-./target/release/vardefm sweep --mode wide
+# Bit-error table over signal level for every modulation (uncoded)
+.\target\release\vardefm sweep --mode wide
 
 # Over real radios: play test.wav into one radio, record the other at 48 kHz, decode
-./target/release/vardefm tx-wav --mode narrow --mod qpsk --out test.wav
-./target/release/vardefm rx-wav --mode narrow --mod qpsk --in recording.wav
+.\target\release\vardefm tx-wav --mode narrow --mod qpsk --out test.wav
+.\target\release\vardefm rx-wav --mode narrow --mod qpsk --in recording.wav
 ```
 
 Useful options: `--txdelay` (leader length; it must exceed the radio's key-up time),
@@ -68,17 +101,16 @@ Useful options: `--txdelay` (leader length; it must exceed the radio's key-up ti
 cargo test
 ```
 
-`crates/vardefm-cli/tests/audio.rs` generates modem audio and decodes it. It covers:
-- direct loopback
-- level and polarity changes
-- 16-bit WAV round trips
-- false alarms on noise and tones
-- clean and noisy simulated radio links
-- clock offset
-- radio key-up time
-- many frames in one long recording
+- `crates/vardefm-cli/tests/audio.rs`: generates modem audio and decodes it: direct
+  loopback, level and polarity changes, WAV round trips, false alarms, noisy simulated
+  links, clock offset, key-up time, many frames in one recording.
+- `crates/vardefm-link/src/tests.rs`: the ARQ link over a fake lossy channel.
+- `crates/vardefm-tnc/tests/simpair.rs`: end to end. Two host clients talk over the VARA
+  TCP interface through `sim-pair` and transfer 10 kB each way at several signal levels.
+  Set `VARDEFM_SIM_VERBOSE=1` to print every transmission.
 
-To keep the audio from each test as WAV files (a relative folder is created in the repo root):
+To keep the audio from the `audio` tests as WAV files (a relative folder is created in the
+repo root):
 
 ```powershell
 # Windows PowerShell
@@ -88,6 +120,12 @@ $env:VARDEFM_TEST_WAV_DIR = "wavs"; cargo test --test audio; Remove-Item Env:VAR
 ```sh
 # Linux / macOS / Git Bash
 VARDEFM_TEST_WAV_DIR=wavs cargo test --test audio
+```
+
+Benchmarks (ignored by default; run in release mode):
+```sh
+cargo test --release -p vardefm-modem level_table -- --ignored --nocapture   # level vs CNR
+cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture       # LDPC curves
 ```
 
 ## License

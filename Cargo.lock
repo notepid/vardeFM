@@ -340,6 +340,7 @@ dependencies = [
  "num-complex",
  "vardefm-dsp",
  "vardefm-sim",
+ "vardefm-tnc",
 ]
 
 [[package]]
@@ -387,6 +388,13 @@ dependencies = [
 [[package]]
 name = "vardefm-tnc"
 version = "0.1.0"
+dependencies = [
+ "hound",
+ "vardefm-dsp",
+ "vardefm-link",
+ "vardefm-modem",
+ "vardefm-sim",
+]
 
 [[package]]
 name = "wasi"

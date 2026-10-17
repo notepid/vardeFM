@@ -1,8 +1,9 @@
 # VardeFM Protocol Specification
 
-**Status: draft v0.** Everything here may change until v1.0. Only the physical layer
-exists so far. Error correction, framing, ARQ and the host interface will be added as
-they are built.
+**Status: draft v0.** Everything here may change until v1.0.
+
+Contents: 1. Physical layer · 2. Bursts and error correction · 3. Link layer ·
+4. Host interface (VARA-compatible TCP).
 
 ## 1. Physical layer
 
@@ -55,6 +56,7 @@ output bit is the most significant bit of the new state; bit 0 maps to +1, bit 1
 Gray-coded, unit average power. BPSK uses the I axis only. For square QAM, the first half
 of each symbol's bits selects the I level and the second half the Q level, MSB first. The
 Gray word *g* maps to level index *i* = gray⁻¹(*g*), amplitude `(2i − (L−1)) · scale`.
+So BPSK maps bit 0 to −1 and bit 1 to +1.
 
 ### 1.5 Receiver (informative)
 The reference receiver:
@@ -67,3 +69,169 @@ The reference receiver:
 
 Because the window never moves, a frame should stay shorter than
 `ncp / 2 / (clock error)`. At 100 ppm that is 13 s (narrow) or 6.7 s (wide).
+
+## 2. Bursts and error correction
+
+### 2.1 Burst layout
+One transmission is one burst, sent as one OFDM frame (section 1.3):
+```
+[leader][preamble A][preamble B][header: 400 coded bits, BPSK][payload: ncw × 2400 coded bits]
+```
+The header fills 10 symbols in narrow mode (40 data carriers) and 8 in wide mode (50).
+The payload uses the header's speed level for every codeword. A burst carries at most
+24 codewords and at most 4.0 s of payload, so clock drift stays inside the cyclic prefix
+(section 1.5).
+
+### 2.2 Speed levels
+Every payload codeword is 2400 bits. *k* is the LDPC information length; each codeword
+carries `k/8 − 4` data bytes followed by a big-endian CRC-32.
+
+| Level | Modulation | Code rate | k | Bytes/codeword | Net rate narrow | Net rate wide |
+|---|---|---|---|---|---|---|
+| 0 | BPSK | 1/2 | 1200 | 146 | 0.7 kbit/s | 1.9 kbit/s |
+| 1 | QPSK | 1/2 | 1200 | 146 | 1.5 kbit/s | 3.8 kbit/s |
+| 2 | QPSK | 3/4 | 1800 | 221 | 2.2 kbit/s | 5.8 kbit/s |
+| 3 | 16QAM | 1/2 | 1200 | 146 | 2.9 kbit/s | 7.6 kbit/s |
+| 4 | 16QAM | 3/4 | 1800 | 221 | 4.5 kbit/s | 11.5 kbit/s |
+| 5 | 64QAM | 2/3 | 1600 | 196 | 5.9 kbit/s | 14.9 kbit/s |
+| 6 | 64QAM | 5/6 | 2000 | 246 | 7.4 kbit/s | 18.7 kbit/s |
+
+Net rate = data bytes of a full burst ÷ its airtime (leader, preambles and header
+included), before link-layer overhead. In the FM channel simulator, level 6 decodes
+error-free from about 20 dB carrier-to-noise in narrow mode and 28 dB in wide mode.
+Level 1 decodes from 8 dB (narrow) and 12 dB (wide).
+
+### 2.3 Header (96 bits before coding)
+80 bits of fields, MSB first, then a CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over
+the 10 field bytes.
+
+| Bits | Field |
+|---|---|
+| 3 | kind: 0 ConnectReq, 1 ConnectAck, 2 Data, 3 Disc, 4 DiscAck |
+| 8 | session id (random, chosen by the caller) |
+| 3 | payload speed level |
+| 5 | ncw: payload codewords (0–24) |
+| 3 | req_level: level the sender asks the peer to use next |
+| 3 | burst_id: sender's burst counter, mod 8 |
+| 3 | ack_burst: burst_id of the peer burst being acknowledged |
+| 24 | ack_offset: next byte offset expected from the peer, mod 2²⁴ |
+| 24 | bitmap: bit *i* (LSB = codeword 0) set if codeword *i* of burst `ack_burst` decoded |
+| 4 | flags: bit 0 = POLL (the peer must answer) |
+
+### 2.4 LDPC codes
+Systematic IRA codes: `H = [Hu | Hp]`, where `Hp` is a staircase (check *i* holds parity
+bits *i* and *i−1*). Encoding is a running XOR: `p_i = p_{i−1} ⊕ (Hu row i · u)`. The
+codeword is the information bits followed by the parity bits. `Hu` comes from
+`Ldpc::new(n, k, seed)` (crates/vardefm-fec/src/ldpc.rs):
+1. `m = n − k`; `dv = max(3, ceil(3m/k))`, capped at `m`.
+2. Socket list `s[e] = e mod m` for `e < k·dv`, shuffled by Fisher-Yates driven by
+   xorshift32(seed): `j = next() mod (i+1)` for `i` from `k·dv−1` down to 1.
+3. Information bit *j* joins checks `s[j·dv … j·dv+dv−1]`. Repeated checks within one
+   column are removed by random swaps with the same generator (see code).
+
+| Code | n | k | Seed |
+|---|---|---|---|
+| Header | 400 | 96 | 0x1D9C1000 |
+| Payload | 2400 | 1200 / 1600 / 1800 / 2000 | 0x1D9C0000 + k |
+
+The reference decoder is layered normalized min-sum (α = 0.75, 50 iterations).
+
+### 2.5 Scrambling and interleaving
+- Information bits are XORed with xorshift32 bits before encoding. The seed is
+  0x5C4AFFFF for the header and 0x5C4A0000 + codeword index for the payload.
+- Coded bits are permuted by Fisher-Yates over the whole header (seed 0x17E40002) or the
+  whole payload of the burst (all codewords together, seed 0x17E40001). Coded bit *j*
+  goes to slot `perm[j]`. Slots fill OFDM symbols in order, carrier by carrier, with
+  each carrier's constellation bits together.
+
+## 3. Link layer
+
+### 3.1 Sessions
+- **Connect:** the caller sends `ConnectReq` (level 0, one codeword) with payload
+  `"VFM1" | len | source call | len | destination call`, zero padded, and a random
+  non-zero session id. A station that has `LISTEN ON` and the destination among its
+  `MYCALL`s answers `ConnectAck` with the same payload and session id. The caller retries
+  5 times, then gives up and reports DISCONNECTED (about 17 s in narrow mode, 11 s in
+  wide).
+- **Turns:** the called station may send first right after `ConnectAck`; the caller
+  waits one response period for it.
+- Bursts with a different session id are ignored.
+
+### 3.2 Data transfer
+- Each direction is a byte stream numbered by offset. A payload codeword carries one
+  segment: `offset mod 2²⁴ (3 bytes) | length (1 byte) | data | zero padding`.
+- **Acknowledgements:** every burst carries `ack_offset` and the bitmap for the peer's
+  last burst. The sender drops acknowledged bytes and resends the rest, re-split to fit
+  the current level. Data is delivered to the host in order, exactly once.
+- **Turn-taking:** a station that receives a burst with data, or with POLL, answers after
+  0.2 s. The answer holds acks plus any data of its own. If neither side has data, the
+  link goes quiet. Either station may then start a burst once the channel has been clear
+  for a short random time.
+- **Rate adaptation:** `req_level` is the highest level whose SNR threshold plus 1 dB is
+  at or below the measured SNR. Thresholds: 3.5, 5, 7, 9.5, 12.5, 16.5, 20 dB. After a
+  failed codeword the request drops at least one level below the burst's level. Each
+  unanswered burst lowers our own level by one. The called station starts at the level
+  it measured on the connect request.
+- **Retries:** an unanswered burst is resent after 1.2 s (plus a random back-off, and
+  longer while the channel is busy). After 8 consecutive failures the link is lost.
+- **Keepalive:** a quiet link is probed with a POLL burst after 30 s (caller) or 45 s
+  (called station).
+
+### 3.3 Disconnect
+- **Graceful:** once all of its data is acknowledged, the closing station sends `Disc`;
+  the peer answers `DiscAck`. Both report DISCONNECTED. `Disc` is retried up to 4 times;
+  a station that already closed still answers a repeated `Disc`.
+- **ABORT:** the station sends one `Disc` without waiting and closes at once.
+
+No encryption is used, and there is no compression yet.
+
+## 4. Host interface
+
+VardeFM offers VARA's TCP interface. The command port (default 8300) carries ASCII lines
+ending in CR; LF is also accepted as a terminator. The data port (command port + 1)
+carries raw bytes. Each port takes one client; a new connection replaces the old one.
+Verified against EA5HVK's "VARA Protocol Native TNC Commands" (February 2022) and Pat's
+VARA driver (github.com/n8jja/Pat-Vara).
+
+### 4.1 Host → modem
+Each command gets `OK`, or `WRONG` if it is invalid.
+
+| Command | Behaviour |
+|---|---|
+| `MYCALL c1 [c2 … c5]` | Up to 5 call signs: 3–7 characters A–Z/0–9, optional SSID −1…−15, −T or −R. |
+| `LISTEN ON` / `LISTEN OFF` | Accept incoming connections or not. |
+| `CONNECT <mycall> <target>` | `WRONG` if a session is already active. |
+| `DISCONNECT` | Graceful: closes once everything queued is acknowledged. |
+| `ABORT` | Immediate close. |
+| `VERSION` | `OK`, then `VERSION VardeFM <version>`. |
+| `PUBLIC ON/OFF`, `COMPRESSION OFF/TEXT/FILES`, `CHAT ON/OFF`, `CWID ON/OFF`, `BW500/BW2300/BW2750`, `WINLINK SESSION`, `P2P SESSION` | Accepted (`OK`), no effect. |
+
+### 4.2 Modem → host
+| Line | When |
+|---|---|
+| `CONNECTED <source> <destination> NARROW` (or `WIDE`) | Session up. `source` is the calling station. |
+| `DISCONNECTED` | Session closed for any reason: DISCONNECT, ABORT, peer closed, link lost, or connect failed. |
+| `PENDING` | Called side: a connect request for us arrived (followed by `CONNECTED`). |
+| `CANCELPENDING` | Reserved; not sent yet. |
+| `BUFFER <n>` | Bytes queued and not yet acknowledged, sent whenever *n* changes (including `BUFFER 0`). |
+| `PTT ON` / `PTT OFF` | Transmitter keyed / released. |
+| `BUSY ON` / `BUSY OFF` | Channel activity heard (audio above the squelch threshold, or a frame being received). |
+| `IAMALIVE` | Every 60 s. |
+
+### 4.3 Data port
+While connected, bytes written are sent and received bytes are delivered. Any byte value
+is allowed. Bytes written while not connected are dropped. Data written after
+`DISCONNECT` is still sent, as in VARA, until the closing `Disc` goes out.
+
+### 4.4 Differences from VARA
+- `CONNECT … via <digis>` (VARA FM digipeating) is not supported (`WRONG`).
+- `CONNECTED` always ends with `NARROW` or `WIDE`, like VARA FM's bandwidth field
+  (the VARA document's example is `CONNECTED EA5HVK-7 EB1MS-3 WIDE`).
+- `LISTEN ON/OFF` does not drop an active session (VARA's document says it does).
+- After `ABORT`, `DISCONNECTED` is always sent (Pat notes that VARA sometimes omits it).
+- `DISCONNECT` or `ABORT` with no session gives `OK` and nothing else.
+- `VERSION` gets `OK` before the `VERSION …` line. Whether real VARA sends `OK` here is
+  unverified, so hosts should accept either.
+- If the command-port client disconnects, any session is aborted.
+- Not implemented: `CQFRAME`, `SN` reports, `REGISTERED`/`LINK REGISTERED`, encryption,
+  compression.

@@ -282,10 +282,11 @@ impl Link {
         }
     }
 
-    /// Bytes from the host's data port. Ignored when not connected.
+    /// Bytes from the host's data port. Ignored when not connected. Like VARA,
+    /// data written after DISCONNECT is still sent (until our Disc goes out).
     pub fn send_data(&mut self, data: &[u8]) {
         if let State::Connected(s) = &mut self.state {
-            if s.closing.is_none() {
+            if s.disc_tries == 0 {
                 s.tx_buf.extend(data);
             }
         }
@@ -382,7 +383,9 @@ impl Link {
         let Some(local) = self.mycalls.iter().find(|c| norm_call(c) == dst).cloned() else { return };
         self.events.push(LinkEvent::Pending);
         self.events.push(LinkEvent::Connected { source: src.clone(), destination: local.clone() });
-        let mut s = self.new_session(rx.header.session, local, src, false, now, req, rx.header.req_level);
+        // The caller has not heard us yet, so its requested level is just a default.
+        // Our own measurement of its request is a better guess (same radio path).
+        let mut s = self.new_session(rx.header.session, local, src, false, now, req, req);
         s.phase = Phase::Respond { at: now + self.cfg.turnaround_s, kind: Kind::ConnectAck, initiated: false };
         self.state = State::Connected(Box::new(s));
     }

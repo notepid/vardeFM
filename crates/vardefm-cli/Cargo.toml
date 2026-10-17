@@ -15,6 +15,7 @@ hound.workspace = true
 num-complex.workspace = true
 vardefm-dsp.workspace = true
 vardefm-sim.workspace = true
+vardefm-tnc.workspace = true
 
 [lib]
 name = "vardefm_cli"
