@@ -59,6 +59,28 @@ cargo build --release
 ./target/release/varde rx-wav --mode narrow --mod qpsk --in recording.wav
 ```
 
+## Tests
+
+```sh
+cargo test
+```
+
+`crates/varde-cli/tests/audio.rs` generates modem audio and decodes it. It covers:
+- direct loopback
+- level and polarity changes
+- 16-bit WAV round trips
+- false alarms on noise and tones
+- clean and noisy simulated radio links
+- clock offset
+- radio key-up time
+- many frames in one long recording
+
+To keep the audio from each test as WAV files:
+
+```sh
+VARDE_TEST_WAV_DIR=wavs cargo test --test audio
+```
+
 Useful options: `--txdelay` (leader length; it must exceed the radio's key-up time),
 `--tilt=<dB/oct>`, `--rms <level>`. Set `VARDE_DUMP=1` to print per-carrier SNR.
 

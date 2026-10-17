@@ -1,9 +1,8 @@
 //! `varde` — test and measurement tool for the Varde modem.
 
 use clap::{Parser, Subcommand};
-use num_complex::Complex32;
-use varde_dsp::prng::Prng;
 use varde_dsp::{Modulation, Ofdm, OfdmParams};
+use varde_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
 use varde_sim::{transmit, FmChannelConfig};
 
 #[derive(Parser)]
@@ -100,25 +99,6 @@ enum Cmd {
 fn die(msg: &str) -> ! {
     eprintln!("error: {msg}");
     std::process::exit(2)
-}
-
-/// Known test payload for frame number `f`.
-fn test_bits(ofdm: &Ofdm, m: Modulation, nsym: usize, f: usize) -> Vec<u8> {
-    Prng::new(1000 + f as u32).bits(nsym * ofdm.data_carriers() * m.bits_per_symbol())
-}
-
-fn make_frame(ofdm: &Ofdm, m: Modulation, bits: &[u8], txdelay: f32) -> Vec<f32> {
-    let syms = m.map_all(bits);
-    let data: Vec<Vec<Complex32>> = syms.chunks(ofdm.data_carriers()).map(|c| c.to_vec()).collect();
-    ofdm.modulate_with_leader(&data, txdelay)
-}
-
-fn count_errors(m: Modulation, frame: &varde_dsp::Frame, bits: &[u8]) -> usize {
-    let mut out = Vec::with_capacity(bits.len());
-    for s in frame.symbols.iter().flatten() {
-        m.hard_bits(*s, &mut out);
-    }
-    out.iter().zip(bits).filter(|(a, b)| a != b).count()
 }
 
 struct Stats {
@@ -219,58 +199,33 @@ fn main() {
         }
         Cmd::TxWav { modem, frames, out } => {
             let (ofdm, m) = modem.build();
-            let spec = hound::WavSpec {
-                channels: 1,
-                sample_rate: ofdm.p.fs as u32,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            };
-            let mut w = hound::WavWriter::create(&out, spec).unwrap_or_else(|e| die(&e.to_string()));
             let gap = vec![0f32; (ofdm.p.fs * 0.5) as usize];
-            let mut write = |s: &[f32]| {
-                for &v in s {
-                    w.write_sample((v * 32767.0) as i16).unwrap();
-                }
-            };
-            write(&gap);
+            let mut audio = gap.clone();
             for f in 0..frames {
-                write(&make_frame(&ofdm, m, &test_bits(&ofdm, m, modem.symbols, f), modem.txdelay));
-                write(&gap);
+                audio.extend(make_frame(&ofdm, m, &test_bits(&ofdm, m, modem.symbols, f), modem.txdelay));
+                audio.extend_from_slice(&gap);
             }
+            write_wav(&out, ofdm.p.fs as u32, &audio).unwrap_or_else(|e| die(&e.to_string()));
             println!("wrote {frames} frames to {out}");
         }
         Cmd::RxWav { modem, input } => {
             let (ofdm, m) = modem.build();
-            let mut r = hound::WavReader::open(&input).unwrap_or_else(|e| die(&e.to_string()));
-            let spec = r.spec();
-            if spec.sample_rate != ofdm.p.fs as u32 {
+            let (fs, rx) = read_wav(&input).unwrap_or_else(|e| die(&e.to_string()));
+            if fs != ofdm.p.fs as u32 {
                 die("WAV must be 48 kHz");
             }
-            let ch = spec.channels as usize;
-            let samples: Vec<f32> = match spec.sample_format {
-                hound::SampleFormat::Int => {
-                    let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-                    r.samples::<i32>().map(|s| s.unwrap() as f32 / max).collect()
-                }
-                hound::SampleFormat::Float => r.samples::<f32>().map(|s| s.unwrap()).collect(),
-            };
-            let rx: Vec<f32> = samples.iter().step_by(ch).copied().collect();
-            let mut pos = 0;
-            let mut f = 0;
-            while let Some(b) = ofdm.detect(&rx, pos) {
-                let Some(frame) = ofdm.demodulate(&rx, b, modem.symbols) else { break };
+            let frames = decode_all(&ofdm, &rx, modem.symbols);
+            for (f, (b, frame)) in frames.iter().enumerate() {
                 let bits = test_bits(&ofdm, m, modem.symbols, f);
-                let e = count_errors(m, &frame, &bits);
+                let e = count_errors(m, frame, &bits);
                 println!(
                     "frame {f} at {:.2}s: BER {:.2e}  SNR {:.1} dB",
-                    b as f32 / ofdm.p.fs,
+                    *b as f32 / ofdm.p.fs,
                     e as f64 / bits.len() as f64,
                     frame.snr_db
                 );
-                pos = frame.end;
-                f += 1;
             }
-            println!("{f} frames decoded");
+            println!("{} frames decoded", frames.len());
         }
     }
 }
