@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/vardefm-dsp", "crates/vardefm-fec", "crates/vardefm-modem", "crates/vardefm-link", "crates/vardefm-sim", "crates/vardefm-tnc", "crates/vardefm-ptt", "crates/vardefm-audio", "crates/vardefm-cli"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/notepid/vardeFM"
