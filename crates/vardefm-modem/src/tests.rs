@@ -359,3 +359,21 @@ fn ctcss_tone_after_our_own_transmission_is_not_busy() {
         }
     }
 }
+
+/// Busy holds for a while after the last loud audio, but not across our own
+/// transmission: the channel is not busy when reception resumes just because it was
+/// busy shortly before we keyed up.
+#[test]
+fn a_busy_hold_does_not_outlast_our_own_transmission() {
+    let m = modem("narrow");
+    let mut rx = Receiver::new(m.clone());
+    rx.push(&vec![0.0; 48_000]);
+    for chunk in sine(993.0, 0.1, 4800, 0.0).chunks(480) {
+        rx.push(chunk);
+    }
+    rx.push(&vec![0.0; 4800]);
+    assert!(rx.busy(), "the hold runs 100 ms after the signal");
+    rx.reset();
+    rx.push(&vec![0.0; 48]);
+    assert!(!rx.busy(), "busy after our transmission");
+}

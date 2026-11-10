@@ -111,7 +111,11 @@ impl BusyDetector {
     /// DC offset), for at most `RETURN_BLOCKS`, nor for `SETTLE_BLOCKS` after it moves.
     /// A sound that moves less than `MIN_RMS` cannot read busy anyway. The filter
     /// keeps running: reset, it would click the same way when a tone comes back.
+    ///
+    /// A busy hold from before the transmission ends here: it bridges short pauses in
+    /// what we hear, and what we heard before we keyed up says nothing about now.
     pub fn resume(&mut self) {
+        self.quiet = usize::MAX / 2;
         (self.sum, self.sq, self.n) = (0.0, 0.0, 0);
         self.wait = RETURN_BLOCKS * self.block;
         self.muted = None;
