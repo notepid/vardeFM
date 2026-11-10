@@ -6,6 +6,17 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Changed
+- **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).
+  A CTCSS tone, mains hum, a DC step or hiss above the band no longer reads as a busy
+  channel, and no longer hides a signal inside the band. A keyed carrier with only a CTCSS
+  tone on it is not busy, which lets the modem work through a repeater's tail. Hosts see
+  fewer `BUSY ON` lines. (#7, thanks @mustig)
+- Busy detection ignores the first 20 ms of received audio after the modem's own
+  transmission. On a repeater that stays keyed with a CTCSS tone, the tone resumed out of
+  phase there, and the band filter read that as busy for 150 ms after every burst, which
+  held back the modem's next transmission.
+
 ## [0.3.1] - 2026-11-09
 
 On-air compatible with 0.3.0.
