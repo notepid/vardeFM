@@ -237,6 +237,18 @@ mod tests {
     }
 
     #[test]
+    fn a_non_finite_sample_does_not_make_it_deaf() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut d = narrow();
+            d.push(&vec![0.0; FS as usize]);
+            d.push(&[bad]);
+            d.push(&vec![0.0; FS as usize]);
+            d.push(&tone(0.3, 0.1));
+            assert!(d.busy(), "deaf after {bad}");
+        }
+    }
+
+    #[test]
     fn ctcss_tone_is_not_busy() {
         // The highest CTCSS tone at 750 Hz deviation on the wide data port.
         // It fades in over 20 ms: a tone that starts abruptly clicks across the band.

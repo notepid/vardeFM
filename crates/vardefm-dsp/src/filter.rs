@@ -34,9 +34,15 @@ impl Biquad {
         Self::from_coeffs([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha])
     }
 
+    /// A non-finite output (from a sound-card glitch, or overflow) clears the state and gives 0:
+    /// left in an IIR state it would make every later output NaN.
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z1;
+        if !y.is_finite() {
+            (self.z1, self.z2) = (0.0, 0.0);
+            return 0.0;
+        }
         self.z1 = self.b1 * x - self.a1 * y + self.z2;
         self.z2 = self.b2 * x - self.a2 * y;
         y
@@ -138,9 +144,14 @@ impl FirstOrder {
         Self::from_analog(fs, g, 0.0, 1.0, tau)
     }
 
+    /// A non-finite output clears the state and gives 0, as in [`Biquad::process`].
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z;
+        if !y.is_finite() {
+            self.z = 0.0;
+            return 0.0;
+        }
         self.z = self.b1 * x - self.a1 * y;
         y
     }
@@ -224,6 +235,19 @@ mod tests {
             let mut de = FirstOrder::deemphasis(fs, 750e-6);
             let g = tone_gain(&mut |x| de.process(pre.process(x)), freq, fs);
             assert!((g - 1.0).abs() < 0.15, "{freq} Hz gain {g}");
+        }
+    }
+
+    #[test]
+    fn filters_recover_from_non_finite_input() {
+        let fs = 48_000.0;
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bp = Chain::bandpass4(fs, 300.0, 3000.0);
+            assert_eq!(bp.process(bad), 0.0);
+            assert!(tone_gain(&mut |x| bp.process(x), 1000.0, fs) > 0.9, "biquads after {bad}");
+            let mut de = FirstOrder::deemphasis(fs, 750e-6);
+            assert_eq!(de.process(bad), 0.0);
+            assert!(tone_gain(&mut |x| de.process(x), 1000.0, fs) > 0.9, "first order after {bad}");
         }
     }
 
