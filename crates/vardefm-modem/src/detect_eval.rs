@@ -23,11 +23,13 @@
 //! The true position comes from the reference detector, not from the channel: the
 //! simulator's filters are IIR, so there is no single delay to add to the burst
 //! layout, and any point in the cyclic prefix that avoids the channel's tails is as
-//! valid. Each mode prints how far it lies from the transmitted boundary and from the
-//! delay where the sent and received audio correlate best. At the time of writing that
-//! is 31 and 11 samples in narrow mode, 9 and 6 in wide, so a detector that lands on
-//! the correlation delay in narrow mode is 20 samples from the true position, inside
-//! the ±32 of `hit` but not by much. Both `hit` and `genie` share that bias.
+//! valid. Each mode prints how many samples the true position lies after the sent
+//! boundary of preamble B, the channel delay (the lag at which the sent and received
+//! audio correlate best), and the difference. At the time of writing the true position
+//! is 31 samples after the boundary in narrow mode and the channel delay is 11, so a
+//! detector that lands on the boundary plus the channel delay is 20 samples from the
+//! true position, inside the ±32 of `hit` but not by much. In wide mode the figures are
+//! 9 and 6, 3 apart, against ±16. Both `hit` and `genie` share that bias.
 //!
 //! A separate pass counts detections and decoded headers per minute on audio that
 //! holds no burst (a carrier at -10 dB CNR, which sounds like an open squelch, a
@@ -381,11 +383,12 @@ fn detector_eval() {
         println!("\n{mode}: hits and decoded bursts out of {trials}; paired test against '{}'", names[0]);
         // The true position is the reference's own; show where it lies against the channel.
         let truth = true_position(&m, mode, level, ncw);
-        let layout = layout_position(&m, mode) as i64;
+        let after = truth as i64 - layout_position(&m, mode) as i64;
+        let delay = channel_delay(&m, mode, level, ncw) as i64;
         println!(
-            "  true position: sample {truth}, {} after the sent boundary, {} after the channel delay; hit within ±{}",
-            truth as i64 - layout,
-            truth as i64 - layout - channel_delay(&m, mode, level, ncw) as i64,
+            "  true position: sample {truth}, {after} after the sent boundary; channel delay {delay}, \
+             so {} after the boundary plus the delay; hit within ±{}",
+            after - delay,
             m.ofdm.p.ncp / 4
         );
         for cnr in cnr_list(mode) {
