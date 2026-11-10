@@ -306,4 +306,6 @@ mod tests;
 
 #[cfg(test)]
 mod busy_eval;
+
+#[cfg(test)]
 mod detect_eval;
