@@ -49,12 +49,26 @@ pub struct Receiver {
     pending: Option<(usize, Header)>,
     /// Whether something louder than the background is heard.
     detector: BusyDetector,
+    /// Test seam: the burst detector `step` searches with, so that the detector
+    /// evaluation can check its offline receiver against this one for every detector
+    /// it scores. Always `Ofdm::detect` outside tests.
+    #[cfg(test)]
+    pub(crate) detect: crate::detect_eval::DetectFn,
 }
 
 impl Receiver {
     pub fn new(modem: Arc<Modem>) -> Self {
         let detector = BusyDetector::new(&modem.ofdm.p);
-        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector }
+        Self {
+            modem,
+            buf: Vec::new(),
+            base: 0,
+            search: 0,
+            pending: None,
+            detector,
+            #[cfg(test)]
+            detect: |m, rx, from| m.ofdm.detect(rx, from),
+        }
     }
 
     /// Absolute index of the next sample to be pushed.
@@ -137,7 +151,11 @@ impl Receiver {
         }
 
         let l = m.ofdm.p.symbol_len();
-        match m.ofdm.detect(&self.buf, self.search) {
+        #[cfg(not(test))]
+        let found = m.ofdm.detect(&self.buf, self.search);
+        #[cfg(test)]
+        let found = (self.detect)(m, &self.buf, self.search);
+        match found {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
                     // Come back when the header has arrived; re-detect from just before it.

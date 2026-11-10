@@ -6,7 +6,8 @@
 //! - `burst`, the measure that counts: the whole burst (header and every codeword)
 //!   decoded by an offline equivalent of `Receiver::step`. It tries the header at each
 //!   detection in turn, searches on after one that fails, and keeps the first header
-//!   that decodes. A test checks it against the streaming `Receiver`;
+//!   that decodes. A test checks it against the streaming `Receiver` searching with
+//!   the same detector, for every detector here;
 //! - `hit`: the detector's first detection, whatever its header does, lies within
 //!   ±ncp/4 samples of the true position, which is where Schmidl-Cox's preamble-B fine
 //!   timing lands on a noiseless copy. A detector that always picks another point
@@ -412,42 +413,56 @@ fn mcnemar_matches_known_values() {
 
 /// `receive` must judge each recording the way the streaming `Receiver` does when
 /// it is fed the same audio in 10 ms chunks, including the recordings where the
-/// detector or the header fails. It uses `Ofdm::detect`, the call `Receiver` makes,
-/// whatever order `DETECTORS` is in.
+/// detector or the header fails. It runs for every entry of `DETECTORS`, with the
+/// receiver searching through the same detector (`Receiver::detect`): `receive`
+/// gives a detector the whole recording, the receiver a growing buffer it trims, and
+/// a detector that depends on how much audio it is given could score well here and
+/// differently in the receiver. Only the burst outcome is compared; `hit` and the
+/// false-detection pass are offline only.
 ///
 /// Each seed runs at three CNRs per mode. At the lowest even genie decodes nothing
 /// and at the highest every detector so far decodes almost everything, so both
-/// outcomes occur whatever the receiver's detector is, and `STREAM_SEEDS=1` works.
+/// outcomes occur whatever the detector is, and `STREAM_SEEDS=1` works.
 /// 12 seeds per mode by default.
 #[test]
 fn offline_receive_matches_the_streaming_receiver() {
-    const RECEIVER_DETECTOR: DetectFn = |m, rx, from| m.ofdm.detect(rx, from);
     let seeds: u64 = env_or("STREAM_SEEDS", 12);
     for (mode, cnrs) in [("narrow", [3.0, 5.0, 8.0]), ("wide", [5.0, 7.0, 10.0])] {
         let m = modem(mode);
         let sent = burst(1, 1, 7);
         let tx = m.modulate(&sent);
-        let (mut total, mut ok) = (0, 0);
+        let (mut total, mut ok) = (0, vec![0; DETECTORS.len()]);
         for seed in 0..seeds {
             for cnr in cnrs {
                 let cfg =
                     FmChannelConfig { cnr_db: Some(cnr), seed: 1000 + seed, ..FmChannelConfig::by_name(mode).unwrap() };
                 let mut rx = transmit(&cfg, &tx);
                 rx.extend(vec![0.0; m.fs() as usize]);
-                let mut receiver = Receiver::new(m.clone());
-                // 10 ms chunks, as a sound card delivers them.
-                let chunk = (m.fs() / 100.0) as usize;
-                let got: Vec<RxBurst> = rx.chunks(chunk).flat_map(|c| receiver.push(c)).collect();
-                let streamed = got.first().is_some_and(|g| {
-                    g.header == sent.header && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
-                });
-                let offline = receive(&m, RECEIVER_DETECTOR, &rx, &sent).ok;
-                assert_eq!(offline, streamed, "{mode} {cnr} dB seed {seed}: offline {offline}, streaming {streamed}");
+                for (d, (name, f)) in DETECTORS.iter().enumerate() {
+                    // Offline first: its progress check stops a detector that does not
+                    // move forward, which would hang the streaming receiver.
+                    let offline = receive(&m, *f, &rx, &sent).ok;
+                    let mut receiver = Receiver::new(m.clone());
+                    receiver.detect = *f;
+                    // 10 ms chunks, as a sound card delivers them.
+                    let chunk = (m.fs() / 100.0) as usize;
+                    let got: Vec<RxBurst> = rx.chunks(chunk).flat_map(|c| receiver.push(c)).collect();
+                    let streamed = got.first().is_some_and(|g| {
+                        g.header == sent.header
+                            && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
+                    });
+                    assert_eq!(
+                        offline, streamed,
+                        "{mode} {name} {cnr} dB seed {seed}: offline {offline}, streaming {streamed}"
+                    );
+                    ok[d] += streamed as u32;
+                }
                 total += 1;
-                ok += streamed as u32;
             }
         }
         // Both outcomes must occur, or the comparison proves little.
-        assert!(ok > 0 && ok < total, "{mode}: {ok} of {total} bursts decoded");
+        for ((name, _), ok) in DETECTORS.iter().zip(ok) {
+            assert!(ok > 0 && ok < total, "{mode} {name}: {ok} of {total} bursts decoded");
+        }
     }
 }
