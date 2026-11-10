@@ -81,7 +81,7 @@ impl Chain {
     /// its biquads, so `other` may bring first-order sections only while this chain
     /// has no biquads; otherwise the sections would run out of order.
     pub fn then(mut self, other: Chain) -> Self {
-        debug_assert!(other.first.is_empty() || self.biquads.is_empty(), "Chain::then would reorder sections");
+        assert!(other.first.is_empty() || self.biquads.is_empty(), "Chain::then would reorder sections");
         self.first.extend(other.first);
         self.biquads.extend(other.biquads);
         self
@@ -277,6 +277,15 @@ mod tests {
             let x = (i as f32 * 0.05).sin() + if i == 100 { 1.0 } else { 0.0 };
             assert_eq!(ab.process(x), b.process(a.process(x)), "sample {i}");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "reorder")]
+    fn then_refuses_to_reorder_sections() {
+        let fs = 48_000.0;
+        let mut de = Chain::new();
+        de.push_first_order(FirstOrder::deemphasis(fs, 750e-6));
+        let _ = Chain::highpass4(fs, 400.0).then(de);
     }
 
     #[test]
