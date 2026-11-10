@@ -133,7 +133,18 @@ impl Receiver {
         let f = OFDM_DETECT;
         #[cfg(test)]
         let f = self.detect;
-        f(&self.modem, &self.buf, self.search)
+        let found = f(&self.modem, &self.buf, self.search);
+        // A replaced detector that does not move past `search` would make `step`
+        // search from the same place forever after a failed header: fail instead.
+        #[cfg(test)]
+        if let Some(b) = found {
+            assert!(
+                b > self.search,
+                "detector returned {b} when searching from {}: the receiver would loop",
+                self.search
+            );
+        }
+        found
     }
 
     /// One processing step. Returns Some(true) if something changed and we should go again.
