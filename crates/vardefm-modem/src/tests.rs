@@ -377,3 +377,42 @@ fn a_busy_hold_does_not_outlast_our_own_transmission() {
     rx.push(&vec![0.0; 48]);
     assert!(!rx.busy(), "busy after our transmission");
 }
+
+/// A NaN or Inf from the sound card in a steady CTCSS tone, at its peak, at 750 Hz
+/// deviation on the wide port.
+#[test]
+fn a_non_finite_sample_in_a_ctcss_tone_is_not_busy() {
+    let m = modem("wide");
+    for rms in [0.177] {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut audio = sine(254.1, rms, 4 * 48_000, 0.0);
+            let peak = (3 * 48_000..3 * 48_000 + 200).max_by(|&a, &b| audio[a].total_cmp(&audio[b])).unwrap();
+            audio[peak] = bad;
+            let mut rx = Receiver::new(m.clone());
+            for (i, chunk) in audio.chunks(480).enumerate() {
+                rx.push(chunk);
+                assert!(!rx.busy(), "{rms} RMS, {bad}: busy after {} ms", 10 * (i + 1));
+            }
+        }
+    }
+}
+
+/// A NaN or Inf from the sound card before or inside a burst.
+#[test]
+fn a_non_finite_sample_does_not_hide_a_burst() {
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let b = burst(2, 2, 9);
+        for bad in [f32::NAN, f32::INFINITY] {
+            // From 1000 samples before the burst's leader to well into its payload.
+            for at in (19_000..31_000).step_by(1000) {
+                let mut audio = vec![0.0; 20_000];
+                audio.extend(m.modulate(&b));
+                audio[at] = bad;
+                let got = receive(&mut Receiver::new(m.clone()), &audio);
+                assert_eq!(got.len(), 1, "{mode}, {bad} at {at}");
+                assert!(got[0].payload.iter().all(|p| p.is_some()), "{mode}, {bad} at {at}");
+            }
+        }
+    }
+}

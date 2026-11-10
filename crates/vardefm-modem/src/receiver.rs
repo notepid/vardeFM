@@ -79,8 +79,17 @@ impl Receiver {
     }
 
     pub fn push(&mut self, samples: &[f32]) -> Vec<RxBurst> {
-        self.detector.push(samples);
+        let start = self.buf.len();
         self.buf.extend_from_slice(samples);
+        // A NaN or Inf from the sound card would make every later output of an IIR
+        // filter NaN (the busy detector's, the preamble search's) and spoil the FFT of
+        // the symbol it falls in.
+        for x in &mut self.buf[start..] {
+            if !x.is_finite() {
+                *x = 0.0;
+            }
+        }
+        self.detector.push(&self.buf[start..]);
         let mut out = Vec::new();
         while let Some(progress) = self.step(&mut out) {
             if !progress {
