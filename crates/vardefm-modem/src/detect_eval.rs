@@ -184,8 +184,9 @@ fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
     m.ofdm.detect(&transmit(&clean, &tx), 0).expect("burst not found on a clean channel")
 }
 
-/// Where the true position lies against the channel, from one noiseless copy:
-/// (samples after the sent boundary of preamble B's body, channel delay in samples).
+/// Where the true position lies against the channel, from one noiseless copy: (the
+/// true position as [`true_position`] finds it, samples after the sent boundary of
+/// preamble B's body, channel delay in samples).
 ///
 /// The boundary is counted back from the end of the modulated burst, so the leader
 /// and preambles come from the modulator itself: preamble B's body ends where the
@@ -194,7 +195,7 @@ fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
 /// depends on any detector. The correlation is signed: the simulated channel does
 /// not invert the audio. A delay of 0 or a whole cyclic prefix is the edge of the
 /// search, not a peak.
-fn position_check(m: &Modem, mode: &str, level: u8, ncw: usize) -> (i64, usize) {
+fn position_check(m: &Modem, mode: &str, level: u8, ncw: usize) -> (usize, i64, usize) {
     let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
     let p = &m.ofdm.p;
     let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
@@ -205,8 +206,8 @@ fn position_check(m: &Modem, mode: &str, level: u8, ncw: usize) -> (i64, usize) 
     let boundary = lead + tx.len() - data * p.symbol_len() - p.nfft;
     let rx = &rx[lead..];
     let corr = |d: usize| -> f64 { tx.iter().zip(&rx[d..]).map(|(&a, &b)| a as f64 * b as f64).sum() };
-    let delay = (0..=p.ncp).max_by(|&a, &b| corr(a).total_cmp(&corr(b))).unwrap();
-    (truth as i64 - boundary as i64, delay)
+    let delay = (0..=p.ncp).map(|d| (corr(d), d)).max_by(|a, b| a.0.total_cmp(&b.0)).unwrap().1;
+    (truth, truth as i64 - boundary as i64, delay)
 }
 
 /// Run `trials` trials of a `level` burst of `ncw` codewords on every core, with
@@ -344,13 +345,18 @@ fn detector_eval() {
     assert!(noise_s > 0.0 && noise_s.is_finite(), "NOISE_SECONDS={noise_s}: must be a finite number more than 0");
     // Checked up front, so that a typo does not fail after the first mode has run.
     let modes: Vec<&str> = modes.split(',').map(str::trim).collect();
-    for mode in &modes {
-        assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
-        // A longer burst would modulate, but its header would not unpack (MAX_NCW) or
-        // the modem would never send it (MAX_PAYLOAD_SECONDS): every trial would fail.
-        let max = modem(mode).max_ncw(level);
-        assert!(ncw <= max, "NCW {ncw}: a level {level} burst in {mode} mode holds at most {max} codewords");
-    }
+    let modems: Vec<Arc<Modem>> = modes
+        .iter()
+        .map(|mode| {
+            assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
+            let m = modem(mode);
+            // A longer burst would modulate, but its header would not unpack (MAX_NCW) or
+            // the modem would never send it (MAX_PAYLOAD_SECONDS): every trial would fail.
+            let max = m.max_ncw(level);
+            assert!(ncw <= max, "NCW {ncw}: a level {level} burst in {mode} mode holds at most {max} codewords");
+            m
+        })
+        .collect();
     let cnr_list = |mode: &str| -> Vec<f32> {
         let default = if mode == "narrow" { "3,4,5,6,7,8,10" } else { "5,6,7,8,9,10,12" };
         let cnrs: String = env_or("CNRS", default.to_string());
@@ -385,12 +391,10 @@ fn detector_eval() {
         "level {level} ({}), {ncw} codeword(s), {trials} trials per point, txdelay {TXDELAY} s",
         LEVELS[level as usize].name
     );
-    for &mode in &modes {
-        let m = modem(mode);
+    for (&mode, m) in modes.iter().zip(modems) {
         println!("\n{mode}: hits and decoded bursts out of {trials}; paired test against '{}'", names[0]);
         // The true position is the reference's own; show where it lies against the channel.
-        let truth = true_position(&m, mode, level, ncw);
-        let (after, delay) = position_check(&m, mode, level, ncw);
+        let (truth, after, delay) = position_check(&m, mode, level, ncw);
         println!(
             "  true position: sample {truth}, {after} after the sent boundary; channel delay {delay}{}, \
              so {} after the boundary plus the delay; hit within ±{}",
@@ -450,7 +454,7 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
         }
         // The printed cross-check must stay meaningful: the true position lies within a
         // cyclic prefix of the sent boundary plus the channel delay.
-        let (after, delay) = position_check(&m, mode, 1, 1);
+        let (_, after, delay) = position_check(&m, mode, 1, 1);
         let ncp = m.ofdm.p.ncp as i64;
         assert!(delay > 0 && (delay as i64) < ncp, "{mode}: channel delay {delay} is the edge of the 0..={ncp} search");
         assert!(
@@ -508,10 +512,13 @@ fn offline_receive_matches_the_streaming_receiver() {
                     FmChannelConfig { cnr_db: Some(cnr), seed: 1000 + seed, ..FmChannelConfig::by_name(mode).unwrap() };
                 let mut rx = transmit(&cfg, &tx);
                 rx.extend(vec![0.0; m.fs() as usize]);
+                // Shared by the detectors, as in a trial: they all decode the same recording.
+                let mut cache = Decodes::new();
                 for (d, (name, f)) in DETECTORS.iter().enumerate() {
-                    // Offline first: its progress check stops a detector that does not
-                    // move forward, which would hang the streaming receiver.
-                    let offline = receive(&m, *f, &rx, &sent, &mut Decodes::new()).ok;
+                    // Offline first: a detector that does not move forward on the whole
+                    // recording fails there; one that stalls only on the receiver's
+                    // buffer fails in `Receiver::find_burst`.
+                    let offline = receive(&m, *f, &rx, &sent, &mut cache).ok;
                     let mut receiver = Receiver::new(m.clone());
                     receiver.detect = *f;
                     // 10 ms chunks, as a sound card delivers them.
