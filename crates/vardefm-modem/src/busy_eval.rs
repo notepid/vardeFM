@@ -42,7 +42,7 @@ use crate::{Burst, Header, Kind, Modem, OfdmParams};
 use std::f32::consts::PI;
 use std::ops::Range;
 use std::sync::Arc;
-use vardefm_dsp::filter::{Biquad, Chain};
+use vardefm_dsp::filter::Chain;
 use vardefm_dsp::prng::Prng;
 use vardefm_sim::{transmit, FmChannelConfig};
 
@@ -268,9 +268,8 @@ fn ctcss(t: u32, n: usize) -> Vec<f32> {
 
 /// White noise above the wide band (8th-order highpass at 7 kHz) at `HISS_RMS`.
 fn hiss_above(rng: &mut Prng, n: usize) -> Vec<f32> {
-    let mut hp: Vec<Biquad> =
-        [0.541_196_1, 1.306_563, 0.541_196_1, 1.306_563].iter().map(|&q| Biquad::highpass(FS, 7000.0, q)).collect();
-    let mut h: Vec<f32> = (0..n).map(|_| hp.iter_mut().fold(uniform(rng), |x, b| b.process(x))).collect();
+    let mut hp = Chain::highpass4(FS, 7000.0).then(Chain::highpass4(FS, 7000.0));
+    let mut h: Vec<f32> = (0..n).map(|_| hp.process(uniform(rng))).collect();
     let k = HISS_RMS / rms(&h);
     scale(&mut h, k);
     h
@@ -539,8 +538,17 @@ fn busy_eval() {
     let trials: u32 = env_or("TRIALS", 63);
     let cnr: f32 = env_or("CNR", 20.0);
     println!("{trials} trials per case, signals at {cnr} dB CNR");
-    for mode in modes.split(',') {
-        let ctx = ctx(if mode == "wide" { "wide" } else { "narrow" }, cnr);
+    // Checked before anything runs, so a typo does not show up after minutes.
+    let modes: Vec<&'static str> = modes
+        .split(',')
+        .map(|m| match m.trim() {
+            "narrow" => "narrow",
+            "wide" => "wide",
+            m => panic!("MODES: unknown mode {m:?}, expected narrow and/or wide"),
+        })
+        .collect();
+    for mode in modes {
+        let ctx = ctx(mode, cnr);
         for (expect, title) in [
             (Expect::Busy, "must be busy: busy % of signal time, ON and OFF ms median/worst, held at the drop"),
             (Expect::Idle, "must stay idle: busy % of interference time, mean and worst trial"),
