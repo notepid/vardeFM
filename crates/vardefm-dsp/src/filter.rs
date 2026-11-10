@@ -125,6 +125,16 @@ impl Chain {
             *x = self.process(*x);
         }
     }
+
+    /// Clears the state of every section, as if no sample had been processed.
+    pub fn reset(&mut self) {
+        for f in &mut self.first {
+            f.z = 0.0;
+        }
+        for b in &mut self.biquads {
+            (b.z1, b.z2) = (0.0, 0.0);
+        }
+    }
 }
 
 /// First-order IIR from an analog prototype H(s) = (n0 + n1 s) / (d0 + d1 s).

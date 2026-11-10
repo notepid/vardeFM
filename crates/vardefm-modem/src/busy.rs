@@ -127,8 +127,7 @@ impl BusyDetector {
             samples = self.after_gap(samples);
         }
         for &x in samples {
-            // A NaN or Inf from the sound card would stay in the filter state for good.
-            let x = self.band.process(if x.is_finite() { x } else { 0.0 });
+            let x = self.band.process(x);
             self.sum += x as f64;
             self.sq += (x * x) as f64;
             self.n += 1;
@@ -144,7 +143,6 @@ impl BusyDetector {
             if self.wait == 0 && self.settle == 0 {
                 return &samples[i..];
             }
-            let x = if x.is_finite() { x } else { 0.0 };
             self.band.process(x);
             if self.wait > 0 {
                 self.wait -= 1;
@@ -162,8 +160,17 @@ impl BusyDetector {
     fn end_block(&mut self) {
         let n = self.n as f64;
         // Variance: a DC offset from the sound card is not a signal.
-        let power = (self.sq / n - (self.sum / n).powi(2)).max(0.0) as f32;
+        let power = (self.sq / n - (self.sum / n).powi(2)) as f32;
         (self.sum, self.sq, self.n) = (0.0, 0.0, 0);
+        if !power.is_finite() {
+            // A NaN, an Inf or a sample far beyond full scale (the receiver drops those)
+            // got into the filter, whose state would stay NaN for good. Start it again,
+            // and read busy for the hold time: safer than not hearing anything.
+            self.band.reset();
+            self.quiet = 0;
+            return;
+        }
+        let power = power.max(0.0);
 
         let loud = power > MIN_RMS * MIN_RMS && power > ABOVE_BACKGROUND * self.background(power);
         if loud {
@@ -314,27 +321,19 @@ mod tests {
     }
 
     #[test]
-    fn a_non_finite_sample_does_not_make_it_deaf() {
-        for bad in [f32::NAN, f32::INFINITY] {
-            let mut d = narrow();
-            d.push(&vec![0.0; FS as usize]);
-            d.push(&[bad]);
-            d.push(&vec![0.0; FS as usize]);
-            d.push(&tone(0.3, 0.1));
-            assert!(d.busy(), "deaf after {bad}");
-        }
-    }
-
-    #[test]
-    fn a_non_finite_sample_in_a_ctcss_tone_is_not_busy() {
-        for bad in [f32::NAN, f32::INFINITY] {
-            let mut ctcss = tone_hz(254.1, 0.177, 3.5);
-            ctcss[3 * FS as usize] = bad;
-            let mut d = BusyDetector::new(&OfdmParams::wide());
-            d.push(&ctcss[..3 * FS as usize]);
-            for (i, block) in ctcss[3 * FS as usize..].chunks(480).enumerate() {
-                d.push(block);
-                assert!(!d.busy(), "busy {} ms after {bad}", 10 * (i + 1));
+    fn a_wild_sample_does_not_make_it_deaf() {
+        // The receiver drops these; a filter that overflows anyway reads busy and starts again.
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            for bad in [f32::NAN, f32::INFINITY, f32::MAX, -2e38, 1e38, 1e20] {
+                let mut d = BusyDetector::new(&p);
+                d.push(&vec![0.0; FS as usize]);
+                d.push(&[bad]);
+                d.push(&vec![0.0; 480]);
+                assert!(d.busy(), "{}: {bad} does not read busy", p.name);
+                d.push(&vec![0.0; FS as usize]);
+                assert!(!d.busy(), "{}: still busy a second after {bad}", p.name);
+                d.push(&tone(0.3, 0.1));
+                assert!(d.busy(), "{}: deaf after {bad}", p.name);
             }
         }
     }

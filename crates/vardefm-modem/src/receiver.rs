@@ -4,6 +4,9 @@ use crate::busy::BusyDetector;
 use crate::{Header, Modem, LEVELS};
 use std::sync::Arc;
 
+/// A received sample beyond this is a glitch: full scale is 1.
+const MAX_SAMPLE: f32 = 4.0;
+
 /// A received burst.
 #[derive(Clone, Debug)]
 pub struct RxBurst {
@@ -83,12 +86,13 @@ impl Receiver {
     pub fn push(&mut self, samples: &[f32]) -> Vec<RxBurst> {
         let start = self.buf.len();
         self.buf.extend_from_slice(samples);
-        // A NaN or Inf from the sound card would make every later output of an IIR
-        // filter NaN (the busy detector's, the preamble search's) and spoil the FFT of
-        // the symbol it falls in. The last good sample takes its place: in a steady
-        // tone that is a much smaller step than 0.
+        // A NaN or Inf from the sound card, or a sample so far beyond full scale that a
+        // filter overflows, would make every later output of an IIR filter NaN (the
+        // busy detector's, the preamble search's) and spoil the FFT of the symbol it
+        // falls in. The last good sample takes its place: in a steady tone that is a
+        // much smaller step than 0.
         for x in &mut self.buf[start..] {
-            if x.is_finite() {
+            if x.abs() <= MAX_SAMPLE {
                 self.last = *x;
             } else {
                 *x = self.last;
