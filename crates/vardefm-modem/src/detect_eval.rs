@@ -372,8 +372,10 @@ fn detector_eval() {
             .append(true)
             .open(&p)
             .unwrap_or_else(|e| panic!("CSV: cannot open {p:?}: {e}"));
-        // An empty file (from mktemp, say) needs the header as much as a new one.
-        if f.metadata().unwrap_or_else(|e| panic!("CSV: cannot read {p:?}: {e}")).len() == 0 {
+        // An empty file (from mktemp, say) needs the header as much as a new one. A pipe
+        // or a terminal always reads as empty, so it gets none rather than one per run.
+        let meta = f.metadata().unwrap_or_else(|e| panic!("CSV: cannot read {p:?}: {e}"));
+        if meta.is_file() && meta.len() == 0 {
             writeln!(f, "mode,level,ncw,cnr_db,trials,detector,hits,bursts").unwrap();
         }
         f
