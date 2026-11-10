@@ -257,15 +257,24 @@ fn noise_case(mode: &str, case: usize, seconds: f32, fs: f32) -> Vec<f32> {
 }
 
 /// Detections and decoded headers in `rx`, scanning on after each detection.
+///
+/// It searches on from each detection itself, as `receive` and `Receiver::step` do
+/// after a header that fails, so a detector is scored here on the searches it makes
+/// in the receiver. After a header that decodes the receiver skips the frame it
+/// announces; this pass searches on from the detection instead, so that every
+/// detection in the audio is counted.
 fn false_detections(m: &Modem, f: DetectFn, rx: &[f32]) -> (u32, u32) {
     let (mut dets, mut headers) = (0, 0);
-    let mut pos = 0;
-    while let Some(b) = f(m, rx, pos) {
+    let mut next = f(m, rx, 0);
+    while let Some(b) = next {
         dets += 1;
         if header_at(m, rx, b).is_some() {
             headers += 1;
         }
-        pos = b + 1;
+        next = f(m, rx, b);
+        if let Some(n) = next {
+            assert!(n > b, "detector returned {n} when searching from {b}: it would loop forever");
+        }
     }
     (dets, headers)
 }
