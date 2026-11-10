@@ -49,12 +49,14 @@ pub struct Receiver {
     pending: Option<(usize, Header)>,
     /// Whether something louder than the background is heard.
     detector: BusyDetector,
+    /// The last good sample pushed.
+    last: f32,
 }
 
 impl Receiver {
     pub fn new(modem: Arc<Modem>) -> Self {
         let detector = BusyDetector::new(&modem.ofdm.p);
-        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector }
+        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector, last: 0.0 }
     }
 
     /// Absolute index of the next sample to be pushed.
@@ -83,10 +85,13 @@ impl Receiver {
         self.buf.extend_from_slice(samples);
         // A NaN or Inf from the sound card would make every later output of an IIR
         // filter NaN (the busy detector's, the preamble search's) and spoil the FFT of
-        // the symbol it falls in.
+        // the symbol it falls in. The last good sample takes its place: in a steady
+        // tone that is a much smaller step than 0.
         for x in &mut self.buf[start..] {
-            if !x.is_finite() {
-                *x = 0.0;
+            if x.is_finite() {
+                self.last = *x;
+            } else {
+                *x = self.last;
             }
         }
         self.detector.push(&self.buf[start..]);

@@ -378,12 +378,12 @@ fn a_busy_hold_does_not_outlast_our_own_transmission() {
     assert!(!rx.busy(), "busy after our transmission");
 }
 
-/// A NaN or Inf from the sound card in a steady CTCSS tone, at its peak, at 750 Hz
-/// deviation on the wide port.
+/// A NaN or Inf from the sound card in a steady CTCSS tone, at its peak, up to
+/// 1500 Hz deviation on the wide port.
 #[test]
 fn a_non_finite_sample_in_a_ctcss_tone_is_not_busy() {
     let m = modem("wide");
-    for rms in [0.177] {
+    for rms in [0.177, 0.354] {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut audio = sine(254.1, rms, 4 * 48_000, 0.0);
             let peak = (3 * 48_000..3 * 48_000 + 200).max_by(|&a, &b| audio[a].total_cmp(&audio[b])).unwrap();
