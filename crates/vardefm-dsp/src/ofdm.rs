@@ -25,13 +25,90 @@ const MIN_PREAMBLE_CORR: f32 = 0.3;
 /// noise scale. Normal symbols almost never get there (the per-symbol estimate averages
 /// 18-24 real noise samples).
 const SCALE_THRESHOLD: f32 = 2.0;
+/// Normalized correlation with preambles A and B that marks a burst for the matched
+/// filter. The largest value in a minute of FM channel noise or keyed tones was about
+/// 0.3, in white noise about 0.15 ([`Ofdm::mf_peak`], reported by `detector_eval` in
+/// vardefm-modem), while bursts too weak to decode still peak above 0.4.
+pub const MF_THRESHOLD: f32 = 0.4;
 /// TX low-pass cutoff relative to the top carrier frequency.
 const TX_LOWPASS_FACTOR: f32 = 1.15;
 /// Clip-and-filter passes before the final clamp.
 const CLIP_FILTER_PASSES: usize = 2;
 
+/// How [`Ofdm::detect`] finds a burst.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Detector {
+    /// Schmidl-Cox autocorrelation of preamble A, confirmed by preamble B.
+    #[default]
+    SchmidlCox,
+    /// Normalized cross-correlation with the known waveform of preambles A and B.
+    MatchedFilter,
+}
+
+impl Detector {
+    pub const ALL: [Detector; 2] = [Self::SchmidlCox, Self::MatchedFilter];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::SchmidlCox => "sc",
+            Self::MatchedFilter => "mf",
+        }
+    }
+}
+
+/// Matched filter for preambles A and B, evaluated by FFT (overlap-save).
+struct MatchedFilter {
+    /// Template length: preambles A and B with their cyclic prefixes.
+    len: usize,
+    /// Square root of the template energy.
+    norm: f32,
+    fft: Arc<dyn Fft<f32>>,
+    ifft: Arc<dyn Fft<f32>>,
+    /// Conjugate spectrum of the zero-padded template, scaled by 1/FFT size.
+    spec: Vec<Complex32>,
+}
+
+impl MatchedFilter {
+    fn new(tpl: Vec<f32>) -> Self {
+        let len = tpl.len();
+        // At least twice the template, so each block yields more outputs than it costs.
+        let n = (2 * len).next_power_of_two();
+        let mut planner = FftPlanner::new();
+        let fft = planner.plan_fft_forward(n);
+        let ifft = planner.plan_fft_inverse(n);
+        let norm = tpl.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let mut spec: Vec<Complex32> = tpl.into_iter().map(|v| Complex32::new(v, 0.0)).collect();
+        spec.resize(n, Complex32::new(0.0, 0.0));
+        fft.process(&mut spec);
+        spec.iter_mut().for_each(|c| *c = c.conj() / n as f32);
+        Self { len, norm, fft, ifft, spec }
+    }
+}
+
+/// One OFDM symbol (cyclic prefix + body) from carrier values, with the TX tilt `gains`.
+fn symbol_time(p: &OfdmParams, gains: &[f32], ifft: &dyn Fft<f32>, carriers: &[Complex32]) -> Vec<f32> {
+    let n = p.nfft;
+    let mut x = vec![Complex32::new(0.0, 0.0); n];
+    for (k, &v) in carriers.iter().enumerate() {
+        let bin = p.first_bin + k;
+        let v = v * gains[k];
+        x[bin] = v;
+        x[n - bin] = v.conj();
+    }
+    ifft.process(&mut x);
+    let scale = 1.0 / (n as f32).sqrt();
+    let body: Vec<f32> = x.iter().map(|c| c.re * scale).collect();
+    let mut out = Vec::with_capacity(p.symbol_len());
+    out.extend_from_slice(&body[n - p.ncp..]);
+    out.extend_from_slice(&body);
+    out
+}
+
 pub struct Ofdm {
     pub p: OfdmParams,
+    /// Burst detector used by [`Ofdm::detect`].
+    pub detector: Detector,
+    mf: MatchedFilter,
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     /// Carrier indices (0..num_carriers) that hold pilots.
@@ -76,7 +153,7 @@ impl Ofdm {
         let pilot_table = (0..PILOT_TABLE_LEN).map(|_| pilot_idx.iter().map(|_| rng.bpsk()).collect()).collect();
 
         let f0 = p.carrier_freq(0);
-        let gains = (0..nc)
+        let gains: Vec<f32> = (0..nc)
             .map(|k| {
                 let octaves = (p.carrier_freq(k) / f0).log2();
                 10f32.powf(p.tilt_db_per_octave * octaves / 20.0)
@@ -84,7 +161,7 @@ impl Ofdm {
             .collect();
 
         let mut rng = Prng::new(0x5eed_00a1);
-        let pre_a = (0..nc)
+        let pre_a: Vec<Complex32> = (0..nc)
             .map(|k| {
                 let v = rng.bpsk();
                 if (p.first_bin + k).is_multiple_of(2) {
@@ -95,10 +172,25 @@ impl Ofdm {
             })
             .collect();
         let mut rng = Prng::new(0x5eed_00b2);
-        let pre_b = (0..nc).map(|_| Complex32::new(rng.bpsk(), 0.0)).collect();
+        let pre_b: Vec<Complex32> = (0..nc).map(|_| Complex32::new(rng.bpsk(), 0.0)).collect();
 
-        let mut s =
-            Self { p, fft, ifft, pilot_idx, data_idx, pilot_table, gains, pre_a, pre_b, pre_b_body: Vec::new() };
+        let mut tpl = symbol_time(&p, &gains, ifft.as_ref(), &pre_a);
+        tpl.extend(symbol_time(&p, &gains, ifft.as_ref(), &pre_b));
+        let mf = MatchedFilter::new(tpl);
+        let mut s = Self {
+            p,
+            detector: Detector::default(),
+            mf,
+            fft,
+            ifft,
+            pilot_idx,
+            data_idx,
+            pilot_table,
+            gains,
+            pre_a,
+            pre_b,
+            pre_b_body: Vec::new(),
+        };
         let b = s.symbol_time(&s.pre_b);
         let mut body = b[s.p.ncp..].to_vec();
         let e = body.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -122,21 +214,7 @@ impl Ofdm {
 
     /// One OFDM symbol (cyclic prefix + body) from carrier values.
     fn symbol_time(&self, carriers: &[Complex32]) -> Vec<f32> {
-        let n = self.p.nfft;
-        let mut x = vec![Complex32::new(0.0, 0.0); n];
-        for (k, &v) in carriers.iter().enumerate() {
-            let bin = self.p.first_bin + k;
-            let v = v * self.gains[k];
-            x[bin] = v;
-            x[n - bin] = v.conj();
-        }
-        self.ifft.process(&mut x);
-        let scale = 1.0 / (n as f32).sqrt();
-        let body: Vec<f32> = x.iter().map(|c| c.re * scale).collect();
-        let mut out = Vec::with_capacity(self.p.symbol_len());
-        out.extend_from_slice(&body[n - self.p.ncp..]);
-        out.extend_from_slice(&body);
-        out
+        symbol_time(&self.p, &self.gains, self.ifft.as_ref(), carriers)
     }
 
     /// Build a frame. Each entry of `data` holds `data_carriers()` symbols.
@@ -232,9 +310,110 @@ impl Ofdm {
         Some((0..self.p.num_carriers).map(|k| x[self.p.first_bin + k] * scale).collect())
     }
 
-    /// Search `rx` from `from` for a frame. Returns the sample index where the
-    /// body of preamble B starts.
+    /// Search `rx` from `from` for a frame with [`Ofdm::detector`]. Returns the sample
+    /// index where the body of preamble B starts.
     pub fn detect(&self, rx: &[f32], from: usize) -> Option<usize> {
+        self.detect_with(self.detector, rx, from)
+    }
+
+    /// Like [`Ofdm::detect`], with the given detector.
+    pub fn detect_with(&self, detector: Detector, rx: &[f32], from: usize) -> Option<usize> {
+        match detector {
+            Detector::SchmidlCox => self.detect_sc(rx, from),
+            Detector::MatchedFilter => self.detect_mf(rx, from),
+        }
+    }
+
+    /// Matched-filter search: normalized cross-correlation of `rx` with the waveform of
+    /// preambles A and B. The FM audio channel has no frequency offset and a smooth
+    /// response, so the known waveform correlates coherently. Unlike the Schmidl-Cox
+    /// metric it multiplies noise by a clean template, never by more noise, so it
+    /// keeps working at a lower signal-to-noise ratio.
+    ///
+    /// The first position above `MF_THRESHOLD` opens a search window one symbol long
+    /// (preamble A repeats every nfft/2 samples, so a side peak can cross first); the
+    /// largest correlation in it is the frame. If the window does not fit in `rx`,
+    /// returns `None` so that a streaming caller searches again with more audio.
+    ///
+    /// The correlation is computed in FFT blocks that start at `from`, so a later call
+    /// with another `from` rounds it differently. That can only matter for a value
+    /// within float rounding of `MF_THRESHOLD`.
+    pub fn detect_mf(&self, rx: &[f32], from: usize) -> Option<usize> {
+        let l = self.p.symbol_len();
+        let mut peak: Option<(usize, f32, usize)> = None;
+        let mut found = None;
+        self.mf_scan(rx, from, |d, v| {
+            match &mut peak {
+                None if v > MF_THRESHOLD => peak = Some((d, v, d)),
+                Some((first, best, at)) => {
+                    if v > *best {
+                        (*best, *at) = (v, d);
+                    }
+                    if d - *first >= l {
+                        // The template starts with preamble A's cyclic prefix.
+                        found = Some(from + *at + l + self.p.ncp);
+                        return false;
+                    }
+                }
+                None => {}
+            }
+            true
+        });
+        found
+    }
+
+    /// The largest matched-filter correlation anywhere in `rx`, 0 to 1. On audio
+    /// without a burst, its distance below `MF_THRESHOLD` is the detector's margin
+    /// against false detections.
+    pub fn mf_peak(&self, rx: &[f32]) -> f32 {
+        let mut peak = 0f32;
+        self.mf_scan(rx, 0, |_, v| {
+            peak = peak.max(v);
+            true
+        });
+        peak
+    }
+
+    /// The normalized correlation of the preamble template with `rx` at every window
+    /// start `from + d`, in order, passed to `visit(d, value)` until it returns false.
+    fn mf_scan(&self, rx: &[f32], from: usize, mut visit: impl FnMut(usize, f32) -> bool) {
+        let mf = &self.mf;
+        let t = mf.len;
+        let n = mf.spec.len();
+        let hop = n - t + 1;
+        // Correlation windows start at from + d for d in 0..count.
+        let Some(count) = rx.len().checked_sub(from).and_then(|r| (r + 1).checked_sub(t)) else {
+            return;
+        };
+        let x = &rx[from..];
+        let floor = 1e-9 * t as f64;
+        let mut buf = vec![Complex32::new(0.0, 0.0); n];
+        let mut start = 0;
+        while start < count {
+            for (i, c) in buf.iter_mut().enumerate() {
+                *c = Complex32::new(x.get(start + i).copied().unwrap_or(0.0), 0.0);
+            }
+            mf.fft.process(&mut buf);
+            buf.iter_mut().zip(&mf.spec).for_each(|(c, s)| *c *= s);
+            mf.ifft.process(&mut buf);
+            // Window energy, exact at each block start and then updated sample by sample.
+            let mut energy: f64 = x[start..start + t].iter().map(|&v| (v * v) as f64).sum();
+            for (j, c) in buf.iter().take(hop.min(count - start)).enumerate() {
+                let d = start + j;
+                if j > 0 {
+                    energy += (x[d + t - 1] * x[d + t - 1]) as f64 - (x[d - 1] * x[d - 1]) as f64;
+                }
+                let v = if energy > floor { c.re.abs() / (mf.norm * energy.sqrt() as f32) } else { 0.0 };
+                if !visit(d, v) {
+                    return;
+                }
+            }
+            start += hop;
+        }
+    }
+
+    /// Schmidl-Cox search, the original detector.
+    pub fn detect_sc(&self, rx: &[f32], from: usize) -> Option<usize> {
         // Filtering keeps preamble A periodic (the filter is linear and time-invariant),
         // so the autocorrelation still works on the filtered copy.
         let filtered;
@@ -576,6 +755,61 @@ mod tests {
     #[test]
     fn clean_roundtrip_wide() {
         roundtrip(OfdmParams::wide(), Modulation::Qam64, 1234);
+    }
+
+    #[test]
+    fn matched_filter_finds_the_same_start_as_schmidl_cox() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 3);
+            for (lead, sign) in [(0, 1.0), (777, 1.0), (4321, -1.0)] {
+                let mut rx = vec![0.0; lead];
+                rx.extend(ofdm.modulate_with_leader(&data, 0.1).iter().map(|v| v * sign));
+                rx.extend(vec![0.0; 2000]);
+                let sc = ofdm.detect_with(Detector::SchmidlCox, &rx, 0).expect("sc found nothing");
+                let mf = ofdm.detect_with(Detector::MatchedFilter, &rx, 0).expect("mf found nothing");
+                assert!(mf.abs_diff(sc) <= 2, "{}: lead {lead}: mf {mf}, sc {sc}", ofdm.p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn matched_filter_waits_for_the_whole_search_window() {
+        // A streaming receiver calls detect on a growing buffer, from wherever its
+        // search has got to. Whatever the buffer holds, a detection must be the one the
+        // whole recording gives.
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 4);
+            let mut rx = vec![0.0; 1000];
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            let full = ofdm.detect_mf(&rx, 0).expect("mf found nothing");
+            for from in [0, 333, 1000] {
+                let mut found = 0;
+                for end in (from..rx.len()).step_by(97) {
+                    if let Some(b) = ofdm.detect_mf(&rx[..end], from) {
+                        assert_eq!(b, full, "{}: from {from}, buffer of {end} samples", ofdm.p.name);
+                        found += 1;
+                    }
+                }
+                assert!(found > 0, "{}: from {from}: no buffer gave a detection", ofdm.p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn matched_filter_ignores_silence_noise_and_tones() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let n = 2 * p.fs as usize;
+            let mut rng = Prng::new(99);
+            let noise: Vec<f32> = (0..n).map(|_| (rng.next_u32() as f32 / u32::MAX as f32 - 0.5) * 0.6).collect();
+            let tone: Vec<f32> =
+                (0..n).map(|i| 0.3 * (2.0 * std::f32::consts::PI * 1500.0 * i as f32 / p.fs).sin()).collect();
+            let ofdm = Ofdm::new(p);
+            for (name, x) in [("silence", vec![0.0; n]), ("noise", noise.clone()), ("1500 Hz", tone.clone())] {
+                assert!(ofdm.detect_mf(&x, 0).is_none(), "{}: false frame in {name}", ofdm.p.name);
+            }
+        }
     }
 
     fn random_frame(ofdm: &Ofdm, m: Modulation, nsym: usize, seed: u32) -> Vec<Vec<Complex32>> {

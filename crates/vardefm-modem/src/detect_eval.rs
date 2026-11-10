@@ -24,6 +24,8 @@
 //! weak unmodulated carrier, white noise, and keyed tones: 750 + 1500 Hz, a roger
 //! beep and DTMF pairs, each 0.3 s on and 0.3 s off).
 //! A detection there costs a header decode; a decoded header there is a false burst.
+//! The streaming receiver's CPU load on that audio, fed in 10 ms chunks like a sound
+//! card, is reported per detector too.
 //!
 //! `cargo test --release -p vardefm-modem detector_eval -- --ignored --nocapture`
 //!
@@ -35,14 +37,20 @@ use super::*;
 use std::f32::consts::PI;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Instant;
+use vardefm_dsp::ofdm::MF_THRESHOLD;
 use vardefm_dsp::prng::Prng;
+use vardefm_dsp::Detector;
 use vardefm_sim::{transmit, FmChannelConfig};
 
 /// A burst detector: search `rx` from `from`, return where the body of preamble B starts.
 pub(crate) type DetectFn = fn(&Modem, &[f32], usize) -> Option<usize>;
 
 /// Detectors under evaluation. The first one is the reference for the paired tests.
-pub(crate) const DETECTORS: &[(&str, DetectFn)] = &[("sc", |m, rx, from| m.ofdm.detect(rx, from))];
+pub(crate) const DETECTORS: &[(&str, DetectFn)] = &[
+    ("sc", |m, rx, from| m.ofdm.detect_with(Detector::SchmidlCox, rx, from)),
+    ("mf", |m, rx, from| m.ofdm.detect_with(Detector::MatchedFilter, rx, from)),
+];
 
 /// Leader length used by the evaluation, seconds (the `vardefm modem` default).
 const TXDELAY: f32 = 0.15;
@@ -313,6 +321,27 @@ fn false_detections(m: &Modem, f: DetectFn, rx: &[f32]) -> (u32, u32) {
     (dets, headers)
 }
 
+/// Processing time over audio duration of a `Receiver` using `detector` on `audio`,
+/// fed in 10 ms chunks. The best of three runs, so that a cold cache or a busy core
+/// does not set the figure.
+fn receiver_load(mode: &str, detector: Detector, audio: &[f32]) -> f64 {
+    let mut m = Modem::new(OfdmParams::by_name(mode).unwrap(), TXDELAY);
+    m.ofdm.detector = detector;
+    let fs = m.fs() as f64;
+    let chunk = (fs / 100.0) as usize;
+    let m = Arc::new(m);
+    (0..3)
+        .map(|_| {
+            let mut rx = Receiver::new(m.clone());
+            let t = Instant::now();
+            for c in audio.chunks(chunk) {
+                rx.push(c);
+            }
+            t.elapsed().as_secs_f64() / (audio.len() as f64 / fs)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
 #[test]
 #[ignore]
 fn detector_eval() {
@@ -383,7 +412,48 @@ fn detector_eval() {
                 let (d, h) = false_detections(&m, *f, &audio);
                 line += &format!(" | {name} {:7.2} / {:5.2}", d as f32 * per_min, h as f32 * per_min);
             }
+            line += &format!(" | mf peak {:.3} (threshold {MF_THRESHOLD})", m.ofdm.mf_peak(&audio));
             println!("{line}");
+        }
+        let weak = noise_case(mode, 1, noise_s, m.fs());
+        let mut line = format!("{mode}: streaming receiver CPU on '{}', 10 ms chunks:", NOISE_CASES[1]);
+        for d in Detector::ALL {
+            line += &format!(" {} {:.2} %", d.name(), 100.0 * receiver_load(mode, d, &weak));
+        }
+        println!("{line}");
+    }
+}
+
+/// The matched filter's threshold was chosen on other noise than the evaluation's
+/// noise cases; this checks it on noise neither has seen: FM channel noise with other
+/// seeds and a fresh white-noise sequence. `MF_MARGIN=1` prints the peaks.
+#[test]
+fn matched_filter_stays_below_threshold_on_unseen_noise() {
+    let seconds = 5.0;
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let n = (seconds * m.fs()) as usize;
+        let base = FmChannelConfig {
+            keyup_delay_s: 0.0,
+            lead_silence_s: 0.0,
+            trail_silence_s: 0.0,
+            ..FmChannelConfig::by_name(mode).unwrap()
+        };
+        let mut rng = Prng::new(0x0dd_5eed);
+        let cases = [
+            (
+                "carrier at -10 dB",
+                transmit(&FmChannelConfig { cnr_db: Some(-10.0), seed: 4242, ..base.clone() }, &vec![0.0; n]),
+            ),
+            ("carrier at 5 dB", transmit(&FmChannelConfig { cnr_db: Some(5.0), seed: 4243, ..base }, &vec![0.0; n])),
+            ("white noise", (0..n).map(|_| (rng.next_u32() as f32 / u32::MAX as f32 - 0.5) * 0.6).collect()),
+        ];
+        for (name, audio) in cases {
+            let peak = m.ofdm.mf_peak(&audio);
+            if env_or("MF_MARGIN", 0) == 1 {
+                println!("{mode} {name}: mf peak {peak:.3}");
+            }
+            assert!(peak < MF_THRESHOLD, "{mode} {name}: mf peak {peak} reaches the threshold");
         }
     }
 }
