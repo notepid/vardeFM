@@ -314,25 +314,48 @@ fn burst_level_ignores_a_squelch_pop_after_the_burst() {
     }
 }
 
+/// `rms` sine at `f` Hz, `n` samples starting at `phase`.
+fn sine(f: f32, rms: f32, n: usize, phase: f32) -> Vec<f32> {
+    let w = 2.0 * std::f32::consts::PI * f / 48_000.0;
+    (0..n).map(|i| rms * 2f32.sqrt() * (i as f32 * w + phase).sin()).collect()
+}
+
 /// A steady CTCSS tone (a keyed repeater) heard before and after our own transmission.
-/// The receiver is fed nothing while we transmit, so its audio jumps in phase where
-/// reception resumes.
+/// The receiver is fed nothing while we transmit. After it, the radio is muted until
+/// it is back on receive (tens of ms for a handheld, a VOX interface's hang time of a
+/// few hundred ms), and then the tone comes back abruptly, at any phase.
 #[test]
 fn ctcss_tone_after_our_own_transmission_is_not_busy() {
     let m = modem("wide");
-    let tone = |n: usize, phase: f32| -> Vec<f32> {
-        let w = 2.0 * std::f32::consts::PI * 254.1 / m.fs();
-        (0..n).map(|i| 0.177 * 2f32.sqrt() * (i as f32 * w + phase).sin()).collect()
-    };
-    let mut rx = Receiver::new(m.clone());
-    for chunk in tone(3 * 48_000, 0.0).chunks(480) {
-        rx.push(chunk);
-    }
-    assert!(!rx.busy());
-    // Our transmission, then the tone half a period later in phase.
-    rx.reset();
-    for (i, chunk) in tone(24_000, std::f32::consts::PI).chunks(480).enumerate() {
-        rx.push(chunk);
-        assert!(!rx.busy(), "busy {} ms after our transmission", 10 * (i + 1));
+    let mut seed = 1u32;
+    for rms in [0.177, 0.354] {
+        for muted_ms in [0, 5, 30, 100, 300, 600] {
+            for jump in [0.5, 1.0, 1.5] {
+                for floor in [0.0, 3e-4] {
+                    let mut rx = Receiver::new(m.clone());
+                    for chunk in sine(254.1, rms, 3 * 48_000, 0.0).chunks(480) {
+                        rx.push(chunk);
+                    }
+                    assert!(!rx.busy());
+                    rx.reset();
+                    // The muted radio, with or without a faint noise floor from the sound card.
+                    let mut audio: Vec<f32> = (0..muted_ms * 48)
+                        .map(|_| {
+                            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                            floor * (seed as f32 / u32::MAX as f32 * 2.0 - 1.0)
+                        })
+                        .collect();
+                    audio.extend(sine(254.1, rms, 24_000, jump * std::f32::consts::PI));
+                    for (i, chunk) in audio.chunks(480).enumerate() {
+                        rx.push(chunk);
+                        assert!(
+                            !rx.busy(),
+                            "{rms} RMS, muted {muted_ms} ms, jump {jump} pi, floor {floor}: busy after {} ms",
+                            10 * (i + 1)
+                        );
+                    }
+                }
+            }
+        }
     }
 }

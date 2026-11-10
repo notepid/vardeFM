@@ -33,9 +33,15 @@ const HOLD_S: f32 = 0.15;
 /// close under the lowest wide carrier (281 Hz) to be filtered out there; the two
 /// wide carriers below this carry little of a burst's power.
 const MIN_LOW_HZ: f32 = 400.0;
-/// Where the audio resumes after a gap (our own transmission), the jump clicks into
-/// the band. Nothing is measured for this long after it, seconds.
-const SETTLE_S: f32 = 0.02;
+/// After our own transmission the radio is muted until it is back on receive (a
+/// handheld takes tens of ms, a VOX interface holds the transmitter for its hang
+/// time), and then the audio comes back abruptly: on a steady sound such as a CTCSS
+/// tone that clicks into the band. Nothing is measured until the audio comes back,
+/// nor for this many blocks after it (20 ms).
+const SETTLE_BLOCKS: usize = 2;
+/// Audio that comes back later than this many blocks after the transmission (1 s)
+/// is an ordinary onset.
+const RETURN_BLOCKS: usize = 100;
 
 pub struct BusyDetector {
     /// Band-pass filter (empty: broadband).
@@ -51,9 +57,12 @@ pub struct BusyDetector {
     powers: VecDeque<f32>,
     /// Samples since the last loud block.
     quiet: usize,
-    /// Samples still to pass through the filter unmeasured after a gap.
+    /// After a gap: samples left to wait for the audio to come back, and the level it
+    /// starts at (the muted radio).
+    wait: usize,
+    muted: Option<f32>,
+    /// Samples left to pass through the filter unmeasured after the audio came back.
     settle: usize,
-    settle_len: usize,
 }
 
 impl BusyDetector {
@@ -87,8 +96,9 @@ impl BusyDetector {
             n: 0,
             powers: VecDeque::new(),
             quiet: usize::MAX / 2,
+            wait: 0,
+            muted: None,
             settle: 0,
-            settle_len: (SETTLE_S * fs) as usize,
         }
     }
 
@@ -96,23 +106,25 @@ impl BusyDetector {
         self.quiet < self.hold
     }
 
-    /// The next audio does not follow on from the last: nothing was heard in between
-    /// (while we transmitted). The filter keeps running, so a sound that is still
-    /// there (a CTCSS tone) is settled again after `SETTLE_S`; resetting it would
-    /// click just the same.
+    /// We transmitted, and the next audio does not follow on from the last. Nothing is
+    /// measured while the audio stays where it starts (the muted radio, maybe with a
+    /// DC offset), for at most `RETURN_BLOCKS`, nor for `SETTLE_BLOCKS` after it moves.
+    /// A sound that moves less than `MIN_RMS` cannot read busy anyway. The filter
+    /// keeps running: reset, it would click the same way when a tone comes back.
     pub fn resume(&mut self) {
         (self.sum, self.sq, self.n) = (0.0, 0.0, 0);
-        self.settle = self.settle_len;
+        self.wait = RETURN_BLOCKS * self.block;
+        self.muted = None;
+        self.settle = 0;
     }
 
-    pub fn push(&mut self, samples: &[f32]) {
+    pub fn push(&mut self, mut samples: &[f32]) {
+        if self.wait > 0 || self.settle > 0 {
+            samples = self.after_gap(samples);
+        }
         for &x in samples {
             // A NaN or Inf from the sound card would stay in the filter state for good.
             let x = self.band.process(if x.is_finite() { x } else { 0.0 });
-            if self.settle > 0 {
-                self.settle -= 1;
-                continue;
-            }
             self.sum += x as f64;
             self.sq += (x * x) as f64;
             self.n += 1;
@@ -120,6 +132,27 @@ impl BusyDetector {
                 self.end_block();
             }
         }
+    }
+
+    /// Runs the filter over the samples that `resume` leaves unmeasured and returns the rest.
+    fn after_gap<'a>(&mut self, samples: &'a [f32]) -> &'a [f32] {
+        for (i, &x) in samples.iter().enumerate() {
+            if self.wait == 0 && self.settle == 0 {
+                return &samples[i..];
+            }
+            let x = if x.is_finite() { x } else { 0.0 };
+            self.band.process(x);
+            if self.wait > 0 {
+                self.wait -= 1;
+                let muted = *self.muted.get_or_insert(x);
+                if (x - muted).abs() >= MIN_RMS {
+                    (self.wait, self.settle) = (0, SETTLE_BLOCKS * self.block);
+                }
+            } else {
+                self.settle -= 1;
+            }
+        }
+        &[]
     }
 
     fn end_block(&mut self) {
@@ -249,16 +282,21 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_right_after_a_gap_is_busy_after_the_settle_time() {
-        let mut d = narrow();
-        d.push(&vec![0.0; FS as usize]);
-        d.resume();
-        let ms = tone(0.05, 0.1).chunks(48).position(|c| {
-            d.push(c);
-            d.busy()
-        });
-        let ms = ms.expect("never busy") + 1;
-        assert!(ms as f32 <= 1000.0 * (SETTLE_S + 1.5 * BLOCK_S), "busy after {ms} ms");
+    fn a_signal_after_a_gap_is_busy_after_the_settle_time() {
+        // Starting at once, after a VOX hang, and after the wait for the audio is over.
+        for (muted_ms, settles) in [(0, true), (300, true), (1200, false)] {
+            let mut d = narrow();
+            d.push(&vec![0.0; FS as usize]);
+            d.resume();
+            d.push(&vec![0.0; muted_ms * 48]);
+            let ms = tone(0.05, 0.1).chunks(48).position(|c| {
+                d.push(c);
+                d.busy()
+            });
+            let ms = ms.expect("never busy") + 1;
+            let limit = 10 * if settles { SETTLE_BLOCKS + 2 } else { 2 };
+            assert!(ms <= limit, "muted {muted_ms} ms: busy after {ms} ms");
+        }
     }
 
     #[test]
