@@ -374,7 +374,7 @@ fn a_busy_hold_does_not_outlast_our_own_transmission() {
     rx.push(&vec![0.0; 4800]);
     assert!(rx.busy(), "the hold runs 100 ms after the signal");
     rx.reset();
-    rx.push(&vec![0.0; 48]);
+    rx.push(&[0.0; 48]);
     assert!(!rx.busy(), "busy after our transmission");
 }
 
