@@ -455,10 +455,19 @@ fn measure(timeline: &[bool], signal: &Range<usize>) -> Metrics {
     }
 }
 
-/// Metrics of every detector (inner) for every trial (outer), on every core.
-/// Trial `t` draws its audio from seed `name_seed(case) + t`.
-fn run_case(ctx: &Ctx, ci: usize, trials: u32) -> Vec<Vec<Metrics>> {
+/// The clip of trial `t` of case `ci`, drawn from seed `name_seed(case) + t`.
+fn clip(ctx: &Ctx, ci: usize, t: u32) -> Clip {
     let case = &CASES[ci];
+    let mut rng = Prng::new(name_seed(case.name).wrapping_add(t));
+    let clip = (case.make)(ctx, &mut rng, t);
+    if case.expect == Expect::Busy {
+        assert!(clip.signal.end + samples(1.0) <= clip.audio.len(), "{}: too short", case.name);
+    }
+    clip
+}
+
+/// Metrics of every detector (inner) for every trial (outer), on every core.
+fn run_case(ctx: &Ctx, ci: usize, trials: u32) -> Vec<Vec<Metrics>> {
     let p = &ctx.modem.ofdm.p;
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as u32;
     let mut out: Vec<(u32, Vec<Metrics>)> = std::thread::scope(|s| {
@@ -468,11 +477,7 @@ fn run_case(ctx: &Ctx, ci: usize, trials: u32) -> Vec<Vec<Metrics>> {
                     (th..trials)
                         .step_by(threads as usize)
                         .map(|t| {
-                            let mut rng = Prng::new(name_seed(case.name).wrapping_add(t));
-                            let clip = (case.make)(ctx, &mut rng, t);
-                            if case.expect == Expect::Busy {
-                                assert!(clip.signal.end + samples(1.0) <= clip.audio.len(), "{}: too short", case.name);
-                            }
+                            let clip = clip(ctx, ci, t);
                             let m = DETECTORS
                                 .iter()
                                 .map(|(_, make)| measure(&timeline(*make, p, &clip.audio), &clip.signal))
@@ -606,6 +611,30 @@ fn in_band_ignores_sound_outside_the_band() {
         for r in run_case(&ctx, case("quiet voice under strong hum"), 2) {
             assert!(r[d].on_ms.is_some() && r[d].busy > 0.5, "{mode}: in-band missed a voice under hum: {:?}", r[d]);
         }
+    }
+}
+
+/// The CTCSS case the low band edge is designed for: 254.1 Hz, the highest tone, at
+/// every deviation up to 1500 Hz on a clean carrier. Only the click when the squelch
+/// opens may read busy.
+#[test]
+fn in_band_ignores_the_highest_ctcss_tone() {
+    let (_, make) = DETECTORS.iter().find(|(n, _)| *n == "in-band").unwrap();
+    let ctx = ctx("wide", 20.0);
+    let ci = case("strong carrier, CTCSS only");
+    let top = CTCSS_HZ.len() as u32 - 1;
+    for dev in 0..CTCSS_DEVIATION_HZ.len() as u32 {
+        // `ctcss` takes the tone from `t % 21` and the deviation from `t / 21 % 3`.
+        let t = dev * CTCSS_HZ.len() as u32 + top;
+        let c = clip(&ctx, ci, t);
+        let tl = timeline(*make, &ctx.modem.ofdm.p, &c.audio);
+        let settled = (c.signal.start + samples(0.5)) / STEP..c.signal.end / STEP;
+        let late = tl[settled].iter().filter(|&&b| b).count();
+        assert_eq!(
+            late, 0,
+            "254.1 Hz at {} Hz deviation: busy for {late} ms after onset",
+            CTCSS_DEVIATION_HZ[dev as usize]
+        );
     }
 }
 
