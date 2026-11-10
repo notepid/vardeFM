@@ -38,6 +38,12 @@ impl AudioLevel {
     }
 }
 
+/// A burst detector: search `rx` from `from`, return where the body of preamble B starts.
+pub(crate) type DetectFn = fn(&Modem, &[f32], usize) -> Option<usize>;
+
+/// The detector the receiver searches with.
+const OFDM_DETECT: DetectFn = |m, rx, from| m.ofdm.detect(rx, from);
+
 pub struct Receiver {
     modem: Arc<Modem>,
     buf: Vec<f32>,
@@ -53,7 +59,7 @@ pub struct Receiver {
     /// evaluation can check its offline receiver against this one for every detector
     /// it scores. Always `Ofdm::detect` outside tests.
     #[cfg(test)]
-    pub(crate) detect: crate::detect_eval::DetectFn,
+    pub(crate) detect: DetectFn,
 }
 
 impl Receiver {
@@ -67,7 +73,7 @@ impl Receiver {
             pending: None,
             detector,
             #[cfg(test)]
-            detect: |m, rx, from| m.ofdm.detect(rx, from),
+            detect: OFDM_DETECT,
         }
     }
 
@@ -120,6 +126,16 @@ impl Receiver {
         AudioLevel::of(&self.buf[start.min(end)..end])
     }
 
+    /// Search the buffer from `search` for a burst. Only the detector differs under
+    /// test, where the `detect` field can replace it.
+    fn find_burst(&self) -> Option<usize> {
+        #[cfg(not(test))]
+        let f = OFDM_DETECT;
+        #[cfg(test)]
+        let f = self.detect;
+        f(&self.modem, &self.buf, self.search)
+    }
+
     /// One processing step. Returns Some(true) if something changed and we should go again.
     fn step(&mut self, out: &mut Vec<RxBurst>) -> Option<bool> {
         let m = &self.modem;
@@ -151,11 +167,7 @@ impl Receiver {
         }
 
         let l = m.ofdm.p.symbol_len();
-        #[cfg(not(test))]
-        let found = m.ofdm.detect(&self.buf, self.search);
-        #[cfg(test)]
-        let found = (self.detect)(m, &self.buf, self.search);
-        match found {
+        match self.find_burst() {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
                     // Come back when the header has arrived; re-detect from just before it.

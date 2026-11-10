@@ -51,8 +51,7 @@ use std::sync::Arc;
 use vardefm_dsp::prng::Prng;
 use vardefm_sim::{transmit, FmChannelConfig};
 
-/// A burst detector: search `rx` from `from`, return where the body of preamble B starts.
-pub(crate) type DetectFn = fn(&Modem, &[f32], usize) -> Option<usize>;
+pub(crate) use crate::receiver::DetectFn;
 
 /// Detectors under evaluation. The first one is the reference for the paired tests.
 pub(crate) const DETECTORS: &[(&str, DetectFn)] = &[("sc", |m, rx, from| m.ofdm.detect(rx, from))];
