@@ -1,0 +1,5 @@
+#!/bin/sh
+# AppRun for the VardeFM AppImage. Runs the bundled binary with all args.
+set -e
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/vardefm" "$@"

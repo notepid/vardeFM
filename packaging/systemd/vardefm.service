@@ -1,0 +1,21 @@
+[Unit]
+Description=VardeFM modem (open FM data modem, VARA-compatible TCP interface)
+Documentation=https://github.com/notepid/vardeFM
+After=sound.target network.target
+Wants=sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vardefm modem --quiet
+Restart=on-failure
+RestartSec=3
+SupplementaryGroups=audio gpio
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vardefm
+WorkingDirectory=/var/lib/vardefm
+
+[Install]
+WantedBy=multi-user.target

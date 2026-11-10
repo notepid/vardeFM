@@ -1,0 +1,66 @@
+.TH VARDEFM 1 "2026-11-10" "vardefm 0.3.1" "User Commands"
+.SH NAME
+vardefm \- open high-speed data modem for FM radios
+.SH SYNOPSIS
+.B vardefm
+[\fIOPTIONS\fR] \fICOMMAND\fR
+.SH DESCRIPTION
+VardeFM is an open-source, cross-platform high-speed data modem for FM radios.
+It is a drop-in alternative to VARA FM for Winlink and similar apps (both
+stations need VardeFM). Host programs talk to it over VARA's TCP
+command/data interface (default ports 8300/8301).
+.PP
+Full user guide: /usr/share/doc/vardefm/README.md,
+radio setup: /usr/share/doc/vardefm/RADIO.md,
+protocol: /usr/share/doc/vardefm/PROTOCOL.md.
+Upstream: https://github.com/notepid/vardeFM
+.SH COMMANDS
+.TP
+.B modem
+Run the modem on a real radio, with VARA-compatible TCP ports.
+Example: vardefm modem \-\-audio\-in "USB" \-\-audio\-out "USB" \-\-ptt cm108
+.TP
+.B sim-pair
+Two VardeFM stations in one process joined by a simulated FM link.
+.TP
+.B monitor
+Show the receive level and decode any VardeFM bursts heard.
+.TP
+.B devices
+List sound cards, CM108/CM119-type PTT devices and serial ports.
+.TP
+.B ptt-test
+Key the transmitter briefly to check the PTT wiring.
+.TP
+.B tone
+Transmit a test tone to set the transmit level (FM deviation).
+.TP
+.B bench
+Measure whether this computer decodes fast enough for each mode and level.
+.TP
+.B sim, sweep, tx-wav, rx-wav, decode
+Test, measurement and WAV tools (see --help output).
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print help (also: vardefm <command> \-\-help).
+.TP
+.BR \-V ", " \-\-version
+Print version.
+.SH FILES
+.TP
+.I /etc/udev/rules.d/99-vardefm-cm108.rules
+udev rules letting group "audio" key CM108/CM119/AIOC PTT without root.
+.SH EXAMPLES
+vardefm devices
+.br
+vardefm ptt-test --ptt cm108
+.br
+vardefm monitor --audio-in "USB"
+.br
+vardefm modem --audio-in "USB" --audio-out "USB" --ptt cm108
+.SH SEE ALSO
+.BR rigctld (1),
+.BR pat (1)
+.SH LICENSE
+GNU GPL version 3 or later.

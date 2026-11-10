@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=VardeFM
+GenericName=FM Data Modem
+Comment=Open high-speed data modem for FM radios (VARA FM alternative)
+Exec=vardefm modem
+Icon=vardefm
+Terminal=true
+Categories=HamRadio;Network;Utility;
+Keywords=hamradio;vara;winlink;modem;packet;
+StartupNotify=false

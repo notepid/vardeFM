@@ -27,8 +27,24 @@ Get the archive for your system from the [releases page](https://github.com/note
 | `linux_armv7.tar.gz` | Raspberry Pi 2/3/4/Zero 2 W, 32-bit Raspberry Pi OS |
 | `darwin_arm64.tar.gz` | Mac with Apple Silicon (M1 or newer), macOS 11 or newer |
 | `darwin_amd64.tar.gz` | Intel Mac, macOS 11 or newer |
+| `vardefm_*_amd64.deb` | Debian/Ubuntu PC: `sudo apt install ./vardefm_*_amd64.deb` |
+| `vardefm-*.x86_64.rpm` | Fedora/openSUSE PC: `sudo dnf install ./vardefm-*.x86_64.rpm` |
+| `VardeFM-*-x86_64.AppImage` | Any x86_64 Linux: `chmod +x *.AppImage && ./VardeFM-*.AppImage --version` |
 
-Each archive includes the user guide ([packaging/README.md](packaging/README.md)). It covers
+One-line install (Linux/macOS, picks the .deb/.rpm when run as root on a
+matching system, else the tarball binary):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/notepid/vardeFM/master/packaging/install.sh | sh
+```
+
+Arch Linux: `yay -S vardefm` (source build), `vardefm-bin` (release binary),
+or `vardefm-git` (latest git).
+
+The `.deb`/`.rpm` packages also install the udev rules for CM108 PTT, a
+systemd unit, and a man page (`man vardefm`).
+
+Each download includes the user guide ([packaging/README.md](packaging/README.md)). It covers
 installation, connecting a radio, PTT, and setting up Pat, Winlink Express and HamBBS.
 [docs/RADIO.md](docs/RADIO.md) goes deeper into the radio setup.
 

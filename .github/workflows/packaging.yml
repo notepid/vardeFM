@@ -1,0 +1,109 @@
+# Builds native Linux packages (.deb, .rpm, AppImage) and updates the AUR
+# on every version tag (v*). Runs after the main release archives exist so
+# the install script and -bin package have tarballs to fetch.
+name: Packaging
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # upload .deb/.rpm/.AppImage to the GitHub release
+
+jobs:
+  linux-packages:
+    name: Build .deb, .rpm, AppImage (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pkg-x86_64
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config rpm file zsync \
+            jq desktop-file-utils
+          cargo install cargo-deb cargo-generate-rpm
+      - name: Build binary
+        run: cargo build --profile dist --locked -p vardefm-cli
+      - name: Build .deb
+        run: |
+          mkdir -p target/release
+          cp target/dist/vardefm target/release/vardefm
+          cargo deb --locked -p vardefm-cli
+          ls -l target/debian/*.deb
+      - name: Build .rpm
+        run: |
+          cd crates/vardefm-cli
+          mkdir -p ../../target/generate-rpm
+          cargo generate-rpm -o ../../target/generate-rpm/vardefm.rpm
+          ls -l ../../target/generate-rpm/
+      - name: Build AppImage
+        run: |
+          curl -fsSL -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          export PATH="/tmp:$PATH"
+          bash packaging/appimage/build-appimage.sh dist
+      - name: Rename rpm to versioned name
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          mv target/generate-rpm/*.rpm "dist/vardefm-${ver}-1.x86_64.rpm" 2>/dev/null || true
+          mv target/debian/*.deb dist/ 2>/dev/null || true
+          ls -l dist/
+      - name: Test install script (tarball path)
+        run: bash packaging/install.sh --to /tmp/vf-test --tarball && /tmp/vf-test/vardefm --version
+      - name: Upload packages to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.deb dist/*.rpm dist/*.AppImage --clobber
+
+  aur:
+    name: Update AUR (vardefm, vardefm-bin)
+    needs: linux-packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compute sums and refresh AUR snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          src="https://github.com/notepid/vardeFM/archive/refs/tags/v$ver.tar.gz"
+          bin="https://github.com/notepid/vardeFM/releases/download/v$ver/vardefm_${ver}_linux_amd64.tar.gz"
+          # wait for the binary tarball (built by the release workflow)
+          for i in $(seq 1 30); do
+            curl -fsSL -o /tmp/bin.tgz "$bin" && break || sleep 60
+          done
+          curl -fsSL -o /tmp/src.tgz "$src"
+          srcsha=$(sha256sum /tmp/src.tgz | cut -d' ' -f1)
+          binsha=$(sha256sum /tmp/bin.tgz | cut -d' ' -f1)
+          sed -i "s/^pkgver=.*/pkgver=$ver/; s/^pkgrel=.*/pkgrel=1/" \
+            packaging/aur/vardefm/PKGBUILD packaging/aur/vardefm-bin/PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('$srcsha')/" packaging/aur/vardefm/PKGBUILD
+          sed -i "s|^source=(.*|source=(\"$bin\")|" packaging/aur/vardefm-bin/PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('$binsha')/" packaging/aur/vardefm-bin/PKGBUILD
+          (cd packaging/aur/vardefm && makepkg --printsrcinfo > .SRCINFO)
+          (cd packaging/aur/vardefm-bin && makepkg --printsrcinfo > .SRCINFO)
+          git diff --stat
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: vardefm
+          pkgbuild: packaging/aur/vardefm/PKGBUILD
+          srcinfo: packaging/aur/vardefm/.SRCINFO
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+      - name: Publish to AUR (-bin)
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: vardefm-bin
+          pkgbuild: packaging/aur/vardefm-bin/PKGBUILD
+          srcinfo: packaging/aur/vardefm-bin/.SRCINFO
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}

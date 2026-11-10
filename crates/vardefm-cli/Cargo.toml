@@ -25,3 +25,38 @@ ctrlc = "3.5"
 [lib]
 name = "vardefm_cli"
 path = "src/lib.rs"
+
+[package.metadata.deb]
+name = "vardefm"
+maintainer = "VardeFM contributors <https://github.com/notepid/vardeFM>"
+copyright = "2025-2026, VardeFM contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = """An open-source, cross-platform high-speed data modem for FM radios.
+ Drop-in alternative to VARA FM for Winlink and similar apps (both stations
+ need VardeFM). Offers VARA's TCP command/data interface on ports 8300/8301."""
+section = "hamradio"
+priority = "optional"
+assets = [
+  ["../../target/release/vardefm", "usr/bin/", "755"],
+  ["../../packaging/linux/99-vardefm-cm108.rules", "usr/lib/udev/rules.d/", "644"],
+  ["../../packaging/systemd/vardefm.service", "usr/lib/systemd/system/", "644"],
+  ["../../packaging/vardefm.1", "usr/share/man/man1/", "644"],
+  ["../../packaging/README.md", "usr/share/doc/vardefm/README.md", "644"],
+  ["../../docs/RADIO.md", "usr/share/doc/vardefm/RADIO.md", "644"],
+  ["../../docs/PROTOCOL.md", "usr/share/doc/vardefm/PROTOCOL.md", "644"],
+]
+depends = "libasound2t64 | libasound2, libc6, libgcc-s1"
+recommends = "rigctld"
+suggests = "pat, direwolf"
+
+[package.metadata.generate-rpm]
+name = "vardefm"
+assets = [
+  { source = "../../target/release/vardefm", dest = "/usr/bin/vardefm", mode = "755" },
+  { source = "../../packaging/linux/99-vardefm-cm108.rules", dest = "/usr/lib/udev/rules.d/99-vardefm-cm108.rules", mode = "644" },
+  { source = "../../packaging/systemd/vardefm.service", dest = "/usr/lib/systemd/system/vardefm.service", mode = "644" },
+  { source = "../../packaging/vardefm.1", dest = "/usr/share/man/man1/vardefm.1", mode = "644" },
+  { source = "../../packaging/README.md", dest = "/usr/share/doc/vardefm/README.md", mode = "644" },
+]
+license = "GPL-3.0-or-later"
+summary = "Open high-speed data modem for FM radios (VARA FM alternative)"
