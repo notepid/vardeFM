@@ -3,6 +3,10 @@
 use num_complex::Complex32;
 use std::f32::consts::PI;
 
+/// Filter state below this is set to zero. Exact silence after a signal decays
+/// the state into subnormal numbers, which are very slow on x86 and stay there.
+const FLUSH: f32 = 1e-30;
+
 /// Second-order IIR section (transposed direct form II).
 #[derive(Clone, Debug)]
 pub struct Biquad {
@@ -34,11 +38,23 @@ impl Biquad {
         Self::from_coeffs([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha])
     }
 
+    /// A non-finite output (from a sound-card glitch, or overflow) clears the state and gives 0:
+    /// left in an IIR state it would make every later output NaN.
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z1;
+        if !y.is_finite() {
+            (self.z1, self.z2) = (0.0, 0.0);
+            return 0.0;
+        }
         self.z1 = self.b1 * x - self.a1 * y + self.z2;
         self.z2 = self.b2 * x - self.a2 * y;
+        if self.z1.abs() < FLUSH {
+            self.z1 = 0.0;
+        }
+        if self.z2.abs() < FLUSH {
+            self.z2 = 0.0;
+        }
         y
     }
 }
@@ -63,6 +79,25 @@ impl Chain {
         for q in BUTTER4_Q {
             c.biquads.push(Biquad::highpass(fs, lo, q));
             c.biquads.push(Biquad::lowpass(fs, hi, q));
+        }
+        c
+    }
+
+    /// This chain followed by `other`. A chain runs its first-order sections before
+    /// its biquads, so `other` may bring first-order sections only while this chain
+    /// has no biquads; otherwise the sections would run out of order.
+    pub fn then(mut self, other: Chain) -> Self {
+        debug_assert!(other.first.is_empty() || self.biquads.is_empty(), "Chain::then would reorder sections");
+        self.first.extend(other.first);
+        self.biquads.extend(other.biquads);
+        self
+    }
+
+    /// 4th-order Butterworth highpass.
+    pub fn highpass4(fs: f32, f: f32) -> Self {
+        let mut c = Self::new();
+        for q in BUTTER4_Q {
+            c.biquads.push(Biquad::highpass(fs, f, q));
         }
         c
     }
@@ -129,10 +164,18 @@ impl FirstOrder {
         Self::from_analog(fs, g, 0.0, 1.0, tau)
     }
 
+    /// A non-finite output clears the state and gives 0, as in [`Biquad::process`].
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z;
+        if !y.is_finite() {
+            self.z = 0.0;
+            return 0.0;
+        }
         self.z = self.b1 * x - self.a1 * y;
+        if self.z.abs() < FLUSH {
+            self.z = 0.0;
+        }
         y
     }
 }
@@ -215,6 +258,48 @@ mod tests {
             let mut de = FirstOrder::deemphasis(fs, 750e-6);
             let g = tone_gain(&mut |x| de.process(pre.process(x)), freq, fs);
             assert!((g - 1.0).abs() < 0.15, "{freq} Hz gain {g}");
+        }
+    }
+
+    #[test]
+    fn filters_recover_from_non_finite_input() {
+        let fs = 48_000.0;
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bp = Chain::bandpass4(fs, 300.0, 3000.0);
+            assert_eq!(bp.process(bad), 0.0);
+            assert!(tone_gain(&mut |x| bp.process(x), 1000.0, fs) > 0.9, "biquads after {bad}");
+            let mut de = FirstOrder::deemphasis(fs, 750e-6);
+            assert_eq!(de.process(bad), 0.0);
+            assert!(tone_gain(&mut |x| de.process(x), 1000.0, fs) > 0.9, "first order after {bad}");
+        }
+    }
+
+    #[test]
+    fn silence_after_a_signal_never_leaves_subnormal_state() {
+        let fs = 48_000.0;
+        // The slowest-decaying filters in use: the simulator's 20 Hz edge and de-emphasis.
+        let mut c = Chain::bandpass4(fs, 20.0, 7000.0);
+        c.push_first_order(FirstOrder::deemphasis(fs, 750e-6));
+        let mut seed = 1u32;
+        for _ in 0..48_000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            c.process(seed as f32 / u32::MAX as f32 - 0.5);
+        }
+        let ok = |z: f32| z == 0.0 || z.is_normal();
+        for i in 0..20 * 48_000 {
+            assert!(c.process(0.0).classify() != std::num::FpCategory::Subnormal, "output, sample {i}");
+            assert!(c.biquads.iter().all(|b| ok(b.z1) && ok(b.z2)) && c.first.iter().all(|f| ok(f.z)), "sample {i}");
+        }
+    }
+
+    #[test]
+    fn then_is_the_two_chains_in_series() {
+        let fs = 48_000.0;
+        let (mut a, mut b) = (Chain::bandpass4(fs, 400.0, 6000.0), Chain::highpass4(fs, 400.0));
+        let mut ab = Chain::bandpass4(fs, 400.0, 6000.0).then(Chain::highpass4(fs, 400.0));
+        for i in 0..4800 {
+            let x = (i as f32 * 0.05).sin() + if i == 100 { 1.0 } else { 0.0 };
+            assert_eq!(ab.process(x), b.process(a.process(x)), "sample {i}");
         }
     }
 

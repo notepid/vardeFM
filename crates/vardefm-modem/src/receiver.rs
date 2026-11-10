@@ -53,7 +53,7 @@ pub struct Receiver {
 
 impl Receiver {
     pub fn new(modem: Arc<Modem>) -> Self {
-        let detector = BusyDetector::new(modem.fs());
+        let detector = BusyDetector::new(&modem.ofdm.p);
         Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector }
     }
 
