@@ -67,6 +67,15 @@ impl Chain {
         c
     }
 
+    /// 4th-order Butterworth highpass.
+    pub fn highpass4(fs: f32, f: f32) -> Self {
+        let mut c = Self::new();
+        for q in BUTTER4_Q {
+            c.biquads.push(Biquad::highpass(fs, f, q));
+        }
+        c
+    }
+
     /// 4th-order Butterworth lowpass.
     pub fn lowpass4(fs: f32, f: f32) -> Self {
         let mut c = Self::new();

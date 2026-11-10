@@ -50,7 +50,8 @@ use vardefm_sim::{transmit, FmChannelConfig};
 pub(crate) type MakeFn = fn(&OfdmParams) -> BusyDetector;
 
 /// Detectors under evaluation.
-pub(crate) const DETECTORS: &[(&str, MakeFn)] = &[("broadband", |p| BusyDetector::new(p.fs))];
+pub(crate) const DETECTORS: &[(&str, MakeFn)] =
+    &[("broadband", |p| BusyDetector::broadband(p.fs)), ("in-band", BusyDetector::new)];
 
 const FS: f32 = 48_000.0;
 /// The detectors are read after every `STEP` samples (1 ms).
@@ -575,6 +576,35 @@ fn harness_sees_a_burst_and_learns_hiss() {
             for (m, (name, _)) in r.iter().zip(DETECTORS) {
                 assert!(m.busy < 0.25, "{mode}: {name} busy for {:.2} of steady hiss", m.busy);
             }
+        }
+    }
+}
+
+/// What the band limit is for, on a few trials: out-of-band sound never reads busy
+/// and does not hide a voice in the band.
+#[test]
+fn in_band_ignores_sound_outside_the_band() {
+    let d = DETECTORS.iter().position(|(n, _)| *n == "in-band").unwrap();
+    for mode in ["narrow", "wide"] {
+        let ctx = ctx(mode, 20.0);
+        for name in [
+            "mains hum 50 Hz",
+            "mains hum 60 Hz",
+            "DC offset steps",
+            "hiss above the band",
+            "strong carrier, CTCSS only",
+        ] {
+            let ci = case(name);
+            if CASES[ci].wide_only && mode != "wide" {
+                continue;
+            }
+            for r in run_case(&ctx, ci, 2) {
+                // The squelch-open click on a CTCSS tone reads busy for the hold time.
+                assert!(r[d].busy < 0.02, "{mode}: in-band busy for {:.3} of {name}", r[d].busy);
+            }
+        }
+        for r in run_case(&ctx, case("quiet voice under strong hum"), 2) {
+            assert!(r[d].on_ms.is_some() && r[d].busy > 0.5, "{mode}: in-band missed a voice under hum: {:?}", r[d]);
         }
     }
 }

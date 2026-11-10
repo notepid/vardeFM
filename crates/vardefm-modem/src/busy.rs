@@ -8,8 +8,14 @@
 //! The background is a low percentile of the level over the last couple of
 //! seconds, so short quiet spells (a VOX hang, a carrier with no audio) do not
 //! pull it down, and a steady sound is accepted as background within that time.
+//!
+//! Only the mode's carrier band is measured. Sound outside it (a CTCSS tone,
+//! mains hum, hiss above the band) neither makes the channel busy nor raises the
+//! background over a signal inside it.
 
 use std::collections::VecDeque;
+use vardefm_dsp::filter::Chain;
+use vardefm_dsp::OfdmParams;
 
 /// Busy needs at least this level (RMS, full scale = 1), whatever the background.
 const MIN_RMS: f32 = 0.01;
@@ -23,8 +29,14 @@ const HISTORY_S: f32 = 2.0;
 const PERCENTILE: f32 = 0.2;
 /// How long the channel stays busy after the last loud block, seconds.
 const HOLD_S: f32 = 0.15;
+/// The measured band starts at least this high. CTCSS tones reach 254.1 Hz, too
+/// close under the lowest wide carrier (281 Hz) to be filtered out there; the two
+/// wide carriers below this carry little of a burst's power.
+const MIN_LOW_HZ: f32 = 400.0;
 
 pub struct BusyDetector {
+    /// Band-pass filters in cascade (none: broadband).
+    band: Vec<Chain>,
     block: usize,
     history: usize,
     hold: usize,
@@ -39,9 +51,28 @@ pub struct BusyDetector {
 }
 
 impl BusyDetector {
-    pub fn new(fs: f32) -> Self {
+    /// Measures the carrier band of the mode `p`.
+    pub fn new(p: &OfdmParams) -> Self {
+        let lo = p.carrier_freq(0).max(MIN_LOW_HZ);
+        let hi = p.carrier_freq(p.num_carriers - 1);
+        // 12th order below the band and 8th order above it, -9 and -6 dB at the edges.
+        // A CTCSS tone at 254.1 Hz comes out 48 dB down: at 1500 Hz deviation on the
+        // wide port (-9 dBFS) that is still 17 dB under the -40 dBFS minimum. One
+        // 4th-order band-pass alone would take it down only 16 dB.
+        let band = vec![Chain::bandpass4(p.fs, lo, hi), Chain::bandpass4(p.fs, lo, hi), Chain::highpass4(p.fs, lo)];
+        Self::with_band(p.fs, band)
+    }
+
+    /// Measures all of the audio, as before the band was limited (for comparison).
+    #[cfg(test)]
+    pub(crate) fn broadband(fs: f32) -> Self {
+        Self::with_band(fs, Vec::new())
+    }
+
+    fn with_band(fs: f32, band: Vec<Chain>) -> Self {
         let block = (BLOCK_S * fs).round().max(1.0) as usize;
         Self {
+            band,
             block,
             history: (HISTORY_S / BLOCK_S).round() as usize,
             hold: (HOLD_S * fs) as usize,
@@ -59,6 +90,7 @@ impl BusyDetector {
 
     pub fn push(&mut self, samples: &[f32]) {
         for &x in samples {
+            let x = self.band.iter_mut().fold(x, |x, f| f.process(x));
             self.sum += x as f64;
             self.sq += (x * x) as f64;
             self.n += 1;
@@ -103,6 +135,10 @@ mod tests {
 
     const FS: f32 = 48000.0;
 
+    fn narrow() -> BusyDetector {
+        BusyDetector::new(&OfdmParams::narrow())
+    }
+
     /// Deterministic white-ish noise with the given RMS.
     fn noise(seed: &mut u32, rms: f32, seconds: f32) -> Vec<f32> {
         (0..(seconds * FS) as usize)
@@ -117,7 +153,12 @@ mod tests {
     }
 
     fn tone(rms: f32, seconds: f32) -> Vec<f32> {
-        (0..(seconds * FS) as usize).map(|i| rms * 2f32.sqrt() * (i as f32 * 0.13).sin()).collect()
+        tone_hz(993.0, rms, seconds)
+    }
+
+    fn tone_hz(f: f32, rms: f32, seconds: f32) -> Vec<f32> {
+        let w = 2.0 * std::f32::consts::PI * f / FS;
+        (0..(seconds * FS) as usize).map(|i| rms * 2f32.sqrt() * (i as f32 * w).sin()).collect()
     }
 
     fn add(a: &[f32], b: &[f32]) -> Vec<f32> {
@@ -126,7 +167,7 @@ mod tests {
 
     #[test]
     fn closed_squelch_then_signal_is_busy() {
-        let mut d = BusyDetector::new(FS);
+        let mut d = narrow();
         d.push(&vec![0.0; FS as usize]);
         assert!(!d.busy());
         d.push(&tone(0.05, 0.1));
@@ -137,7 +178,7 @@ mod tests {
 
     #[test]
     fn quiet_signal_below_the_minimum_is_not_busy() {
-        let mut d = BusyDetector::new(FS);
+        let mut d = narrow();
         d.push(&vec![0.0; FS as usize]);
         d.push(&tone(0.005, 0.5));
         assert!(!d.busy());
@@ -146,7 +187,7 @@ mod tests {
     #[test]
     fn dc_offset_is_not_busy() {
         // A closed squelch measured -42 dBFS rms with -41 dBFS peak: a DC offset.
-        let mut d = BusyDetector::new(FS);
+        let mut d = narrow();
         d.push(&vec![0.0; FS as usize]);
         d.push(&vec![0.02; FS as usize]);
         assert!(!d.busy());
@@ -156,7 +197,7 @@ mod tests {
     fn steady_open_squelch_hiss_is_not_busy() {
         // Open squelch measured -27 dBFS rms.
         let mut seed = 1;
-        let mut d = BusyDetector::new(FS);
+        let mut d = narrow();
         d.push(&noise(&mut seed, 0.045, 0.5));
         assert!(!d.busy(), "hiss from the start is background");
         d.push(&noise(&mut seed, 0.045, 10.0));
@@ -166,7 +207,7 @@ mod tests {
     #[test]
     fn hiss_returning_after_squelch_opens_is_learned() {
         let mut seed = 2;
-        let mut d = BusyDetector::new(FS);
+        let mut d = narrow();
         d.push(&vec![0.0; FS as usize]);
         d.push(&noise(&mut seed, 0.045, 0.3));
         assert!(d.busy(), "new sound is busy at first");
@@ -178,7 +219,7 @@ mod tests {
     fn short_silence_does_not_lower_the_background() {
         // A VOX hang or our own transmission: silence for 0.3 s, then hiss again.
         let mut seed = 3;
-        let mut d = BusyDetector::new(FS);
+        let mut d = narrow();
         d.push(&noise(&mut seed, 0.045, 3.0));
         d.push(&vec![0.0; (0.3 * FS) as usize]);
         d.push(&noise(&mut seed, 0.045, 0.2));
@@ -188,10 +229,47 @@ mod tests {
     #[test]
     fn signal_well_above_hiss_is_busy() {
         let mut seed = 4;
-        let mut d = BusyDetector::new(FS);
+        let mut d = narrow();
         d.push(&noise(&mut seed, 0.045, 3.0));
         let hiss = noise(&mut seed, 0.045, 0.3);
         d.push(&add(&hiss, &tone(0.2, 0.3)));
+        assert!(d.busy());
+    }
+
+    #[test]
+    fn ctcss_tone_is_not_busy() {
+        // The highest CTCSS tone at 750 Hz deviation on the wide data port.
+        // It fades in over 20 ms: a tone that starts abruptly clicks across the band.
+        // The click when a squelch opens on a tone reads busy for the hold time; the
+        // busy_eval case "strong carrier, CTCSS only" measures it.
+        let mut ctcss = tone_hz(254.1, 0.177, 0.5);
+        for (i, x) in ctcss.iter_mut().take(960).enumerate() {
+            *x *= i as f32 / 960.0;
+        }
+        let mut d = BusyDetector::new(&OfdmParams::wide());
+        d.push(&vec![0.0; FS as usize]);
+        for (i, block) in ctcss.chunks(480).enumerate() {
+            d.push(block);
+            assert!(!d.busy(), "busy after {} ms", 10 * (i + 1));
+        }
+    }
+
+    #[test]
+    fn sound_above_the_band_is_not_busy() {
+        let mut d = BusyDetector::new(&OfdmParams::wide());
+        d.push(&vec![0.0; FS as usize]);
+        for (i, block) in tone_hz(8000.0, 0.1, 0.5).chunks(480).enumerate() {
+            d.push(block);
+            assert!(!d.busy(), "busy after {} ms", 10 * (i + 1));
+        }
+    }
+
+    #[test]
+    fn broadband_counts_a_ctcss_tone() {
+        // What the band limit is for: measured over all of the audio the tone is new sound.
+        let mut d = BusyDetector::broadband(FS);
+        d.push(&vec![0.0; FS as usize]);
+        d.push(&tone_hz(254.1, 0.177, 0.1));
         assert!(d.busy());
     }
 }
