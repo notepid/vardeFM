@@ -20,6 +20,15 @@
 //! so a detector may occasionally beat it. The gap between `genie` and a detector
 //! approximates what detection costs at that CNR.
 //!
+//! The true position comes from the reference detector, not from the channel: the
+//! simulator's filters are IIR, so there is no single delay to add to the burst
+//! layout, and any point in the cyclic prefix that avoids the channel's tails is as
+//! valid. Each mode prints how far it lies from the transmitted boundary and from the
+//! delay where the sent and received audio correlate best. At the time of writing that
+//! is 31 and 11 samples in narrow mode, 9 and 6 in wide, so a detector that lands on
+//! the correlation delay in narrow mode is 20 samples from the true position, inside
+//! the ±32 of `hit` but not by much. Both `hit` and `genie` share that bias.
+//!
 //! A separate pass counts detections and decoded headers per minute on audio that
 //! holds no burst (a carrier at -10 dB CNR, which sounds like an open squelch, a
 //! weak unmodulated carrier, white noise, and keyed tones: 750 + 1500 Hz, a roger
@@ -158,6 +167,25 @@ fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
     let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
     let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
     m.ofdm.detect(&transmit(&clean, &tx), 0).expect("burst not found on a clean channel")
+}
+
+/// Where the body of preamble B starts in the channel's output by the burst layout
+/// alone: lead silence, leader, preamble A and preamble B's cyclic prefix.
+fn layout_position(m: &Modem, mode: &str) -> usize {
+    let cfg = FmChannelConfig::by_name(mode).unwrap();
+    let p = &m.ofdm.p;
+    (cfg.lead_silence_s * cfg.fs) as usize + (m.leader_symbols() + 1) * p.symbol_len() + p.ncp
+}
+
+/// The channel's delay, samples: the lag up to one cyclic prefix at which a noiseless
+/// copy of the burst correlates best with what was sent. Independent of any detector.
+fn channel_delay(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
+    let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+    let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
+    let rx = transmit(&clean, &tx);
+    let rx = &rx[(clean.lead_silence_s * clean.fs) as usize..];
+    let corr = |d: usize| -> f64 { tx.iter().zip(&rx[d..]).map(|(&a, &b)| a as f64 * b as f64).sum() };
+    (0..=m.ofdm.p.ncp).max_by(|&a, &b| corr(a).total_cmp(&corr(b))).unwrap()
 }
 
 /// Run `trials` trials of a `level` burst of `ncw` codewords on every core.
@@ -337,6 +365,15 @@ fn detector_eval() {
     for &mode in &modes {
         let m = modem(mode);
         println!("\n{mode}: hits and decoded bursts out of {trials}; paired test against '{}'", names[0]);
+        // The true position is the reference's own; show where it lies against the channel.
+        let truth = true_position(&m, mode, level, ncw) as i64;
+        let layout = layout_position(&m, mode) as i64;
+        println!(
+            "  true position: sample {truth}, {} after the sent boundary, {} after the channel delay; hit within ±{}",
+            truth - layout,
+            truth - layout - channel_delay(&m, mode, level, ncw) as i64,
+            m.ofdm.p.ncp / 4
+        );
         for cnr in cnr_list(mode) {
             let res = run_trials(&m, mode, cnr, level, ncw, trials);
             let genie = res.iter().filter(|r| r.genie).count();
