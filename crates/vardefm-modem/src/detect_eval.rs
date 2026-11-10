@@ -197,11 +197,13 @@ fn mcnemar(b: u32, c: u32) -> f64 {
 }
 
 /// Environment variable `name` parsed as `T`, or `default` when unset. A value that
-/// does not parse stops the run: falling back would quietly run something else.
+/// does not parse, or is not Unicode, stops the run: falling back would quietly run
+/// something else.
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
     match std::env::var(name) {
         Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} does not parse")),
-        Err(_) => default,
+        Err(std::env::VarError::NotPresent) => default,
+        Err(std::env::VarError::NotUnicode(v)) => panic!("{name}={v:?} is not Unicode"),
     }
 }
 
@@ -289,7 +291,7 @@ fn detector_eval() {
     let noise_s: f32 = env_or("NOISE_SECONDS", 60.0);
     assert!((level as usize) < LEVELS.len(), "LEVEL {level}: levels are 0 to {}", LEVELS.len() - 1);
     assert!(trials > 0, "TRIALS must be at least 1");
-    assert!(noise_s > 0.0, "NOISE_SECONDS={noise_s}: must be more than 0");
+    assert!(noise_s > 0.0 && noise_s.is_finite(), "NOISE_SECONDS={noise_s}: must be a finite number more than 0");
     // Checked up front, so that a typo does not fail after the first mode has run.
     let modes: Vec<&str> = modes.split(',').map(str::trim).collect();
     for mode in &modes {
@@ -302,12 +304,19 @@ fn detector_eval() {
     let cnr_list = |mode: &str| -> Vec<f32> {
         let default = if mode == "narrow" { "3,4,5,6,7,8,10" } else { "5,6,7,8,9,10,12" };
         let cnrs: String = env_or("CNRS", default.to_string());
-        cnrs.split(',').map(|c| c.trim().parse().unwrap_or_else(|_| panic!("CNRS: {c:?} is not a number"))).collect()
+        let cnr = |c: &str| -> f32 {
+            let v: f32 = c.trim().parse().unwrap_or_else(|_| panic!("CNRS: {c:?} is not a number"));
+            // NaN or infinite noise gives an all-NaN recording, which would be written as data.
+            assert!(v.is_finite(), "CNRS: {c:?} is not a finite number of dB");
+            v
+        };
+        cnrs.split(',').map(cnr).collect()
     };
     for mode in &modes {
         cnr_list(mode);
     }
-    let mut csv = std::env::var("CSV").ok().map(|p| {
+    // Any path the OS accepts, Unicode or not.
+    let mut csv = std::env::var_os("CSV").map(|p| {
         let new = !std::path::Path::new(&p).exists();
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
         if new {
