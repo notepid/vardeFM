@@ -107,7 +107,8 @@ impl BusyDetector {
 
     pub fn push(&mut self, samples: &[f32]) {
         for &x in samples {
-            let x = self.band.process(x);
+            // A NaN or Inf from the sound card would stay in the filter state for good.
+            let x = self.band.process(if x.is_finite() { x } else { 0.0 });
             if self.settle > 0 {
                 self.settle -= 1;
                 continue;
@@ -279,6 +280,20 @@ mod tests {
             d.push(&vec![0.0; FS as usize]);
             d.push(&tone(0.3, 0.1));
             assert!(d.busy(), "deaf after {bad}");
+        }
+    }
+
+    #[test]
+    fn a_non_finite_sample_in_a_ctcss_tone_is_not_busy() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut ctcss = tone_hz(254.1, 0.177, 3.5);
+            ctcss[3 * FS as usize] = bad;
+            let mut d = BusyDetector::new(&OfdmParams::wide());
+            d.push(&ctcss[..3 * FS as usize]);
+            for (i, block) in ctcss[3 * FS as usize..].chunks(480).enumerate() {
+                d.push(block);
+                assert!(!d.busy(), "busy {} ms after {bad}", 10 * (i + 1));
+            }
         }
     }
 
