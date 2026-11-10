@@ -317,9 +317,13 @@ fn detector_eval() {
     }
     // Any path the OS accepts, Unicode or not.
     let mut csv = std::env::var_os("CSV").map(|p| {
-        let new = !std::path::Path::new(&p).exists();
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
-        if new {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .unwrap_or_else(|e| panic!("CSV: cannot open {p:?}: {e}"));
+        // An empty file (from mktemp, say) needs the header as much as a new one.
+        if f.metadata().unwrap_or_else(|e| panic!("CSV: cannot read {p:?}: {e}")).len() == 0 {
             writeln!(f, "mode,level,ncw,cnr_db,trials,detector,hits,bursts").unwrap();
         }
         f
