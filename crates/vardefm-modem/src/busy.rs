@@ -33,6 +33,9 @@ const HOLD_S: f32 = 0.15;
 /// close under the lowest wide carrier (281 Hz) to be filtered out there; the two
 /// wide carriers below this carry little of a burst's power.
 const MIN_LOW_HZ: f32 = 400.0;
+/// Where the audio resumes after a gap (our own transmission), the jump clicks into
+/// the band. Nothing is measured for this long after it, seconds.
+const SETTLE_S: f32 = 0.02;
 
 pub struct BusyDetector {
     /// Band-pass filter (empty: broadband).
@@ -48,6 +51,9 @@ pub struct BusyDetector {
     powers: VecDeque<f32>,
     /// Samples since the last loud block.
     quiet: usize,
+    /// Samples still to pass through the filter unmeasured after a gap.
+    settle: usize,
+    settle_len: usize,
 }
 
 impl BusyDetector {
@@ -81,6 +87,8 @@ impl BusyDetector {
             n: 0,
             powers: VecDeque::new(),
             quiet: usize::MAX / 2,
+            settle: 0,
+            settle_len: (SETTLE_S * fs) as usize,
         }
     }
 
@@ -88,9 +96,22 @@ impl BusyDetector {
         self.quiet < self.hold
     }
 
+    /// The next audio does not follow on from the last: nothing was heard in between
+    /// (while we transmitted). The filter keeps running, so a sound that is still
+    /// there (a CTCSS tone) is settled again after `SETTLE_S`; resetting it would
+    /// click just the same.
+    pub fn resume(&mut self) {
+        (self.sum, self.sq, self.n) = (0.0, 0.0, 0);
+        self.settle = self.settle_len;
+    }
+
     pub fn push(&mut self, samples: &[f32]) {
         for &x in samples {
             let x = self.band.process(x);
+            if self.settle > 0 {
+                self.settle -= 1;
+                continue;
+            }
             self.sum += x as f64;
             self.sq += (x * x) as f64;
             self.n += 1;
@@ -224,6 +245,19 @@ mod tests {
         d.push(&vec![0.0; (0.3 * FS) as usize]);
         d.push(&noise(&mut seed, 0.045, 0.2));
         assert!(!d.busy());
+    }
+
+    #[test]
+    fn a_signal_right_after_a_gap_is_busy_after_the_settle_time() {
+        let mut d = narrow();
+        d.push(&vec![0.0; FS as usize]);
+        d.resume();
+        let ms = tone(0.05, 0.1).chunks(48).position(|c| {
+            d.push(c);
+            d.busy()
+        });
+        let ms = ms.expect("never busy") + 1;
+        assert!(ms as f32 <= 1000.0 * (SETTLE_S + 1.5 * BLOCK_S), "busy after {ms} ms");
     }
 
     #[test]

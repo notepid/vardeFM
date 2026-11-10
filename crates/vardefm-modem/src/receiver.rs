@@ -68,12 +68,14 @@ impl Receiver {
         self.pending.is_some() || self.detector.busy()
     }
 
-    /// Drop all buffered audio (e.g. when our own transmitter keys up).
+    /// Drop all buffered audio (e.g. when our own transmitter keys up). The audio
+    /// pushed next need not follow on from the last.
     pub fn reset(&mut self) {
         self.base += self.buf.len() as u64;
         self.buf.clear();
         self.search = 0;
         self.pending = None;
+        self.detector.resume();
     }
 
     pub fn push(&mut self, samples: &[f32]) -> Vec<RxBurst> {

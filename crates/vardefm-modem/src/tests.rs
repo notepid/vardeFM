@@ -313,3 +313,26 @@ fn burst_level_ignores_a_squelch_pop_after_the_burst() {
         assert!((level.peak_dbfs - expected.peak_dbfs).abs() < 0.5, "{level:?} vs {expected:?}");
     }
 }
+
+/// A steady CTCSS tone (a keyed repeater) heard before and after our own transmission.
+/// The receiver is fed nothing while we transmit, so its audio jumps in phase where
+/// reception resumes.
+#[test]
+fn ctcss_tone_after_our_own_transmission_is_not_busy() {
+    let m = modem("wide");
+    let tone = |n: usize, phase: f32| -> Vec<f32> {
+        let w = 2.0 * std::f32::consts::PI * 254.1 / m.fs();
+        (0..n).map(|i| 0.177 * 2f32.sqrt() * (i as f32 * w + phase).sin()).collect()
+    };
+    let mut rx = Receiver::new(m.clone());
+    for chunk in tone(3 * 48_000, 0.0).chunks(480) {
+        rx.push(chunk);
+    }
+    assert!(!rx.busy());
+    // Our transmission, then the tone half a period later in phase.
+    rx.reset();
+    for (i, chunk) in tone(24_000, std::f32::consts::PI).chunks(480).enumerate() {
+        rx.push(chunk);
+        assert!(!rx.busy(), "busy {} ms after our transmission", 10 * (i + 1));
+    }
+}
