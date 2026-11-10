@@ -83,6 +83,16 @@ impl Chain {
         c
     }
 
+    /// This chain followed by `other`. A chain runs its first-order sections before
+    /// its biquads, so `other` may bring first-order sections only while this chain
+    /// has no biquads; otherwise the sections would run out of order.
+    pub fn then(mut self, other: Chain) -> Self {
+        debug_assert!(other.first.is_empty() || self.biquads.is_empty(), "Chain::then would reorder sections");
+        self.first.extend(other.first);
+        self.biquads.extend(other.biquads);
+        self
+    }
+
     /// 4th-order Butterworth highpass.
     pub fn highpass4(fs: f32, f: f32) -> Self {
         let mut c = Self::new();
@@ -279,6 +289,17 @@ mod tests {
         for i in 0..20 * 48_000 {
             assert!(c.process(0.0).classify() != std::num::FpCategory::Subnormal, "output, sample {i}");
             assert!(c.biquads.iter().all(|b| ok(b.z1) && ok(b.z2)) && c.first.iter().all(|f| ok(f.z)), "sample {i}");
+        }
+    }
+
+    #[test]
+    fn then_is_the_two_chains_in_series() {
+        let fs = 48_000.0;
+        let (mut a, mut b) = (Chain::bandpass4(fs, 400.0, 6000.0), Chain::highpass4(fs, 400.0));
+        let mut ab = Chain::bandpass4(fs, 400.0, 6000.0).then(Chain::highpass4(fs, 400.0));
+        for i in 0..4800 {
+            let x = (i as f32 * 0.05).sin() + if i == 100 { 1.0 } else { 0.0 };
+            assert_eq!(ab.process(x), b.process(a.process(x)), "sample {i}");
         }
     }
 

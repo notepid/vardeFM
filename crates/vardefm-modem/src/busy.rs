@@ -35,8 +35,8 @@ const HOLD_S: f32 = 0.15;
 const MIN_LOW_HZ: f32 = 400.0;
 
 pub struct BusyDetector {
-    /// Band-pass filters in cascade (none: broadband).
-    band: Vec<Chain>,
+    /// Band-pass filter (empty: broadband).
+    band: Chain,
     block: usize,
     history: usize,
     hold: usize,
@@ -59,17 +59,17 @@ impl BusyDetector {
         // A CTCSS tone at 254.1 Hz comes out 48 dB down: at 1500 Hz deviation on the
         // wide port (-9 dBFS) that is still 17 dB under the -40 dBFS minimum. One
         // 4th-order band-pass alone would take it down only 16 dB.
-        let band = vec![Chain::bandpass4(p.fs, lo, hi), Chain::bandpass4(p.fs, lo, hi), Chain::highpass4(p.fs, lo)];
+        let band = Chain::bandpass4(p.fs, lo, hi).then(Chain::bandpass4(p.fs, lo, hi)).then(Chain::highpass4(p.fs, lo));
         Self::with_band(p.fs, band)
     }
 
     /// Measures all of the audio, as before the band was limited (for comparison).
     #[cfg(test)]
     pub(crate) fn broadband(fs: f32) -> Self {
-        Self::with_band(fs, Vec::new())
+        Self::with_band(fs, Chain::new())
     }
 
-    fn with_band(fs: f32, band: Vec<Chain>) -> Self {
+    fn with_band(fs: f32, band: Chain) -> Self {
         let block = (BLOCK_S * fs).round().max(1.0) as usize;
         Self {
             band,
@@ -90,7 +90,7 @@ impl BusyDetector {
 
     pub fn push(&mut self, samples: &[f32]) {
         for &x in samples {
-            let x = self.band.iter_mut().fold(x, |x, f| f.process(x));
+            let x = self.band.process(x);
             self.sum += x as f64;
             self.sq += (x * x) as f64;
             self.n += 1;
