@@ -184,23 +184,27 @@ fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
     m.ofdm.detect(&transmit(&clean, &tx), 0).expect("burst not found on a clean channel")
 }
 
-/// Where the body of preamble B starts in the channel's output by the burst layout
-/// alone: lead silence, leader, preamble A and preamble B's cyclic prefix.
-fn layout_position(m: &Modem, mode: &str) -> usize {
-    let cfg = FmChannelConfig::by_name(mode).unwrap();
-    let p = &m.ofdm.p;
-    (cfg.lead_silence_s * cfg.fs) as usize + (m.leader_symbols() + 1) * p.symbol_len() + p.ncp
-}
-
-/// The channel's delay, samples: the lag up to one cyclic prefix at which a noiseless
-/// copy of the burst correlates best with what was sent. Independent of any detector.
-fn channel_delay(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
+/// Where the true position lies against the channel, from one noiseless copy:
+/// (samples after the sent boundary of preamble B's body, channel delay in samples).
+///
+/// The boundary is counted back from the end of the modulated burst, so the leader
+/// and preambles come from the modulator itself: preamble B's body ends where the
+/// header and codeword symbols start. The channel delay is the lag up to one cyclic
+/// prefix at which the received copy correlates best with what was sent. Neither
+/// depends on any detector.
+fn position_check(m: &Modem, mode: &str, level: u8, ncw: usize) -> (i64, usize) {
     let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+    let p = &m.ofdm.p;
     let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
     let rx = transmit(&clean, &tx);
-    let rx = &rx[(clean.lead_silence_s * clean.fs) as usize..];
+    let truth = m.ofdm.detect(&rx, 0).expect("burst not found on a clean channel");
+    let lead = (clean.lead_silence_s * clean.fs) as usize;
+    let data = m.header_symbols() + ncw * m.symbols_per_codeword(level);
+    let boundary = lead + tx.len() - data * p.symbol_len() - p.nfft;
+    let rx = &rx[lead..];
     let corr = |d: usize| -> f64 { tx.iter().zip(&rx[d..]).map(|(&a, &b)| a as f64 * b as f64).sum() };
-    (0..=m.ofdm.p.ncp).max_by(|&a, &b| corr(a).total_cmp(&corr(b))).unwrap()
+    let delay = (0..=p.ncp).max_by(|&a, &b| corr(a).total_cmp(&corr(b))).unwrap();
+    (truth as i64 - boundary as i64, delay)
 }
 
 /// Run `trials` trials of a `level` burst of `ncw` codewords on every core, with
@@ -382,12 +386,11 @@ fn detector_eval() {
         println!("\n{mode}: hits and decoded bursts out of {trials}; paired test against '{}'", names[0]);
         // The true position is the reference's own; show where it lies against the channel.
         let truth = true_position(&m, mode, level, ncw);
-        let after = truth as i64 - layout_position(&m, mode) as i64;
-        let delay = channel_delay(&m, mode, level, ncw) as i64;
+        let (after, delay) = position_check(&m, mode, level, ncw);
         println!(
             "  true position: sample {truth}, {after} after the sent boundary; channel delay {delay}, \
              so {} after the boundary plus the delay; hit within ±{}",
-            after - delay,
+            after - delay as i64,
             m.ofdm.p.ncp / 4
         );
         for cnr in cnr_list(mode) {
@@ -440,6 +443,14 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
             let tx = m.modulate(&burst(1, 1, payload_seed(t)));
             assert_eq!(m.ofdm.detect(&transmit(&clean, &tx), 0), Some(truth), "{mode}: payload {t} moves the burst");
         }
+        // The printed cross-check must stay meaningful: the true position lies within a
+        // cyclic prefix of the sent boundary plus the channel delay.
+        let (after, delay) = position_check(&m, mode, 1, 1);
+        let ncp = m.ofdm.p.ncp as i64;
+        assert!(
+            (after - delay as i64).abs() <= ncp,
+            "{mode}: true position {after} after the sent boundary, channel delay {delay}: more than {ncp} apart"
+        );
         for r in run_trials(&m, mode, 25.0, 1, 1, truth, 4) {
             assert!(r.genie, "{mode}: genie failed on a strong signal");
             assert!(r.det.iter().all(|&(_, ok)| ok), "{mode}: a detector missed a strong burst");
