@@ -156,12 +156,11 @@ impl Receiver {
             return Some(true);
         }
 
-        let l = m.ofdm.p.symbol_len();
         match m.ofdm.detect(&self.buf, self.search) {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
                     // Come back when the header has arrived; re-detect from just before it.
-                    self.search = b.saturating_sub(3 * l);
+                    self.search = b.saturating_sub(m.ofdm.detect_lookback());
                     return Some(false);
                 }
                 let header =

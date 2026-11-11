@@ -20,9 +20,9 @@
 //! approximates what detection costs at that CNR.
 //!
 //! A separate pass counts detections and decoded headers per minute on audio that
-//! holds no burst (a carrier at -10 dB CNR, which sounds like an open squelch, a
-//! weak unmodulated carrier, white noise, and keyed tones: 750 + 1500 Hz, a roger
-//! beep and DTMF pairs, each 0.3 s on and 0.3 s off).
+//! holds no burst (see [`NOISE_CASES`]: a carrier at -10 dB CNR, which sounds like an
+//! open squelch, a weak unmodulated carrier, white noise, keyed tones, and the modem's
+//! own data symbols without their preambles).
 //! A detection there costs a header decode; a decoded header there is a false burst.
 //! The streaming receiver's CPU load on that audio, fed in 10 ms chunks like a sound
 //! card, is reported per detector too.
@@ -31,12 +31,15 @@
 //!
 //! Environment: `MODES` (narrow,wide), `TRIALS` per CNR (100), `LEVEL` (1), `NCW` (1),
 //! `CNRS` (dB list, default per mode), `NOISE_SECONDS` per noise case (60),
-//! `CSV` (file to append the burst results to). Two more change the bursts' path, not
-//! the noise cases: `CHANNEL`, the radio audio response (matched, tx-pre-only or
-//! rx-de-only, see [`CHANNELS`]), and `TX_TILT`, dB/octave the sender tilts its audio
-//! by beyond what the receiver expects (0).
+//! `NOISE_SEED` (1, for other noise in that pass), `CSV` (file to append the burst
+//! results to). Three more change the bursts' path, not the noise cases: `CHANNEL`,
+//! the radio audio response (matched, tx-pre-only or rx-de-only, see [`CHANNELS`]),
+//! `TX_TILT`, dB/octave the sender tilts its audio by beyond what the receiver
+//! expects (0), and `CTCSS`, the deviation in Hz of a CTCSS tone the sending radio
+//! adds (0 = none; wide mode only, as the narrow audio path filters sub-tones out).
 
 use super::*;
+use crate::busy_eval::CTCSS_HZ;
 use std::f32::consts::PI;
 use std::io::Write;
 use std::sync::Arc;
@@ -87,21 +90,49 @@ fn channel(mode: &str, channel: &str) -> FmChannelConfig {
 }
 
 /// What a trial sends through and receives with: the receiving modem, whose detectors
-/// are evaluated, the sending modem, which may tilt its audio differently, and the
-/// channel between them, without noise.
+/// are evaluated, the sending modem, which may tilt its audio differently, the
+/// channel between them, without noise, and the deviation of a CTCSS tone the sending
+/// radio adds (0 for none).
 struct Link {
     rx: Arc<Modem>,
     tx: Arc<Modem>,
     chan: FmChannelConfig,
+    ctcss_hz: f32,
 }
 
 impl Link {
     fn new(mode: &str, chan: &str, tx_tilt: f32) -> Self {
-        Self { rx: modem(mode), tx: eval_modem(mode, tx_tilt, Detector::default()), chan: channel(mode, chan) }
+        let tx = eval_modem(mode, tx_tilt, Detector::default());
+        Self { rx: modem(mode), tx, chan: channel(mode, chan), ctcss_hz: 0.0 }
     }
 
     fn matched(mode: &str) -> Self {
         Self::new(mode, "matched", 0.0)
+    }
+
+    /// The link with a CTCSS tone of `deviation_hz`. Only where the TX audio path
+    /// passes sub-tones, as busy_eval models it: wide mode.
+    fn with_ctcss(self, deviation_hz: f32) -> Self {
+        let passes = self.chan.tx_band.0 < CTCSS_HZ[0];
+        assert!(deviation_hz == 0.0 || passes, "CTCSS: the {} TX audio path filters it out", self.rx.ofdm.p.name);
+        Self { ctcss_hz: deviation_hz, ..self }
+    }
+
+    /// What the sending radio puts on the air for burst audio `tx` in trial `t`: the
+    /// audio plus the trial's CTCSS tone, the standard tones in turn, each trial with
+    /// its own phase.
+    fn on_air(&self, tx: Vec<f32>, t: u32) -> Vec<f32> {
+        if self.ctcss_hz == 0.0 {
+            return tx;
+        }
+        let f = CTCSS_HZ[t as usize % CTCSS_HZ.len()] as f64;
+        let a = self.ctcss_hz / self.chan.deviation_hz;
+        let fs = self.chan.fs as f64;
+        let phase = t as f64 * 0.618;
+        tx.iter()
+            .enumerate()
+            .map(|(i, &v)| v + a * (2.0 * std::f64::consts::PI * (f * i as f64 / fs + phase)).sin() as f32)
+            .collect()
     }
 }
 
@@ -197,7 +228,7 @@ fn trial(link: &Link, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> 
     let m = &*link.rx;
     let sent = burst(level, ncw, payload_seed(t));
     let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..link.chan.clone() };
-    let rx = transmit(&cfg, &link.tx.modulate(&sent));
+    let rx = transmit(&cfg, &link.on_air(link.tx.modulate(&sent), t));
     let tol = m.ofdm.p.ncp / 4;
     let det = Detector::ALL
         .iter()
@@ -213,7 +244,8 @@ fn trial(link: &Link, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> 
 /// Where preamble B of a `level` burst of `ncw` codewords lands after the channel.
 /// The channel's delays depend neither on its noise nor on the payload (the burst
 /// layout is fixed by level and size), so one noiseless copy gives it for every trial.
-/// The reference detector's fine timing on a noiseless copy defines the position.
+/// The reference detector's fine timing on a noiseless copy without the CTCSS tone
+/// defines the position (the tone does not move the burst).
 /// Every detector must find it there within the hit tolerance, or a hit would mean
 /// agreeing with the reference rather than finding the burst.
 fn link_position(link: &Link, level: u8, ncw: usize) -> usize {
@@ -314,7 +346,8 @@ pub(crate) fn env_flag(name: &str) -> bool {
 }
 
 /// The kinds of audio without a burst in the false-detection pass, for [`noise_case`].
-const NOISE_CASES: [&str; 4] = ["carrier at -10 dB CNR", "weak carrier, 5 dB CNR", "white noise", "keyed tones"];
+const NOISE_CASES: [&str; 5] =
+    ["carrier at -10 dB CNR", "weak carrier, 5 dB CNR", "white noise", "keyed tones", "data without preambles"];
 
 /// Tone sets for the "keyed tones" case, Hz. 750 + 1500 Hz repeat every nfft/2
 /// samples in both modes, like preamble A; then a roger beep and DTMF pairs.
@@ -323,42 +356,67 @@ const KEYED_TONES: [&[u64]; 6] = [&[750, 1500], &[1000], &[697, 1209], &[770, 13
 const KEYED_TONE_S: f32 = 0.3;
 
 /// Audio without a burst, `seconds` long at `fs` Hz: case `case` of [`NOISE_CASES`].
+/// Every case, mode and `seed` gets its own noise, so their minutes are independent.
 ///
 /// The keyed tones stop after each 0.3 s: a tone that never stops cannot end a
-/// Schmidl-Cox plateau, so it would never be evaluated as a detection.
-fn noise_case(mode: &str, case: usize, seconds: f32, fs: f32) -> Vec<f32> {
+/// Schmidl-Cox plateau, so it would never be evaluated as a detection. Each burst of
+/// tone picks its set and starting phase at random, so the audio does not repeat.
+///
+/// The data case is what the receiver scans after a header that fails, or after it
+/// misses a preamble: level 1 bursts of the longest size, leader and data, with the
+/// preambles cut out, through the channel at 30 dB CNR.
+fn noise_case(mode: &str, case: usize, seconds: f32, fs: f32, seed: u64) -> Vec<f32> {
     let n = (seconds * fs) as usize;
     assert!(n > 0, "{seconds} s of noise is less than one sample");
+    let mode_index = OfdmParams::all().iter().position(|p| p.name == mode).expect("unknown mode");
+    let seed = seed * 100 + case as u64 * 10 + mode_index as u64;
     // No silence around the carrier, so the audio is exactly `seconds` of noise.
     let base = FmChannelConfig {
         keyup_delay_s: 0.0,
         lead_silence_s: 0.0,
         trail_silence_s: 0.0,
+        seed,
         ..FmChannelConfig::by_name(mode).unwrap()
     };
+    let mut rng = Prng::new(seed as u32);
     match case {
         0 => transmit(&FmChannelConfig { cnr_db: Some(-10.0), ..base }, &vec![0.0; n]),
         1 => transmit(&FmChannelConfig { cnr_db: Some(5.0), ..base }, &vec![0.0; n]),
-        2 => {
-            let mut rng = Prng::new(99);
-            (0..n).map(|_| 0.3 * rng.uniform()).collect()
-        }
+        2 => (0..n).map(|_| 0.3 * rng.uniform()).collect(),
         3 => {
             let rate = fs as u64;
             let slot = (KEYED_TONE_S * fs) as usize;
+            let tones: Vec<(usize, u64)> = (0..n / slot + 1)
+                .map(|_| (rng.next_u32() as usize % KEYED_TONES.len(), rng.next_u32() as u64 % rate))
+                .collect();
             (0..n)
                 .map(|i| {
-                    let (k, on) = (i / slot, i % slot);
+                    let (k, on) = (i / slot, (i % slot) as u64);
                     if k % 2 == 1 {
                         return 0.0;
                     }
+                    let (set, start) = tones[k];
                     // Phase from an integer index, exact however long the audio is.
-                    KEYED_TONES[k / 2 % KEYED_TONES.len()]
+                    KEYED_TONES[set]
                         .iter()
-                        .map(|&f| 0.15 * (2.0 * PI * ((on as u64 * f) % rate) as f32 / rate as f32).sin())
+                        .map(|&f| 0.15 * (2.0 * PI * (((on + start) * f) % rate) as f32 / rate as f32).sin())
                         .sum()
                 })
                 .collect()
+        }
+        4 => {
+            let m = modem(mode);
+            let l = m.ofdm.p.symbol_len();
+            let leader = m.ofdm.leader_symbols(TXDELAY) * l;
+            let ncw = m.max_ncw(1);
+            let mut audio = Vec::with_capacity(n + m.burst_samples(1, ncw));
+            while audio.len() < n {
+                let tx = m.modulate(&burst(1, ncw, rng.next_u32()));
+                audio.extend(&tx[..leader]);
+                audio.extend(&tx[leader + 2 * l..]);
+            }
+            audio.truncate(n);
+            transmit(&FmChannelConfig { cnr_db: Some(30.0), ..base }, &audio)
         }
         _ => unreachable!("noise case {case}"),
     }
@@ -405,23 +463,34 @@ fn detector_eval() {
     let level: u8 = env_or("LEVEL", 1);
     let ncw: usize = env_or("NCW", 1);
     let noise_s: f32 = env_or("NOISE_SECONDS", 60.0);
+    let noise_seed: u64 = env_or("NOISE_SEED", 1);
+    let ctcss: f32 = env_or("CTCSS", 0.0);
     let chan: String = env_or("CHANNEL", "matched".to_string());
     let chan = chan.trim();
     let tx_tilt: f32 = env_or("TX_TILT", 0.0);
     assert!(CHANNELS.contains(&chan), "CHANNEL: unknown channel {chan:?} (one of {})", CHANNELS.join(", "));
     assert!(tx_tilt.is_finite(), "TX_TILT={tx_tilt}: must be a finite dB/octave");
+    assert!(ctcss.is_finite() && ctcss >= 0.0, "CTCSS={ctcss}: must be a deviation in Hz, 0 for none");
     assert!((level as usize) < LEVELS.len(), "LEVEL {level}: levels are 0 to {}", LEVELS.len() - 1);
     assert!(trials > 0, "TRIALS must be at least 1");
     assert!(noise_s > 0.0, "NOISE_SECONDS={noise_s}: must be more than 0");
     let modes: Vec<&str> = modes.iter().map(String::as_str).collect();
+    // Checked up front, so that a typo does not fail after the first mode has run.
+    for mode in &modes {
+        Link::new(mode, chan, tx_tilt).with_ctcss(ctcss);
+    }
     let cnr_list = |mode: &str| -> Vec<f32> {
-        let default = if mode == "narrow" { "3,4,5,6,7,8,10" } else { "5,6,7,8,9,10,12" };
+        let default = match mode {
+            "narrow" => "3,4,5,6,7,8,10",
+            "wide" => "5,6,7,8,9,10,12",
+            _ => panic!("no default CNRS for mode {mode:?}: set CNRS"),
+        };
         env_list("CNRS", default)
     };
     for mode in &modes {
         cnr_list(mode);
     }
-    const CSV_HEADER: &str = "mode,channel,tx_tilt,level,ncw,cnr_db,trials,detector,hits,bursts";
+    const CSV_HEADER: &str = "mode,channel,tx_tilt,ctcss_hz,level,ncw,cnr_db,trials,detector,hits,bursts";
     let mut csv = std::env::var("CSV").ok().map(|p| {
         // Appending rows to a file with other columns would mix them up unnoticed.
         let old = std::fs::read_to_string(&p).unwrap_or_default();
@@ -438,11 +507,11 @@ fn detector_eval() {
     let reference = Detector::ALL.iter().position(|&d| d == REFERENCE).expect("reference detector not in ALL");
     println!(
         "level {level} ({}), {ncw} codeword(s), {trials} trials per point, txdelay {TXDELAY} s, \
-         channel {chan}, TX tilt {tx_tilt:+} dB/octave",
+         channel {chan}, TX tilt {tx_tilt:+} dB/octave, CTCSS {ctcss} Hz, noise seed {noise_seed}",
         LEVELS[level as usize].name
     );
     for &mode in &modes {
-        let link = Link::new(mode, chan, tx_tilt);
+        let link = Link::new(mode, chan, tx_tilt).with_ctcss(ctcss);
         let m = &*link.rx;
         // A longer burst would modulate, but its header would not unpack (MAX_NCW) or
         // the modem would never send it (MAX_PAYLOAD_SECONDS): every trial would fail.
@@ -463,18 +532,19 @@ fn detector_eval() {
                     line += &format!(" (+{better}/-{worse}, p {:.3})", mcnemar(better, worse));
                 }
                 if let Some(f) = &mut csv {
-                    writeln!(f, "{mode},{chan},{tx_tilt},{level},{ncw},{cnr},{trials},{name},{hits},{bursts}").unwrap();
+                    writeln!(f, "{mode},{chan},{tx_tilt},{ctcss},{level},{ncw},{cnr},{trials},{name},{hits},{bursts}")
+                        .unwrap();
                 }
             }
             if let Some(f) = &mut csv {
-                writeln!(f, "{mode},{chan},{tx_tilt},{level},{ncw},{cnr},{trials},genie,,{genie}").unwrap();
+                writeln!(f, "{mode},{chan},{tx_tilt},{ctcss},{level},{ncw},{cnr},{trials},genie,,{genie}").unwrap();
             }
             println!("{line}");
         }
         println!("{mode}: per minute of audio without a burst, detections / decoded headers");
         let mut weak = Vec::new();
         for (c, case) in NOISE_CASES.iter().enumerate() {
-            let audio = noise_case(mode, c, noise_s, m.fs());
+            let audio = noise_case(mode, c, noise_s, m.fs(), noise_seed);
             let mut line = format!("  {case:26}");
             let per_min = 60.0 / (audio.len() as f32 / m.fs());
             for d in Detector::ALL {
@@ -501,13 +571,13 @@ fn on_every_core_keeps_trial_order() {
     assert!(on_every_core(0, |t| t).is_empty());
 }
 
-/// The matched filter's threshold was chosen on other noise than the evaluation's
-/// noise cases; this checks it on noise neither has seen: FM channel noise with other
-/// seeds and a fresh white-noise sequence. Setting `MF_MARGIN` prints the peaks.
+/// A CI guard on the matched filter's threshold, on noise the evaluation's noise cases
+/// do not use: FM channel noise with other seeds and a fresh white-noise sequence, in
+/// every mode, so a new mode must be calibrated. Setting `MF_MARGIN` prints the peaks.
 #[test]
 fn matched_filter_stays_below_threshold_on_unseen_noise() {
     let seconds = 5.0;
-    for mode in ["narrow", "wide"] {
+    for mode in OfdmParams::all().map(|p| p.name) {
         let m = modem(mode);
         let n = (seconds * m.fs()) as usize;
         let base = FmChannelConfig {
@@ -540,7 +610,7 @@ fn matched_filter_stays_below_threshold_on_unseen_noise() {
 /// a diagnostic, so it is not required here.
 #[test]
 fn harness_sees_strong_bursts_and_no_false_headers() {
-    for mode in ["narrow", "wide"] {
+    for mode in OfdmParams::all().map(|p| p.name) {
         let link = Link::matched(mode);
         let m = &*link.rx;
         // The true position must not depend on the payload, or one copy could not give it.
@@ -555,7 +625,7 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
             assert!(r.genie, "{mode}: genie failed on a strong signal");
             assert!(r.det.iter().all(|&(_, ok)| ok), "{mode}: a detector missed a strong burst");
         }
-        let audio = noise_case(mode, 0, 2.0, m.fs());
+        let audio = noise_case(mode, 0, 2.0, m.fs(), 1);
         for d in Detector::ALL {
             assert_eq!(false_detections(m, d, &audio).1, 0, "{mode}: {d} decoded a header from noise");
         }
@@ -564,19 +634,57 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
 
 /// Every radio response, and a TX tilt of ±6 dB/octave on the matched response, still
 /// carries a strong burst to the genie and to every detector. The genie check makes a
-/// detector failure here a failure of detection, not of a channel nothing could decode. Both at once can be too
-/// much: in wide mode, pre-emphasis and +6 dB/octave clip the top carriers.
+/// detector failure here a failure of detection, not of a channel nothing could
+/// decode. Both at once can be too much: in wide mode, pre-emphasis and +6 dB/octave
+/// clip the top carriers.
 #[test]
 fn mismatched_links_still_carry_strong_bursts() {
     let cases = CHANNELS.iter().map(|&c| (c, 0.0)).chain([("matched", -6.0), ("matched", 6.0)]);
     for (chan, tilt) in cases {
-        for mode in ["narrow", "wide"] {
+        for mode in OfdmParams::all().map(|p| p.name) {
             for r in run_trials(&Link::new(mode, chan, tilt), 25.0, 1, 1, 2) {
                 assert!(r.genie, "{mode} {chan} tilt {tilt}: genie failed on a strong signal");
                 assert!(r.det.iter().all(|&(_, ok)| ok), "{mode} {chan} tilt {tilt}: a detector missed a strong burst");
             }
         }
     }
+}
+
+/// A wide-mode radio passes the CTCSS tone it adds to the data port audio. At 750 Hz
+/// deviation the genie and the matched filter decode every strong burst, whichever
+/// standard tone. Schmidl-Cox does not: the tone's correlation over its nfft/2 lag
+/// pulls the metric below its threshold. That is a defect of the existing detector,
+/// so it is not asserted here.
+#[test]
+fn ctcss_tone_leaves_strong_bursts_to_the_matched_filter() {
+    let link = Link::matched("wide").with_ctcss(750.0);
+    let mf = Detector::ALL.iter().position(|&d| d == Detector::MatchedFilter).unwrap();
+    for (t, r) in run_trials(&link, 25.0, 1, 1, CTCSS_HZ.len() as u32).iter().enumerate() {
+        assert!(r.genie, "genie failed on a strong signal with {} Hz CTCSS", CTCSS_HZ[t]);
+        assert!(r.det[mf].1, "the matched filter missed a strong burst with {} Hz CTCSS", CTCSS_HZ[t]);
+    }
+}
+
+/// The matched filter's reason to exist, guarded in CI. Where bursts start to decode
+/// and Schmidl-Cox lags behind the genie, the matched filter decodes all but at most
+/// one of what the genie decodes; on the mismatch where it loses its advantage (wide,
+/// de-emphasis only at the receiver) it decodes no fewer than the reference detector,
+/// less one. A better detector passes; a worse threshold or template fails.
+#[test]
+fn matched_filter_holds_its_sensitivity_where_bursts_start_to_decode() {
+    let mf = Detector::ALL.iter().position(|&d| d == Detector::MatchedFilter).unwrap();
+    let reference = Detector::ALL.iter().position(|&d| d == REFERENCE).unwrap();
+    let count = |res: &[Trial], i: usize| res.iter().filter(|r| r.det[i].1).count();
+    for (mode, cnr) in [("narrow", 5.0), ("wide", 7.0)] {
+        let res = run_trials(&Link::matched(mode), cnr, 1, 1, 40);
+        let genie = res.iter().filter(|r| r.genie).count();
+        assert!(genie >= 30, "{mode} {cnr} dB: genie decodes only {genie} of 40; pick another point");
+        let got = count(&res, mf);
+        assert!(got + 1 >= genie, "{mode} {cnr} dB: matched filter {got}, genie {genie}");
+    }
+    let res = run_trials(&Link::new("wide", "rx-de-only", 0.0), 7.0, 1, 1, 40);
+    let (got, sc) = (count(&res, mf), count(&res, reference));
+    assert!(got + 1 >= sc, "wide rx-de-only 7 dB: matched filter {got}, {REFERENCE} {sc}");
 }
 
 #[test]
@@ -603,7 +711,12 @@ fn mcnemar_matches_known_values() {
 #[test]
 fn offline_receive_matches_the_streaming_receiver() {
     let seeds: u64 = env_or("STREAM_SEEDS", 12);
-    for (mode, cnrs) in [("narrow", [3.0, 5.0, 8.0]), ("wide", [5.0, 7.0, 10.0])] {
+    for mode in OfdmParams::all().map(|p| p.name) {
+        let cnrs = match mode {
+            "narrow" => [3.0, 5.0, 8.0],
+            "wide" => [5.0, 7.0, 10.0],
+            _ => panic!("no CNRs for mode {mode}: add three, from where genie decodes nothing to almost all"),
+        };
         let sent = burst(1, 1, 7);
         let tx = modem(mode).modulate(&sent);
         for detector in Detector::ALL {

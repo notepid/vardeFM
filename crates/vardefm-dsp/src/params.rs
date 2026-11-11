@@ -13,7 +13,9 @@ pub struct OfdmParams {
     /// Every n-th carrier is a pilot (the last carrier is always a pilot too).
     pub pilot_spacing: usize,
     /// Spectral tilt applied at TX, in dB per octave above the lowest carrier.
-    /// Negative values pre-compensate for the radio's pre-emphasis.
+    /// Negative values pre-compensate for the radio's pre-emphasis. The receiver's
+    /// matched filter expects preambles with this tilt, so both ends must agree on it:
+    /// it is part of the mode, not a per-station setting.
     pub tilt_db_per_octave: f32,
     /// Reference output RMS level (1.0 = full scale; peaks are clipped at full scale).
     /// Used when the caller does not choose a level, e.g. the `sim` and `tx-wav` tools.
@@ -26,7 +28,8 @@ pub struct OfdmParams {
     /// is clean: the floor set by clipping at that level's drive (and the radio).
     /// With `level_tx_rms` it lets the link predict another level's SNR from a burst's.
     pub level_snr_ceiling_db: [f32; 7],
-    /// Low-pass the received audio at this frequency before searching for preamble A.
+    /// Low-pass the received audio at this frequency before the Schmidl-Cox search for
+    /// preamble A (the matched filter does not use it).
     /// On the flat data port, FM noise rises with frequency, so the lower part of the
     /// band gives a much cleaner detection metric.
     pub detect_lowpass_hz: Option<f32>,
@@ -77,12 +80,13 @@ impl OfdmParams {
         }
     }
 
+    /// Every mode. Tests that calibrate or check something per mode loop over this.
+    pub fn all() -> [Self; 2] {
+        [Self::narrow(), Self::wide()]
+    }
+
     pub fn by_name(name: &str) -> Option<Self> {
-        match name {
-            "narrow" => Some(Self::narrow()),
-            "wide" => Some(Self::wide()),
-            _ => None,
-        }
+        Self::all().into_iter().find(|p| p.name == name)
     }
 
     pub fn symbol_len(&self) -> usize {

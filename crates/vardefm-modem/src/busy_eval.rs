@@ -66,7 +66,7 @@ const VOICE_RMS: f32 = 0.1;
 /// Received level of the quiet voice under strong hum, and of that hum.
 const QUIET_VOICE_RMS: f32 = 0.03;
 const STRONG_HUM_RMS: f32 = 0.1;
-const CTCSS_HZ: [f32; 21] = [
+pub(crate) const CTCSS_HZ: [f32; 21] = [
     67.0, 71.9, 77.0, 82.5, 88.5, 94.8, 100.0, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5,
     218.1, 233.6, 250.3, 254.1,
 ];

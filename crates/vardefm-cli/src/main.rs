@@ -42,9 +42,16 @@ struct ModemArgs {
 
 #[derive(clap::Args, Clone)]
 struct DetectorArg {
-    /// Burst detector: sc (Schmidl-Cox) or mf (matched filter)
-    #[arg(long, default_value_t = Detector::default())]
+    /// How the receiver finds bursts (sc = Schmidl-Cox, mf = matched filter)
+    #[arg(long, default_value_t = Detector::default(), value_parser = detector_parser())]
     detector: Detector,
+}
+
+/// Accepts exactly the names in `Detector::ALL`, which `--help` lists.
+fn detector_parser() -> impl clap::builder::TypedValueParser<Value = Detector> {
+    use clap::builder::TypedValueParser;
+    clap::builder::PossibleValuesParser::new(Detector::ALL.map(Detector::name))
+        .map(|s| s.parse::<Detector>().expect("every possible value names a detector"))
 }
 
 impl ModemArgs {

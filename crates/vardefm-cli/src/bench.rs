@@ -115,8 +115,16 @@ pub fn bench(modes: &[&str], threads: Option<usize>, detector: Detector) -> Resu
         // Listening to an empty channel (noise): the preamble search runs on every chunk.
         let mut rng = Prng::new(3);
         let empty: Vec<f32> = (0..(5.0 * modem.fs()) as usize).map(|_| noise(&mut rng, 0.1)).collect();
-        let idle: Vec<String> =
-            Detector::ALL.iter().map(|&d| format!("{d} {:.1}%", 100.0 * run(&with(d), &empty).load)).collect();
+        // The best of three runs per detector, so that a cold cache or a busy core does
+        // not set the figure.
+        let idle: Vec<String> = Detector::ALL
+            .iter()
+            .map(|&d| {
+                let m = with(d);
+                let load = (0..3).map(|_| run(&m, &empty).load).fold(f64::INFINITY, f64::min);
+                format!("{d} {:.1}%", 100.0 * load)
+            })
+            .collect();
 
         println!();
         println!("{mode} mode, detector {detector} (listening to an empty channel, CPU: {})", idle.join(", "));

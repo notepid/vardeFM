@@ -2,7 +2,8 @@
 //!
 //! Frame layout: `[preamble A][preamble B][data symbol 0] ... [data symbol n-1]`
 //! - Preamble A uses only even FFT bins, so its time signal repeats every nfft/2
-//!   samples. The receiver finds it with a Schmidl-Cox autocorrelation.
+//!   samples. By default the receiver finds it with a Schmidl-Cox autocorrelation;
+//!   a matched filter for preambles A and B is the alternative ([`Detector`]).
 //! - Preamble B is a known BPSK symbol on every carrier. It gives exact timing
 //!   (cross-correlation) and the initial channel estimate.
 //! - Data symbols carry scattered pilots used to track gain, phase and timing drift
@@ -26,10 +27,16 @@ const MIN_PREAMBLE_CORR: f32 = 0.3;
 /// 18-24 real noise samples).
 const SCALE_THRESHOLD: f32 = 2.0;
 /// Normalized correlation with preambles A and B that marks a burst for the matched
-/// filter. In ten minutes each of FM channel noise and keyed tones the largest value
-/// was 0.31, in white noise 0.17 ([`Ofdm::mf_peak`], reported by `detector_eval` in
-/// vardefm-modem with `NOISE_SECONDS=600`). Bursts at a CNR where none decodes
-/// still cross it, as the evaluation's `hit` counts show for the simulator's channel.
+/// filter. It was set from a first minute of the detector evaluation's noise cases
+/// (`detector_eval` in vardefm-modem), where the largest value was about 0.3; longer
+/// runs of those cases with other seeds, and a CI test on noise they do not use,
+/// check it ([`Ofdm::mf_peak`] gives the largest value). Bursts at a CNR where none
+/// decodes still cross it. The modem's own data symbols come closest: a crossing
+/// there costs one header decode that fails its CRC.
+///
+/// It holds for the template lengths of the modes in [`OfdmParams::all`]. A shorter
+/// template correlates more strongly with noise, so a new mode must be checked
+/// (`matched_filter_stays_below_threshold_on_unseen_noise` loops over every mode).
 pub const MF_THRESHOLD: f32 = 0.4;
 /// TX low-pass cutoff relative to the top carrier frequency.
 const TX_LOWPASS_FACTOR: f32 = 1.15;
@@ -337,8 +344,12 @@ impl Ofdm {
         self.detect_with(self.detector, rx, from)
     }
 
-    /// Like [`Ofdm::detect`], with the given detector.
+    /// Like [`Ofdm::detect`], with the given detector. `None` when `from` is past the
+    /// end of `rx`.
     pub fn detect_with(&self, detector: Detector, rx: &[f32], from: usize) -> Option<usize> {
+        if from > rx.len() {
+            return None;
+        }
         match detector {
             Detector::SchmidlCox => self.detect_sc(rx, from),
             Detector::MatchedFilter => self.detect_mf(rx, from),
@@ -349,12 +360,35 @@ impl Ofdm {
     /// from after [`Ofdm::detect`] returned `None`, so as not to lose a frame that has
     /// only partly arrived.
     pub fn detect_history(&self) -> usize {
+        self.detect_history_with(self.detector)
+    }
+
+    /// Like [`Ofdm::detect_history`], for the given detector.
+    pub fn detect_history_with(&self, detector: Detector) -> usize {
         let l = self.p.symbol_len();
-        match self.detector {
+        match detector {
             // Preambles A and B, and margin for the fine timing around them.
             Detector::SchmidlCox => 3 * l + 2 * self.p.nfft,
             // The template, then the one-symbol search window after its first crossing.
             Detector::MatchedFilter => self.mf.len + l,
+        }
+    }
+
+    /// How far before a detection `b` a caller must start searching to find the same
+    /// frame again, e.g. once more audio has arrived.
+    pub fn detect_lookback(&self) -> usize {
+        self.detect_lookback_with(self.detector)
+    }
+
+    /// Like [`Ofdm::detect_lookback`], for the given detector.
+    pub fn detect_lookback_with(&self, detector: Detector) -> usize {
+        let l = self.p.symbol_len();
+        match detector {
+            // Preamble A starts one symbol before B; one more for the plateau search.
+            Detector::SchmidlCox => 3 * l,
+            // The template starts a symbol and a cyclic prefix before `b`, and a side
+            // peak up to a symbol earlier can open the search window.
+            Detector::MatchedFilter => l + self.p.ncp + l,
         }
     }
 
@@ -799,8 +833,8 @@ mod tests {
         roundtrip(OfdmParams::wide(), Modulation::Qam64, 1234);
     }
 
-    /// Where the body of preamble B starts in `lead` samples of silence followed by
-    /// `data` with a leader of `leader_s`.
+    /// Where the body of preamble B starts in a frame with a leader of `leader_s`,
+    /// after `lead` samples of silence.
     fn known_start(ofdm: &Ofdm, lead: usize, leader_s: f32) -> usize {
         lead + (ofdm.leader_symbols(leader_s) + 1) * ofdm.p.symbol_len() + ofdm.p.ncp
     }
@@ -809,7 +843,7 @@ mod tests {
     fn every_detector_finds_the_known_start() {
         // Within a quarter of the cyclic prefix, as the detector evaluation counts a hit;
         // the TX low-pass delays the waveform by a few samples.
-        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+        for p in OfdmParams::all() {
             let mut ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 3);
             for (lead, sign) in [(0, 1.0), (777, 1.0), (4321, -1.0)] {
@@ -832,7 +866,7 @@ mod tests {
         // A streaming receiver calls detect on a growing buffer. After `None` it keeps
         // only `detect_history` samples to search again; a detection must still be the
         // one the whole recording gives.
-        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+        for p in OfdmParams::all() {
             let mut ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 4);
             let mut rx = vec![0.0; 1000];
@@ -856,44 +890,109 @@ mod tests {
     }
 
     #[test]
-    fn matched_filter_waits_for_the_whole_search_window() {
-        // Whatever the buffer holds and wherever the search starts, a detection must be
-        // the one the whole recording gives.
-        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
-            let ofdm = Ofdm::new(p);
-            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 4);
-            let mut rx = vec![0.0; 1000];
+    fn every_detector_finds_a_frame_again_from_its_lookback() {
+        // A receiver that found a frame before its header arrived searches again from
+        // `b - detect_lookback()` once more audio is in.
+        for p in OfdmParams::all() {
+            let mut ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 6);
+            let mut rx = vec![0.0; 5000];
             rx.extend(ofdm.modulate_with_leader(&data, 0.1));
-            let full = ofdm.detect_mf(&rx, 0).expect("mf found nothing");
-            for from in [0, 333, 1000] {
-                let mut found = 0;
-                for end in (from..rx.len()).step_by(97) {
-                    if let Some(b) = ofdm.detect_mf(&rx[..end], from) {
-                        assert_eq!(b, full, "{}: from {from}, buffer of {end} samples", ofdm.p.name);
-                        found += 1;
-                    }
-                }
-                assert!(found > 0, "{}: from {from}: no buffer gave a detection", ofdm.p.name);
+            for d in Detector::ALL {
+                ofdm.detector = d;
+                let b = ofdm.detect(&rx, 0).unwrap_or_else(|| panic!("{d} found nothing"));
+                let again = ofdm.detect(&rx, b - ofdm.detect_lookback());
+                assert_eq!(again, Some(b), "{} {d}: lookback {}", ofdm.p.name, ofdm.detect_lookback());
             }
+        }
+    }
+
+    #[test]
+    fn every_detector_ignores_polarity() {
+        // Some radios invert the audio. Exactly the same sample either way.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 3);
+            let mut rx = vec![0.0; 777];
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            let mut rng = Prng::new(11);
+            rx.iter_mut().for_each(|v| *v += 0.05 * rng.uniform());
+            let inverted: Vec<f32> = rx.iter().map(|v| -v).collect();
+            for d in Detector::ALL {
+                let got = ofdm.detect_with(d, &rx, 0);
+                assert!(got.is_some(), "{} {d}: nothing found", ofdm.p.name);
+                assert_eq!(ofdm.detect_with(d, &inverted, 0), got, "{} {d}", ofdm.p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_detector_returns_none_past_the_end() {
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let rx = vec![0.0; 1000];
+            for d in Detector::ALL {
+                assert_eq!(ofdm.detect_with(d, &rx, rx.len() + 1), None, "{} {d}", ofdm.p.name);
+                assert_eq!(ofdm.detect_with(d, &rx, rx.len()), None, "{} {d}", ofdm.p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn matched_filter_keeps_the_best_peak_in_its_window() {
+        // A weaker match that crosses the threshold first, half a symbol before the
+        // frame, must not win; and a buffer that ends before the window is complete
+        // must give no detection rather than the weaker match.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let (l, ncp) = (ofdm.p.symbol_len(), ofdm.p.ncp);
+            let tpl = [ofdm.symbol_time(&ofdm.pre_a), ofdm.symbol_time(&ofdm.pre_b)].concat();
+            let start = 4 * l;
+            let decoy = start - l / 2;
+            let mut rx = vec![0.0; start + tpl.len() + 4 * l];
+            let mut rng = Prng::new(21);
+            // The decoy: the template buried in noise, so it correlates well but not fully.
+            for (i, &v) in tpl.iter().enumerate() {
+                rx[decoy + i] += v + 1.0 * rng.uniform();
+            }
+            for (i, &v) in tpl.iter().enumerate() {
+                rx[start + i] += v;
+            }
+            let mut values = Vec::new();
+            ofdm.mf_scan(&rx, 0, |d, v| {
+                values.push(v);
+                d < start + l
+            });
+            let first = values.iter().position(|&v| v > MF_THRESHOLD).expect("nothing crosses");
+            let name = ofdm.p.name;
+            assert!(first < start - l / 4, "{name}: the decoy does not cross first ({first}, frame at {start})");
+            assert!(values[first] < values[start], "{name}: the decoy is not the weaker match");
+            let want = start + l + ncp;
+            assert_eq!(ofdm.detect_mf(&rx, 0), Some(want), "{name}: full buffer");
+            // Enough audio for the decoy's correlation but not for the frame's.
+            assert_eq!(ofdm.detect_mf(&rx[..first + tpl.len() + 10], 0), None, "{name}: buffer cut in the window");
         }
     }
 
     #[test]
     fn detector_list_is_complete() {
         // A variant missing from `ALL` could not be chosen, benchmarked or evaluated.
-        // This match stops compiling when a variant is added, as a reminder.
-        let count = |d: Detector| match d {
-            Detector::SchmidlCox | Detector::MatchedFilter => 2,
+        // A new variant needs an arm here, and its index only fits if `ALL` grew.
+        let index = |d: Detector| match d {
+            Detector::SchmidlCox => 0,
+            Detector::MatchedFilter => 1,
         };
-        assert_eq!(Detector::ALL.len(), count(Detector::default()));
-        for d in Detector::ALL {
+        for (i, d) in Detector::ALL.into_iter().enumerate() {
+            assert_eq!(index(d), i, "{d}");
             assert_eq!(d.name().parse::<Detector>(), Ok(d));
         }
+        let max = Detector::ALL.into_iter().map(index).max();
+        assert_eq!(max, Some(Detector::ALL.len() - 1));
     }
 
     #[test]
     fn matched_filter_recovers_from_bad_samples_silence_and_long_noise() {
-        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+        for p in OfdmParams::all() {
             let fs = p.fs as usize;
             let ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 5);
