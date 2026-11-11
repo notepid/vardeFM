@@ -53,14 +53,15 @@ const REFERENCE: Detector = Detector::SchmidlCox;
 const TXDELAY: f32 = 0.15;
 
 pub(crate) fn modem(mode: &str) -> Arc<Modem> {
-    tilted_modem(mode, 0.0)
+    eval_modem(mode, 0.0, Detector::default())
 }
 
-/// A modem whose TX tilt is `tilt` dB/octave more than the mode's.
-fn tilted_modem(mode: &str, tilt: f32) -> Arc<Modem> {
+/// A modem whose TX tilt is `tilt` dB/octave more than the mode's and whose receiver
+/// uses `detector`.
+fn eval_modem(mode: &str, tilt: f32, detector: Detector) -> Arc<Modem> {
     let mut p = OfdmParams::by_name(mode).unwrap();
     p.tilt_db_per_octave += tilt;
-    let mut m = Modem::new(p, TXDELAY);
+    let mut m = Modem::new(p, TXDELAY).with_detector(detector);
     // Trials already run on every core.
     m.decode_threads = 1;
     Arc::new(m)
@@ -96,7 +97,7 @@ struct Link {
 
 impl Link {
     fn new(mode: &str, chan: &str, tx_tilt: f32) -> Self {
-        Self { rx: modem(mode), tx: tilted_modem(mode, tx_tilt), chan: channel(mode, chan) }
+        Self { rx: modem(mode), tx: eval_modem(mode, tx_tilt, Detector::default()), chan: channel(mode, chan) }
     }
 
     fn matched(mode: &str) -> Self {
@@ -381,7 +382,7 @@ fn false_detections(m: &Modem, d: Detector, rx: &[f32]) -> (u32, u32) {
 /// fed in 10 ms chunks. The best of three runs, so that a cold cache or a busy core
 /// does not set the figure.
 fn receiver_load(mode: &str, detector: Detector, audio: &[f32]) -> f64 {
-    let m = Arc::new(Modem::new(OfdmParams::by_name(mode).unwrap(), TXDELAY).with_detector(detector));
+    let m = eval_modem(mode, 0.0, detector);
     let fs = m.fs() as f64;
     let chunk = (fs / 100.0) as usize;
     (0..3)
@@ -471,21 +472,24 @@ fn detector_eval() {
             println!("{line}");
         }
         println!("{mode}: per minute of audio without a burst, detections / decoded headers");
+        let mut weak = Vec::new();
         for (c, case) in NOISE_CASES.iter().enumerate() {
             let audio = noise_case(mode, c, noise_s, m.fs());
             let mut line = format!("  {case:26}");
             let per_min = 60.0 / (audio.len() as f32 / m.fs());
-            for name in Detector::ALL {
-                let (d, h) = false_detections(m, name, &audio);
-                line += &format!(" | {name} {:7.2} / {:5.2}", d as f32 * per_min, h as f32 * per_min);
+            for d in Detector::ALL {
+                let (n, h) = false_detections(m, d, &audio);
+                line += &format!(" | {d} {:7.2} / {:5.2}", n as f32 * per_min, h as f32 * per_min);
             }
             line += &format!(" | mf peak {:.3} (threshold {MF_THRESHOLD})", m.ofdm.mf_peak(&audio));
             println!("{line}");
+            if c == 1 {
+                weak = audio;
+            }
         }
-        let weak = noise_case(mode, 1, noise_s, m.fs());
         let mut line = format!("{mode}: streaming receiver CPU on '{}', 10 ms chunks:", NOISE_CASES[1]);
         for d in Detector::ALL {
-            line += &format!(" {} {:.2} %", d.name(), 100.0 * receiver_load(mode, d, &weak));
+            line += &format!(" {d} {:.2} %", 100.0 * receiver_load(mode, d, &weak));
         }
         println!("{line}");
     }
@@ -600,11 +604,10 @@ fn mcnemar_matches_known_values() {
 fn offline_receive_matches_the_streaming_receiver() {
     let seeds: u64 = env_or("STREAM_SEEDS", 12);
     for (mode, cnrs) in [("narrow", [3.0, 5.0, 8.0]), ("wide", [5.0, 7.0, 10.0])] {
+        let sent = burst(1, 1, 7);
+        let tx = modem(mode).modulate(&sent);
         for detector in Detector::ALL {
-            let m = Arc::new(Modem::new(OfdmParams::by_name(mode).unwrap(), TXDELAY).with_detector(detector));
-            let det = detector.name();
-            let sent = burst(1, 1, 7);
-            let tx = m.modulate(&sent);
+            let m = eval_modem(mode, 0.0, detector);
             let (mut total, mut ok) = (0, 0);
             for seed in 0..seeds {
                 for cnr in cnrs {
@@ -623,17 +626,17 @@ fn offline_receive_matches_the_streaming_receiver() {
                         g.header == sent.header
                             && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
                     });
-                    let offline = receive(&m, m.ofdm.detector, &rx, &sent).ok;
+                    let offline = receive(&m, detector, &rx, &sent).ok;
                     assert_eq!(
                         offline, streamed,
-                        "{mode} {det} {cnr} dB seed {seed}: offline {offline}, streaming {streamed}"
+                        "{mode} {detector} {cnr} dB seed {seed}: offline {offline}, streaming {streamed}"
                     );
                     total += 1;
                     ok += streamed as u32;
                 }
             }
             // Both outcomes must occur, or the comparison proves little.
-            assert!(ok > 0 && ok < total, "{mode} {det}: {ok} of {total} bursts decoded");
+            assert!(ok > 0 && ok < total, "{mode} {detector}: {ok} of {total} bursts decoded");
         }
     }
 }

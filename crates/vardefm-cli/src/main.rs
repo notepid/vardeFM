@@ -48,6 +48,13 @@ struct DetectorArg {
 }
 
 impl ModemArgs {
+    /// Like [`ModemArgs::build`], with the receiver finding frames with `det`.
+    fn build_rx(&self, det: &DetectorArg) -> (Ofdm, Modulation) {
+        let (mut ofdm, m) = self.build();
+        ofdm.detector = det.detector;
+        (ofdm, m)
+    }
+
     fn build(&self) -> (Ofdm, Modulation) {
         let mut p = OfdmParams::by_name(&self.mode).unwrap_or_else(|| die("unknown mode"));
         if let Some(t) = self.tilt {
@@ -164,6 +171,8 @@ enum Cmd {
         det: DetectorArg,
     },
     /// Measure whether this computer decodes fast enough for each mode and speed level
+    ///
+    /// Bursts are timed with --detector; the idle load is shown for every detector.
     Bench {
         /// narrow, wide or both
         #[arg(long, default_value = "both")]
@@ -171,10 +180,8 @@ enum Cmd {
         /// Decoder threads (default: one per CPU core)
         #[arg(long)]
         threads: Option<usize>,
-        /// Burst detector for the burst timings: sc (Schmidl-Cox) or mf (matched filter).
-        /// The idle CPU load is measured for every detector.
-        #[arg(long, default_value_t = Detector::default())]
-        detector: Detector,
+        #[command(flatten)]
+        det: DetectorArg,
     },
     /// List sound cards, CM108/CM119-type PTT devices and serial ports
     Devices,
@@ -311,8 +318,7 @@ fn main() {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Sim { modem, det, cnr, frames, ppm, keyup } => {
-            let (mut ofdm, m) = modem.build();
-            ofdm.detector = det.detector;
+            let (ofdm, m) = modem.build_rx(&det);
             let mut cfg = FmChannelConfig::by_name(&modem.mode).unwrap();
             cfg.cnr_db = cnr;
             cfg.clock_offset_ppm = ppm;
@@ -335,8 +341,7 @@ fn main() {
             );
         }
         Cmd::Sweep { modem, det, frames, ppm, keyup } => {
-            let (mut ofdm, _) = modem.build();
-            ofdm.detector = det.detector;
+            let (ofdm, _) = modem.build_rx(&det);
             let cnrs = [6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0, 40.0];
             println!("mode={} symbols/frame={} ppm={} frames/point={}", modem.mode, modem.symbols, ppm, frames);
             print!("{:>8} {:>8}", "mod", "raw b/s");
@@ -419,14 +424,14 @@ fn main() {
                 die(&err.to_string());
             }
         }
-        Cmd::Bench { mode, threads, detector } => {
+        Cmd::Bench { mode, threads, det } => {
             let modes: &[&str] = match mode.as_str() {
                 "both" => &["narrow", "wide"],
                 "narrow" => &["narrow"],
                 "wide" => &["wide"],
                 _ => die("--mode must be narrow, wide or both"),
             };
-            bench::bench(modes, threads, detector).unwrap_or_else(|m| die(&m));
+            bench::bench(modes, threads, det.detector).unwrap_or_else(|m| die(&m));
         }
         Cmd::Devices => radio_cmds::devices().unwrap_or_else(|m| die(&m)),
         Cmd::PttTest { ptt, seconds } => radio_cmds::ptt_test(&ptt, seconds).unwrap_or_else(|m| die(&m)),
@@ -473,8 +478,7 @@ fn main() {
             sp.wait();
         }
         Cmd::RxWav { modem, det, input } => {
-            let (mut ofdm, m) = modem.build();
-            ofdm.detector = det.detector;
+            let (ofdm, m) = modem.build_rx(&det);
             let (fs, rx) = read_wav(&input).unwrap_or_else(|e| die(&e.to_string()));
             if fs != ofdm.p.fs as u32 {
                 die("WAV must be 48 kHz");

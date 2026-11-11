@@ -286,7 +286,7 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     println!("  audio in : {} ({} Hz{})", input.name, input.device_rate, resample_note(input.device_rate));
     println!("  audio out: {} ({} Hz{})", output.name, output.device_rate, resample_note(output.device_rate));
     println!("  PTT      : {}", ptt.describe());
-    println!("  detector : {}", cfg.detector.name());
+    println!("  detector : {}", cfg.detector);
     if (cfg.max_level as usize) < LEVELS.len() - 1 {
         println!("  max level: {} ({})", cfg.max_level, LEVELS[cfg.max_level as usize].name);
     }

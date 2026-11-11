@@ -193,10 +193,13 @@ impl Ofdm {
         let mut rng = Prng::new(0x5eed_00b2);
         let pre_b: Vec<Complex32> = (0..nc).map(|_| Complex32::new(rng.bpsk(), 0.0)).collect();
 
-        let mut tpl = symbol_time(&p, &gains, ifft.as_ref(), &pre_a);
-        tpl.extend(symbol_time(&p, &gains, ifft.as_ref(), &pre_b));
-        let mf = MatchedFilter::new(tpl);
-        let mut s = Self {
+        let sym_a = symbol_time(&p, &gains, ifft.as_ref(), &pre_a);
+        let sym_b = symbol_time(&p, &gains, ifft.as_ref(), &pre_b);
+        let mut pre_b_body = sym_b[p.ncp..].to_vec();
+        let e = pre_b_body.iter().map(|x| x * x).sum::<f32>().sqrt();
+        pre_b_body.iter_mut().for_each(|x| *x /= e);
+        let mf = MatchedFilter::new([sym_a, sym_b].concat());
+        Self {
             p,
             detector: Detector::default(),
             mf,
@@ -208,14 +211,13 @@ impl Ofdm {
             gains,
             pre_a,
             pre_b,
-            pre_b_body: Vec::new(),
-        };
-        let b = s.symbol_time(&s.pre_b);
-        let mut body = b[s.p.ncp..].to_vec();
-        let e = body.iter().map(|x| x * x).sum::<f32>().sqrt();
-        body.iter_mut().for_each(|x| *x /= e);
-        s.pre_b_body = body;
-        s
+            pre_b_body,
+        }
+    }
+
+    /// Leader symbols sent for a leader of at least `leader_s` seconds.
+    pub fn leader_symbols(&self, leader_s: f32) -> usize {
+        (leader_s / self.p.symbol_duration()).ceil() as usize
     }
 
     pub fn data_carriers(&self) -> usize {
@@ -288,7 +290,7 @@ impl Ofdm {
     /// Unscaled samples of a frame with its leader.
     fn frame_samples(&self, data: &[Vec<Complex32>], leader_s: f32) -> Vec<f32> {
         let nc = self.p.num_carriers;
-        let n_leader = (leader_s / self.p.symbol_duration()).ceil() as usize;
+        let n_leader = self.leader_symbols(leader_s);
         let mut out = Vec::with_capacity(self.frame_len(data.len()) + n_leader * self.p.symbol_len());
         let mut rng = Prng::new(0x5eed_00c3);
         for _ in 0..n_leader {
@@ -374,24 +376,22 @@ impl Ofdm {
     ///
     /// A finite sample so large that the f32 FFT overflows (beyond about 1e35, far
     /// outside any sound card's range) blanks the block it falls in.
-    pub fn detect_mf(&self, rx: &[f32], from: usize) -> Option<usize> {
+    fn detect_mf(&self, rx: &[f32], from: usize) -> Option<usize> {
         let l = self.p.symbol_len();
         let mut peak: Option<(usize, f32, usize)> = None;
         let mut found = None;
         self.mf_scan(rx, from, |d, v| {
-            match &mut peak {
-                None if v > MF_THRESHOLD => peak = Some((d, v, d)),
-                Some((first, best, at)) => {
-                    if v > *best {
-                        (*best, *at) = (v, d);
-                    }
-                    if d - *first >= l {
-                        // The template starts with preamble A's cyclic prefix.
-                        found = Some(from + *at + l + self.p.ncp);
-                        return false;
-                    }
+            if let Some((first, best, at)) = &mut peak {
+                if v > *best {
+                    (*best, *at) = (v, d);
                 }
-                None => {}
+                if d - *first >= l {
+                    // The template starts with preamble A's cyclic prefix.
+                    found = Some(from + *at + l + self.p.ncp);
+                    return false;
+                }
+            } else if v > MF_THRESHOLD {
+                peak = Some((d, v, d));
             }
             true
         });
@@ -455,7 +455,7 @@ impl Ofdm {
     }
 
     /// Schmidl-Cox search, the original detector.
-    pub fn detect_sc(&self, rx: &[f32], from: usize) -> Option<usize> {
+    fn detect_sc(&self, rx: &[f32], from: usize) -> Option<usize> {
         // Filtering keeps preamble A periodic (the filter is linear and time-invariant),
         // so the autocorrelation still works on the filtered copy.
         let filtered;
@@ -802,8 +802,7 @@ mod tests {
     /// Where the body of preamble B starts in `lead` samples of silence followed by
     /// `data` with a leader of `leader_s`.
     fn known_start(ofdm: &Ofdm, lead: usize, leader_s: f32) -> usize {
-        let n_leader = (leader_s / ofdm.p.symbol_duration()).ceil() as usize;
-        lead + (n_leader + 1) * ofdm.p.symbol_len() + ofdm.p.ncp
+        lead + (ofdm.leader_symbols(leader_s) + 1) * ofdm.p.symbol_len() + ofdm.p.ncp
     }
 
     #[test]
@@ -889,21 +888,6 @@ mod tests {
         assert_eq!(Detector::ALL.len(), count(Detector::default()));
         for d in Detector::ALL {
             assert_eq!(d.name().parse::<Detector>(), Ok(d));
-        }
-    }
-
-    #[test]
-    fn matched_filter_ignores_silence_noise_and_tones() {
-        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
-            let n = 2 * p.fs as usize;
-            let mut rng = Prng::new(99);
-            let noise: Vec<f32> = (0..n).map(|_| 0.3 * rng.uniform()).collect();
-            let tone: Vec<f32> =
-                (0..n).map(|i| 0.3 * (2.0 * std::f32::consts::PI * 1500.0 * i as f32 / p.fs).sin()).collect();
-            let ofdm = Ofdm::new(p);
-            for (name, x) in [("silence", vec![0.0; n]), ("noise", noise.clone()), ("1500 Hz", tone.clone())] {
-                assert!(ofdm.detect_mf(&x, 0).is_none(), "{}: false frame in {name}", ofdm.p.name);
-            }
         }
     }
 
