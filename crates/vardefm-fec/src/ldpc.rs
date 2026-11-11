@@ -258,12 +258,12 @@ fn peg(m: usize, degrees: &[usize], seed: u32) -> Vec<Vec<u32>> {
 
 /// The codes the modem uses (`vardefm-modem`): header, then payload k = 1200..2000.
 #[cfg(test)]
-const CODES: [(usize, usize, u32); 5] = [
-    (400, 96, 0x1d9c_1000),
-    (2400, 1200, 0x1d9c_0000 + 1200),
-    (2400, 1600, 0x1d9c_0000 + 1600),
-    (2400, 1800, 0x1d9c_0000 + 1800),
-    (2400, 2000, 0x1d9c_0000 + 2000),
+const CODES: [(&str, usize, usize, u32); 5] = [
+    ("header", 400, 96, 0x1d9c_1000),
+    ("r1/2", 2400, 1200, 0x1d9c_0000 + 1200),
+    ("r2/3", 2400, 1600, 0x1d9c_0000 + 1600),
+    ("r3/4", 2400, 1800, 0x1d9c_0000 + 1800),
+    ("r5/6", 2400, 2000, 0x1d9c_0000 + 2000),
 ];
 
 #[cfg(test)]
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn graph_has_profile_and_no_4_cycles() {
-        for (n, k, seed) in CODES {
+        for (_, n, k, seed) in CODES {
             let code = Ldpc::new(n, k, seed);
             let m = code.m();
             let mut checks_of = vec![Vec::new(); k];
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn construction_is_stable() {
         let mut got = Vec::new();
-        for (n, k, seed) in CODES {
+        for (_, n, k, seed) in CODES {
             let code = Ldpc::new(n, k, seed);
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for v in code.check_ptr.iter().map(|&p| p as u32).chain(code.check_vars.iter().copied()) {
@@ -374,6 +374,9 @@ mod curve {
     use std::time::Instant;
 
     /// Frame error rate of `code` at `ebn0_db` (BPSK, AWGN, 50 iterations).
+    /// Trial `t` uses the same data and noise at every Eb/N0, so the points of a
+    /// curve are correlated: the curve is smoother, and a gate's two points are
+    /// paired.
     fn fer(code: &Ldpc, ebn0_db: f32, trials: u32) -> f32 {
         let rate = code.k as f32 / code.n as f32;
         let esn0 = ebn0_db + 10.0 * rate.log10();
@@ -410,16 +413,129 @@ mod curve {
         fails as f32 / trials as f32
     }
 
+    /// Frame error rate at which a code's point is recorded and gated.
+    const TARGET_FER: f32 = 0.01;
+    /// The gate measures this far either side of the recorded point, dB.
+    const GATE_MARGIN_DB: f32 = 0.25;
+    /// Frames per point of the gate. At 1 % FER, sigma is 0.16 %. Over the margin on
+    /// either side, the header code's FER changes by about a factor of 3 and the
+    /// payload codes' by an order of magnitude or more.
+    const GATE_TRIALS: u32 = 4000;
+    /// Frames per point of the fine grid that `fer_curve` records.
+    const RECORD_TRIALS: u32 = 4000;
+    /// Half-width of that grid in 0.05 dB steps: ±0.4 dB, so that a coarse crossing
+    /// one 0.25 dB step off at few frames still leaves the true one inside.
+    const FINE_STEPS: i32 = 8;
+
+    /// The recorded 1 % FER points, `perf/ldpc.toml`.
+    const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/ldpc.toml");
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Baseline {
+        source: Source,
+        code: Vec<Point>,
+    }
+
+    /// How a baseline was made, so a change to it can be reproduced.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Source {
+        what: String,
+        commit: String,
+        command: String,
+        /// Frames per point of the 0.25 dB search, `TRIALS`.
+        coarse_trials: u32,
+        /// Frames per point of the recorded grid.
+        fine_trials: u32,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Point {
+        name: String,
+        n: usize,
+        k: usize,
+        /// Eb/N0 at which FER crosses `TARGET_FER`, dB.
+        ebn0_db: f32,
+        /// The fine grid the crossing comes from, for review in diffs.
+        grid_db: Vec<f32>,
+        fer: Vec<f32>,
+    }
+
+    fn load() -> Baseline {
+        let text = std::fs::read_to_string(BASELINE).unwrap_or_else(|e| panic!("{BASELINE}: {e}"));
+        toml::from_str(&text).unwrap_or_else(|e| panic!("{BASELINE}: {e}"))
+    }
+
+    impl Baseline {
+        fn point(&self, n: usize, k: usize) -> &Point {
+            let p = self.code.iter().find(|p| (p.n, p.k) == (n, k));
+            p.unwrap_or_else(|| panic!("{BASELINE} has no ({n},{k}) code"))
+        }
+    }
+
+    /// Where `rates` (falling with `grid`) cross `target`, by interpolation of
+    /// log10 of the rate between the bracketing points, or linearly when one of
+    /// them is 0. `None` when the grid does not bracket the target. A waterfall bends
+    /// down in log scale, so the chord lies below it and the crossing comes out
+    /// slightly low; on the recorded grids the bias is well inside the gate's margin.
+    fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
+        let i = rates.windows(2).position(|w| w[0] >= target && w[1] < target)?;
+        let (x0, x1, y0, y1) = (grid[i], grid[i + 1], rates[i], rates[i + 1]);
+        let t = if y1 > 0.0 {
+            (y0.log10() - target.log10()) / (y0.log10() - y1.log10())
+        } else {
+            (y0 - target) / (y0 - y1)
+        };
+        Some(x0 + t * (x1 - x0))
+    }
+
+    /// The commit of the working tree, marked when it has uncommitted changes other
+    /// than recorded baselines; "unknown" without git or outside a repository.
+    fn commit() -> String {
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        let Some(head) = git(&["rev-parse", "--short", "HEAD"]) else {
+            return "unknown".into();
+        };
+        if git(&["status", "--porcelain", "--", ":/", ":(top,exclude,glob)**/perf/*.toml"])
+            .is_some_and(|s| s.is_empty())
+        {
+            head
+        } else {
+            format!("{head}-dirty")
+        }
+    }
+
+    fn env_or(name: &str, default: u32) -> u32 {
+        std::env::var(name)
+            .map_or(default, |v| v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} does not parse")))
+    }
+
     /// Prints build time and frame error rate vs Eb/N0 for every code (BPSK, AWGN),
     /// 200 frames per point (or `TRIALS`) in 0.25 dB steps from 0.5 dB; a curve ends
-    /// after two error-free points in a row.
+    /// after two error-free points in a row. With `WRITE=1`, it then measures the
+    /// 1 % FER point on a 0.05 dB grid of `RECORD_TRIALS` frames per point around
+    /// the coarse crossing and records the points in `perf/ldpc.toml`.
     /// `cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn fer_curve() {
-        let trials = std::env::var("TRIALS").map_or(200, |t| t.parse().unwrap());
+        let trials = env_or("TRIALS", 200);
+        let write = std::env::var("WRITE").is_ok_and(|v| v == "1");
+        // The tree as measured, not as it is when the run ends.
+        let commit = commit();
         let mut total = 0.0;
-        for (n, k, seed) in CODES {
+        let mut points = Vec::new();
+        for (name, n, k, seed) in CODES {
             let t0 = Instant::now();
             let code = Ldpc::new(n, k, seed);
             let built = t0.elapsed().as_secs_f64() * 1e3;
@@ -427,17 +543,131 @@ mod curve {
             println!("({n},{k}) rate {:.2}, built in {built:.1} ms:", k as f32 / n as f32);
             let mut line = String::new();
             let mut clean = 0;
+            let (mut grid, mut rates) = (Vec::new(), Vec::new());
             for i in 0..=16 {
                 let ebn0 = 0.5 + 0.25 * i as f32;
                 let f = fer(&code, ebn0, trials);
                 line += &format!(" {ebn0:.2}:{f:.3}");
+                grid.push(ebn0);
+                rates.push(f);
                 clean = if f == 0.0 { clean + 1 } else { 0 };
                 if clean == 2 {
                     break;
                 }
             }
             println!("  {line}");
+            if !write {
+                continue;
+            }
+            let coarse = crossing(&grid, &rates, TARGET_FER).expect("the coarse grid does not cross 1 % FER");
+            // Whole steps of 0.05 dB, so the recorded grid reads as written. At few
+            // frames the coarse crossing can sit a step or two off, so the grid is
+            // centred again on its own crossing until the gate's points lie on it.
+            let mut centre = (coarse * 20.0).round() as i32;
+            let (grid, rates, ebn0_db) = loop {
+                let grid: Vec<f32> = (centre - FINE_STEPS..=centre + FINE_STEPS).map(|i| i as f32 / 20.0).collect();
+                let rates: Vec<f32> = grid.iter().map(|&e| fer(&code, e, RECORD_TRIALS)).collect();
+                let x = crossing(&grid, &rates, TARGET_FER).expect("the fine grid does not cross 1 % FER");
+                let x = (x * 100.0).round() / 100.0;
+                let on_grid = grid[0] <= x - GATE_MARGIN_DB && x + GATE_MARGIN_DB <= grid[grid.len() - 1];
+                let next = (x * 20.0).round() as i32;
+                if on_grid || next == centre {
+                    break (grid, rates, x);
+                }
+                println!("  fine grid centred again: {:.2} -> {:.2} dB", centre as f32 / 20.0, next as f32 / 20.0);
+                centre = next;
+            };
+            println!("  1 % FER at {ebn0_db:.2} dB");
+            points.push(Point { name: name.into(), n, k, ebn0_db, grid_db: grid, fer: rates });
         }
         println!("all codes built in {total:.1} ms");
+        if write {
+            // A grid that cannot carry the gate stops the run instead of reaching the file.
+            for p in &points {
+                check_point(&format!("({},{})", p.n, p.k), p);
+            }
+            let b = Baseline {
+                source: Source {
+                    what: "Eb/N0 at 1 % FER, BPSK over AWGN, layered offset min-sum, 50 iterations".into(),
+                    commit,
+                    command: format!(
+                        "WRITE=1 TRIALS={trials} cargo test --release -p vardefm-fec fer_curve -- --ignored"
+                    ),
+                    coarse_trials: trials,
+                    fine_trials: RECORD_TRIALS,
+                },
+                code: points,
+            };
+            std::fs::write(BASELINE, toml::to_string(&b).unwrap()).unwrap();
+            println!("wrote {BASELINE}");
+        }
+    }
+
+    /// Fails when a code's 1 % FER point has moved from `perf/ldpc.toml` by more
+    /// than `GATE_MARGIN_DB`: FER must be below 1 % that far above the point and
+    /// above 1 % that far below. `TRIALS` overrides the frames per point.
+    /// `cargo test --release -p vardefm-fec fer_gate -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn fer_gate() {
+        let trials = env_or("TRIALS", GATE_TRIALS);
+        let base = load();
+        println!("baseline {} ({})", base.source.commit, base.source.command);
+        let mut failed = Vec::new();
+        for (name, n, k, seed) in CODES {
+            let p = base.point(n, k);
+            let code = Ldpc::new(n, k, seed);
+            let above = fer(&code, p.ebn0_db + GATE_MARGIN_DB, trials);
+            let below = fer(&code, p.ebn0_db - GATE_MARGIN_DB, trials);
+            let ok = above < TARGET_FER && below > TARGET_FER;
+            println!(
+                "{:>6} at {:.2} dB: FER {below:.4} at -{GATE_MARGIN_DB} dB, {above:.4} at +{GATE_MARGIN_DB} dB {}",
+                name,
+                p.ebn0_db,
+                if ok { "ok" } else { "FAIL" }
+            );
+            if !ok {
+                failed.push(name);
+            }
+        }
+        assert!(failed.is_empty(), "1 % FER point moved for {failed:?}");
+    }
+
+    #[test]
+    fn crossing_interpolates_in_log() {
+        let grid = [1.0, 1.5, 2.0];
+        assert_eq!(crossing(&grid, &[0.5, 0.1, 0.01], 0.1), Some(1.5));
+        let x = crossing(&grid, &[1.0, 0.1, 0.01], 0.0316).unwrap();
+        assert!((x - 1.75).abs() < 1e-3, "{x}");
+        assert_eq!(crossing(&grid, &[0.3, 0.2, 0.0], 0.1), Some(1.75));
+        assert_eq!(crossing(&grid, &[0.05, 0.02, 0.0], 0.1), None);
+        // A rate exactly at the target, as a measured one can be, is not yet below it.
+        assert_eq!(crossing(&[1.0, 1.5, 2.0, 2.5], &[0.2, 0.1, 0.1, 0.05], 0.1), Some(2.0));
+    }
+
+    /// The committed baseline holds one consistent point per code: the crossing of
+    /// its own grid, with the gate's two points on that grid.
+    #[test]
+    fn baseline_covers_every_code() {
+        let base = load();
+        assert_eq!(base.code.len(), CODES.len(), "{BASELINE}: entries for unknown codes");
+        for (name, n, k, _) in CODES {
+            let p = base.point(n, k);
+            let at = format!("{BASELINE}: ({n},{k})");
+            assert_eq!(p.name, name, "{at} is named {:?}", p.name);
+            check_point(&at, p);
+        }
+    }
+
+    /// A recorded point is the crossing of its own grid, and the gate's two points
+    /// lie on that grid.
+    fn check_point(at: &str, p: &Point) {
+        let (grid, rates, point) = (&p.grid_db, &p.fer, p.ebn0_db);
+        assert_eq!(grid.len(), rates.len(), "{at}: grid and rates differ in length");
+        assert!(grid.windows(2).all(|w| w[0] < w[1]), "{at}: grid is not increasing");
+        let x = crossing(grid, rates, TARGET_FER).unwrap_or_else(|| panic!("{at}: the grid does not cross 1 %"));
+        assert!(((x * 100.0).round() / 100.0 - point).abs() < 1e-3, "{at}: recorded {point}, grid crosses at {x}");
+        let (lo, hi) = (point - GATE_MARGIN_DB, point + GATE_MARGIN_DB);
+        assert!(grid[0] <= lo && hi <= grid[grid.len() - 1], "{at}: gate points off the grid");
     }
 }
