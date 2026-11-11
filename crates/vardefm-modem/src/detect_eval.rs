@@ -575,6 +575,20 @@ fn mismatched_links_still_carry_strong_bursts() {
     }
 }
 
+/// A detector the receiver can use but the table leaves out would go unevaluated.
+#[test]
+fn every_detector_is_evaluated() {
+    let names: Vec<&str> = DETECTORS.iter().map(|(n, _)| *n).collect();
+    let all: Vec<&str> = Detector::ALL.iter().map(|d| d.name()).collect();
+    assert_eq!(names, all);
+    // Each entry must run the detector it is named after.
+    let m = modem("narrow");
+    let rx = transmit(&FmChannelConfig::narrow(), &m.modulate(&burst(1, 1, 1)));
+    for ((name, f), d) in DETECTORS.iter().zip(Detector::ALL) {
+        assert_eq!(f(&m, &rx, 0), m.ofdm.detect_with(d, &rx, 0), "{name}");
+    }
+}
+
 #[test]
 fn mcnemar_matches_known_values() {
     assert_eq!(mcnemar(0, 0), 1.0);

@@ -26,9 +26,10 @@ const MIN_PREAMBLE_CORR: f32 = 0.3;
 /// 18-24 real noise samples).
 const SCALE_THRESHOLD: f32 = 2.0;
 /// Normalized correlation with preambles A and B that marks a burst for the matched
-/// filter. The largest value in a minute of FM channel noise or keyed tones was about
-/// 0.3, in white noise about 0.15 ([`Ofdm::mf_peak`], reported by `detector_eval` in
-/// vardefm-modem), while bursts too weak to decode still peak above 0.4.
+/// filter. In ten minutes each of FM channel noise and keyed tones the largest value
+/// was 0.31, in white noise 0.17 ([`Ofdm::mf_peak`], reported by `detector_eval` in
+/// vardefm-modem with `NOISE_SECONDS=600`). Bursts at a CNR where none decodes
+/// still cross it, as the evaluation's `hit` counts show for the simulator's channel.
 pub const MF_THRESHOLD: f32 = 0.4;
 /// TX low-pass cutoff relative to the top carrier frequency.
 const TX_LOWPASS_FACTOR: f32 = 1.15;
