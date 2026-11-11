@@ -56,6 +56,24 @@ impl Detector {
     }
 }
 
+impl std::fmt::Display for Detector {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl std::str::FromStr for Detector {
+    type Err = String;
+
+    /// A detector by its [`Detector::name`].
+    fn from_str(s: &str) -> Result<Self, String> {
+        Self::ALL.into_iter().find(|d| d.name() == s).ok_or_else(|| {
+            let names: Vec<&str> = Self::ALL.iter().map(|d| d.name()).collect();
+            format!("unknown detector {s:?} (one of {})", names.join(", "))
+        })
+    }
+}
+
 /// Matched filter for preambles A and B, evaluated by FFT (overlap-save).
 struct MatchedFilter {
     /// Template length: preambles A and B with their cyclic prefixes.
@@ -386,22 +404,28 @@ impl Ofdm {
             return;
         };
         let x = &rx[from..];
+        // A NaN or infinity would spoil a whole FFT block and the running energy, so
+        // it counts as silence.
+        let at = |i: usize| x.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
+        let sq = |i: usize| (at(i) as f64).powi(2);
+        // Windows quieter than -90 dBFS RMS, exact silence among them, score 0 rather
+        // than whatever rounding leaves in the running energy.
         let floor = 1e-9 * t as f64;
         let mut buf = vec![Complex32::new(0.0, 0.0); n];
         let mut start = 0;
         while start < count {
             for (i, c) in buf.iter_mut().enumerate() {
-                *c = Complex32::new(x.get(start + i).copied().unwrap_or(0.0), 0.0);
+                *c = Complex32::new(at(start + i), 0.0);
             }
             mf.fft.process(&mut buf);
             buf.iter_mut().zip(&mf.spec).for_each(|(c, s)| *c *= s);
             mf.ifft.process(&mut buf);
             // Window energy, exact at each block start and then updated sample by sample.
-            let mut energy: f64 = x[start..start + t].iter().map(|&v| (v * v) as f64).sum();
+            let mut energy: f64 = (start..start + t).map(sq).sum();
             for (j, c) in buf.iter().take(hop.min(count - start)).enumerate() {
                 let d = start + j;
                 if j > 0 {
-                    energy += (x[d + t - 1] * x[d + t - 1]) as f64 - (x[d - 1] * x[d - 1]) as f64;
+                    energy += sq(d + t - 1) - sq(d - 1);
                 }
                 let v = if energy > floor { c.re.abs() / (mf.norm * energy.sqrt() as f32) } else { 0.0 };
                 if !visit(d, v) {
@@ -809,6 +833,45 @@ mod tests {
             for (name, x) in [("silence", vec![0.0; n]), ("noise", noise.clone()), ("1500 Hz", tone.clone())] {
                 assert!(ofdm.detect_mf(&x, 0).is_none(), "{}: false frame in {name}", ofdm.p.name);
             }
+        }
+    }
+
+    #[test]
+    fn matched_filter_recovers_from_bad_samples_silence_and_long_noise() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let fs = p.fs as usize;
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 5);
+            // A weak burst, to check that loud audio before it leaves no trace.
+            let burst: Vec<f32> = ofdm.modulate_with_leader(&data, 0.1).iter().map(|v| 0.01 * v).collect();
+            let mut alone = vec![0.0; 1000];
+            alone.extend(&burst);
+            let at = ofdm.detect_mf(&alone, 0).expect("mf found nothing");
+
+            // Two minutes of full-scale noise with NaN and infinities in it, then a
+            // minute of exact silence, then the burst.
+            let mut rng = Prng::new(7);
+            let mut rx: Vec<f32> = (0..120 * fs).map(|_| rng.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0).collect();
+            for (i, v) in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN].into_iter().enumerate() {
+                rx[(i + 1) * 25 * fs] = v;
+            }
+            rx.extend(vec![0.0; 60 * fs]);
+            let offset = rx.len();
+            rx.extend(&alone);
+            let name = ofdm.p.name;
+            assert_eq!(ofdm.detect_mf(&rx, 0), Some(offset + at), "{name}: burst after noise and silence");
+            assert!(ofdm.detect_mf(&rx[..offset], 0).is_none(), "{name}: detection in the noise and silence");
+            assert!(ofdm.mf_peak(&rx[..offset]) < MF_THRESHOLD, "{name}: peak in the noise and silence");
+
+            // Bad samples count as silence, so those right around the preambles cost
+            // nothing. The first sample after the template is always in the FFT block
+            // that finds the burst.
+            let (l, ncp) = (ofdm.p.symbol_len(), ofdm.p.ncp);
+            let tpl_start = at - l - ncp;
+            let mut rx = alone.clone();
+            rx[tpl_start - 1] = f32::INFINITY;
+            rx[tpl_start + 2 * l] = f32::NAN;
+            assert_eq!(ofdm.detect_mf(&rx, 0), Some(at), "{name}: bad samples before the burst");
         }
     }
 

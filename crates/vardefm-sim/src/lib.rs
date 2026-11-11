@@ -17,8 +17,11 @@ pub struct FmChannelConfig {
     pub fs: f32,
     /// Peak deviation in Hz for audio amplitude 1.0.
     pub deviation_hz: f32,
-    /// Pre-/de-emphasis time constant in microseconds (None for the flat data port).
-    pub emphasis_us: Option<f32>,
+    /// TX pre-emphasis time constant in microseconds (None for the flat data port).
+    pub tx_emphasis_us: Option<f32>,
+    /// RX de-emphasis time constant in microseconds. A radio whose value differs from
+    /// `tx_emphasis_us` passes the modem audio with a tilted response.
+    pub rx_emphasis_us: Option<f32>,
     /// TX audio passband in Hz.
     pub tx_band: (f32, f32),
     /// RX audio passband in Hz.
@@ -46,7 +49,8 @@ impl FmChannelConfig {
         Self {
             fs: 48_000.0,
             deviation_hz: 2_500.0,
-            emphasis_us: Some(750.0),
+            tx_emphasis_us: Some(750.0),
+            rx_emphasis_us: Some(750.0),
             tx_band: (300.0, 3_000.0),
             rx_band: (300.0, 3_000.0),
             if_bandwidth_hz: 11_000.0,
@@ -64,7 +68,8 @@ impl FmChannelConfig {
     /// Flat 9600-baud data port path.
     pub fn wide() -> Self {
         Self {
-            emphasis_us: None,
+            tx_emphasis_us: None,
+            rx_emphasis_us: None,
             deviation_hz: 3_000.0,
             tx_band: (20.0, 7_000.0),
             rx_band: (20.0, 7_000.0),
@@ -94,7 +99,7 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
 
     // --- Transmitter audio chain ---
     let mut tx_chain = Chain::bandpass4(fs, cfg.tx_band.0, cfg.tx_band.1);
-    let mut pre = cfg.emphasis_us.map(|us| FirstOrder::preemphasis(fs, us * 1e-6));
+    let mut pre = cfg.tx_emphasis_us.map(|us| FirstOrder::preemphasis(fs, us * 1e-6));
     let mut tx_audio = vec![0f32; total];
     for (i, &x) in audio.iter().enumerate() {
         let mut v = x;
@@ -133,7 +138,7 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
     let taps = design_lowpass_fir(129, cfg.if_bandwidth_hz / 2.0, fs);
     let delay = taps.len() / 2;
     let iff = fir_complex(&taps, &rf);
-    let mut de = cfg.emphasis_us.map(|us| FirstOrder::deemphasis(fs, us * 1e-6));
+    let mut de = cfg.rx_emphasis_us.map(|us| FirstOrder::deemphasis(fs, us * 1e-6));
     let mut rx_chain = Chain::bandpass4(fs, cfg.rx_band.0, cfg.rx_band.1);
     let scale = fs / (2.0 * PI * cfg.deviation_hz);
     let mut out = vec![0f32; total];
