@@ -7,7 +7,7 @@ mod radio_cmds;
 
 use vardefm_audio::Channel;
 use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
-use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
+use vardefm_dsp::{Detector, Modulation, Ofdm, OfdmParams};
 use vardefm_sim::{transmit, FmChannelConfig};
 use vardefm_tnc::simpair::{SimPair, SimPairConfig};
 
@@ -40,6 +40,13 @@ struct ModemArgs {
     txdelay: f32,
 }
 
+#[derive(clap::Args, Clone)]
+struct DetectorArg {
+    /// Burst detector: sc (Schmidl-Cox) or mf (matched filter)
+    #[arg(long, default_value_t = Detector::default())]
+    detector: Detector,
+}
+
 impl ModemArgs {
     fn build(&self) -> (Ofdm, Modulation) {
         let mut p = OfdmParams::by_name(&self.mode).unwrap_or_else(|| die("unknown mode"));
@@ -60,6 +67,8 @@ enum Cmd {
     Sim {
         #[command(flatten)]
         modem: ModemArgs,
+        #[command(flatten)]
+        det: DetectorArg,
         /// Carrier-to-noise ratio in dB (omit for no noise)
         #[arg(long)]
         cnr: Option<f32>,
@@ -76,6 +85,8 @@ enum Cmd {
     Sweep {
         #[command(flatten)]
         modem: ModemArgs,
+        #[command(flatten)]
+        det: DetectorArg,
         #[arg(long, default_value_t = 5)]
         frames: usize,
         #[arg(long, default_value_t = 0.0)]
@@ -97,6 +108,8 @@ enum Cmd {
     RxWav {
         #[command(flatten)]
         modem: ModemArgs,
+        #[command(flatten)]
+        det: DetectorArg,
         #[arg(long = "in")]
         input: String,
     },
@@ -147,6 +160,8 @@ enum Cmd {
         /// Print the receive level every 2 s while idle, to set the radio's volume
         #[arg(long)]
         levels: bool,
+        #[command(flatten)]
+        det: DetectorArg,
     },
     /// Measure whether this computer decodes fast enough for each mode and speed level
     Bench {
@@ -156,6 +171,10 @@ enum Cmd {
         /// Decoder threads (default: one per CPU core)
         #[arg(long)]
         threads: Option<usize>,
+        /// Burst detector for the burst timings: sc (Schmidl-Cox) or mf (matched filter).
+        /// The idle CPU load is measured for every detector.
+        #[arg(long, default_value_t = Detector::default())]
+        detector: Detector,
     },
     /// List sound cards, CM108/CM119-type PTT devices and serial ports
     Devices,
@@ -191,6 +210,8 @@ enum Cmd {
         in_channel: Channel,
         #[arg(long, default_value = "narrow")]
         mode: String,
+        #[command(flatten)]
+        det: DetectorArg,
     },
     /// Decode VardeFM bursts from a 48 kHz WAV recording
     Decode {
@@ -198,6 +219,8 @@ enum Cmd {
         mode: String,
         #[arg(long = "in")]
         input: String,
+        #[command(flatten)]
+        det: DetectorArg,
     },
     /// Two VardeFM modems (A and B) joined by a simulated FM link, each with its
     /// own VARA-compatible TCP ports. Runs until stopped with Ctrl-C.
@@ -235,6 +258,8 @@ enum Cmd {
         /// Save every transmission as NNNN_<A|B>_tx.wav / _rx.wav in this folder
         #[arg(long)]
         record: Option<String>,
+        #[command(flatten)]
+        det: DetectorArg,
     },
 }
 
@@ -285,8 +310,9 @@ fn raw_rate(ofdm: &Ofdm, m: Modulation, nsym: usize) -> f32 {
 fn main() {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Sim { modem, cnr, frames, ppm, keyup } => {
-            let (ofdm, m) = modem.build();
+        Cmd::Sim { modem, det, cnr, frames, ppm, keyup } => {
+            let (mut ofdm, m) = modem.build();
+            ofdm.detector = det.detector;
             let mut cfg = FmChannelConfig::by_name(&modem.mode).unwrap();
             cfg.cnr_db = cnr;
             cfg.clock_offset_ppm = ppm;
@@ -308,8 +334,9 @@ fn main() {
                 st.snr_sum / st.snr_n.max(1) as f32
             );
         }
-        Cmd::Sweep { modem, frames, ppm, keyup } => {
-            let (ofdm, _) = modem.build();
+        Cmd::Sweep { modem, det, frames, ppm, keyup } => {
+            let (mut ofdm, _) = modem.build();
+            ofdm.detector = det.detector;
             let cnrs = [6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0, 40.0];
             println!("mode={} symbols/frame={} ppm={} frames/point={}", modem.mode, modem.symbols, ppm, frames);
             print!("{:>8} {:>8}", "mod", "raw b/s");
@@ -366,6 +393,7 @@ fn main() {
             max_level,
             quiet,
             levels,
+            det,
         } => {
             let ptt = ptt.parse().unwrap_or_else(|m: String| die(&m));
             let cfg = vardefm_tnc::radio::RadioConfig {
@@ -382,6 +410,7 @@ fn main() {
                 tx_gain,
                 record: record.map(Into::into),
                 max_level,
+                detector: det.detector,
                 verbose: !quiet,
                 show_levels: levels,
             };
@@ -390,25 +419,25 @@ fn main() {
                 die(&err.to_string());
             }
         }
-        Cmd::Bench { mode, threads } => {
+        Cmd::Bench { mode, threads, detector } => {
             let modes: &[&str] = match mode.as_str() {
                 "both" => &["narrow", "wide"],
                 "narrow" => &["narrow"],
                 "wide" => &["wide"],
                 _ => die("--mode must be narrow, wide or both"),
             };
-            bench::bench(modes, threads).unwrap_or_else(|m| die(&m));
+            bench::bench(modes, threads, detector).unwrap_or_else(|m| die(&m));
         }
         Cmd::Devices => radio_cmds::devices().unwrap_or_else(|m| die(&m)),
         Cmd::PttTest { ptt, seconds } => radio_cmds::ptt_test(&ptt, seconds).unwrap_or_else(|m| die(&m)),
         Cmd::Tone { audio_out, out_channel, ptt, freq, level, seconds } => {
             radio_cmds::tone(audio_out.as_deref(), out_channel, &ptt, freq, level, seconds).unwrap_or_else(|m| die(&m))
         }
-        Cmd::Monitor { audio_in, in_channel, mode } => {
-            radio_cmds::monitor(audio_in.as_deref(), in_channel, &mode).unwrap_or_else(|m| die(&m))
+        Cmd::Monitor { audio_in, in_channel, mode, det } => {
+            radio_cmds::monitor(audio_in.as_deref(), in_channel, &mode, det.detector).unwrap_or_else(|m| die(&m))
         }
-        Cmd::Decode { mode, input } => radio_cmds::decode(&input, &mode).unwrap_or_else(|m| die(&m)),
-        Cmd::SimPair { mode, cnr, ppm, keyup, txdelay, seed, speed, host, a_port, b_port, record } => {
+        Cmd::Decode { mode, input, det } => radio_cmds::decode(&input, &mode, det.detector).unwrap_or_else(|m| die(&m)),
+        Cmd::SimPair { mode, cnr, ppm, keyup, txdelay, seed, speed, host, a_port, b_port, record, det } => {
             if keyup >= txdelay {
                 die("--txdelay must be longer than --keyup");
             }
@@ -424,16 +453,18 @@ fn main() {
                 a_port,
                 b_port,
                 record: record.map(Into::into),
+                detector: det.detector,
                 verbose: true,
             };
             let sp = SimPair::start(cfg.clone()).unwrap_or_else(|e| die(&e.to_string()));
             println!(
-                "sim-pair: {} mode, CNR {}, {} ppm, key-up {} s, speed {}x",
+                "sim-pair: {} mode, CNR {}, {} ppm, key-up {} s, speed {}x, detector {}",
                 cfg.mode,
                 cnr.map_or("none".into(), |c| format!("{c} dB")),
                 ppm,
                 keyup,
-                speed
+                speed,
+                cfg.detector
             );
             for (name, (c, d)) in ["A", "B"].iter().zip(sp.addrs) {
                 println!("  station {name}: command {c}, data {d}");
@@ -441,8 +472,9 @@ fn main() {
             println!("Ctrl-C to stop.");
             sp.wait();
         }
-        Cmd::RxWav { modem, input } => {
-            let (ofdm, m) = modem.build();
+        Cmd::RxWav { modem, det, input } => {
+            let (mut ofdm, m) = modem.build();
+            ofdm.detector = det.detector;
             let (fs, rx) = read_wav(&input).unwrap_or_else(|e| die(&e.to_string()));
             if fs != ofdm.p.fs as u32 {
                 die("WAV must be 48 kHz");

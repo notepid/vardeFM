@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use vardefm_dsp::Detector;
 use vardefm_link::LinkConfig;
 use vardefm_modem::{Modem, OfdmParams, LEVELS};
 use vardefm_sim::{transmit, FmChannelConfig};
@@ -43,6 +44,8 @@ pub struct SimPairConfig {
     pub b_port: u16,
     /// Save every transmission as WAV files in this folder.
     pub record: Option<PathBuf>,
+    /// How both receivers find bursts.
+    pub detector: Detector,
     /// Print one line per transmission and reception.
     pub verbose: bool,
 }
@@ -61,6 +64,7 @@ impl Default for SimPairConfig {
             a_port: 8300,
             b_port: 8310,
             record: None,
+            detector: Detector::default(),
             verbose: true,
         }
     }
@@ -98,7 +102,9 @@ impl SimPair {
         if let Some(dir) = &cfg.record {
             std::fs::create_dir_all(dir)?;
         }
-        let modem = Arc::new(Modem::new(params, cfg.txdelay_s));
+        let mut modem = Modem::new(params, cfg.txdelay_s);
+        modem.ofdm.detector = cfg.detector;
+        let modem = Arc::new(modem);
         let stats = Arc::new(Mutex::new(SimPairStats::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let engine = Engine {

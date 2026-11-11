@@ -14,6 +14,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use vardefm_dsp::prng::Prng;
+use vardefm_dsp::Detector;
 use vardefm_link::LinkConfig;
 use vardefm_modem::{Burst, Header, Kind, Modem, OfdmParams, Receiver, LEVELS};
 use vardefm_sim::{transmit, FmChannelConfig};
@@ -88,7 +89,7 @@ fn on_air(mode: &str, tx: &[f32]) -> Vec<f32> {
     transmit(&cfg, tx)
 }
 
-pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
+pub fn bench(modes: &[&str], threads: Option<usize>, detector: Detector) -> Result<(), String> {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads = threads.unwrap_or(cores).max(1);
     let link = LinkConfig::default();
@@ -103,19 +104,24 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
 
     for &mode in modes {
         let params = OfdmParams::by_name(mode).ok_or("mode must be narrow, wide or both")?;
-        let mut modem = Modem::new(params, 0.15);
-        modem.decode_threads = threads;
-        let modem = Arc::new(modem);
+        let with = |d: Detector| {
+            let mut m = Modem::new(params.clone(), 0.15);
+            m.decode_threads = threads;
+            m.ofdm.detector = d;
+            Arc::new(m)
+        };
+        let modem = with(detector);
+        // Warm up caches and the CPU clock before timing anything.
+        let _ = run(&modem, &on_air(mode, &modem.modulate(&burst(&modem, 0, 1))));
 
         // Listening to an empty channel (noise): the preamble search runs on every chunk.
         let mut rng = Prng::new(3);
         let empty: Vec<f32> = (0..(5.0 * modem.fs()) as usize).map(|_| noise(&mut rng, 0.1)).collect();
-        let idle = run(&modem, &empty);
-        // Warm up caches and the CPU clock before timing bursts.
-        let _ = run(&modem, &on_air(mode, &modem.modulate(&burst(&modem, 0, 1))));
+        let idle: Vec<String> =
+            Detector::ALL.iter().map(|&d| format!("{d} {:.1}%", 100.0 * run(&with(d), &empty).load)).collect();
 
         println!();
-        println!("{mode} mode (listening to an empty channel: {:.0}% CPU)", 100.0 * idle.load);
+        println!("{mode} mode, detector {detector} (listening to an empty channel, CPU: {})", idle.join(", "));
         println!("  level        burst | clean: delay   CPU | worst case: delay   CPU | verdict");
         let mut max_ok = None;
         for level in 0..LEVELS.len() as u8 {
