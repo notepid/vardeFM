@@ -30,6 +30,11 @@ impl Prng {
         }
     }
 
+    /// Uniform in -1.0..=1.0, for test noise.
+    pub fn uniform(&mut self) -> f32 {
+        self.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0
+    }
+
     pub fn bits(&mut self, n: usize) -> Vec<u8> {
         (0..n).map(|_| self.bit()).collect()
     }

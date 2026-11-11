@@ -4,8 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vardefm_audio::{open_input, open_output, Channel, RATE};
-use vardefm_dsp::Detector;
-use vardefm_modem::{Modem, OfdmParams, Receiver, RxBurst, LEVELS};
+use vardefm_modem::{Detector, Modem, OfdmParams, Receiver, RxBurst, LEVELS};
 use vardefm_ptt::PttSpec;
 use vardefm_tnc::level::{meter_line, LevelMeter, Verdict};
 
@@ -124,9 +123,7 @@ fn print_burst(t: f64, b: &RxBurst) {
 /// A receiver for `mode` that finds bursts with `detector`.
 fn receiver(mode: &str, detector: Detector) -> Result<Receiver, String> {
     let params = OfdmParams::by_name(mode).ok_or("mode must be narrow or wide")?;
-    let mut modem = Modem::new(params, 0.1);
-    modem.ofdm.detector = detector;
-    Ok(Receiver::new(Arc::new(modem)))
+    Ok(Receiver::new(Arc::new(Modem::new(params, 0.1).with_detector(detector))))
 }
 
 pub fn monitor(audio_in: Option<&str>, channel: Channel, mode: &str, detector: Detector) -> Res {

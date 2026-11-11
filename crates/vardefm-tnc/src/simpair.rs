@@ -14,9 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use vardefm_dsp::Detector;
 use vardefm_link::LinkConfig;
-use vardefm_modem::{Modem, OfdmParams, LEVELS};
+use vardefm_modem::{Detector, Modem, OfdmParams, LEVELS};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 /// Audio step: 10 ms.
@@ -102,9 +101,7 @@ impl SimPair {
         if let Some(dir) = &cfg.record {
             std::fs::create_dir_all(dir)?;
         }
-        let mut modem = Modem::new(params, cfg.txdelay_s);
-        modem.ofdm.detector = cfg.detector;
-        let modem = Arc::new(modem);
+        let modem = Arc::new(Modem::new(params, cfg.txdelay_s).with_detector(cfg.detector));
         let stats = Arc::new(Mutex::new(SimPairStats::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let engine = Engine {

@@ -192,8 +192,7 @@ impl Receiver {
             }
             None => {
                 // Nothing found. Keep enough history to catch a preamble that is still arriving.
-                let keep = 3 * l + 2 * m.ofdm.p.nfft;
-                self.search = self.search.max(self.buf.len().saturating_sub(keep));
+                self.search = self.search.max(self.buf.len().saturating_sub(m.ofdm.detect_history()));
                 Some(false)
             }
         }

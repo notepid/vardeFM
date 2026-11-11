@@ -14,9 +14,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 use vardefm_dsp::prng::Prng;
-use vardefm_dsp::Detector;
 use vardefm_link::LinkConfig;
-use vardefm_modem::{Burst, Header, Kind, Modem, OfdmParams, Receiver, LEVELS};
+use vardefm_modem::{Burst, Detector, Header, Kind, Modem, OfdmParams, Receiver, LEVELS};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 const CHUNK: usize = 480; // 10 ms, as the sound card delivers it
@@ -105,9 +104,8 @@ pub fn bench(modes: &[&str], threads: Option<usize>, detector: Detector) -> Resu
     for &mode in modes {
         let params = OfdmParams::by_name(mode).ok_or("mode must be narrow, wide or both")?;
         let with = |d: Detector| {
-            let mut m = Modem::new(params.clone(), 0.15);
+            let mut m = Modem::new(params.clone(), 0.15).with_detector(d);
             m.decode_threads = threads;
-            m.ofdm.detector = d;
             Arc::new(m)
         };
         let modem = with(detector);

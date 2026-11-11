@@ -18,9 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use vardefm_audio::{open_input, open_output, AudioOut, Channel, RATE};
-use vardefm_dsp::Detector;
 use vardefm_link::LinkConfig;
-use vardefm_modem::{AudioLevel, Modem, OfdmParams, LEVELS};
+use vardefm_modem::{AudioLevel, Detector, Modem, OfdmParams, LEVELS};
 use vardefm_ptt::{Ptt, PttSpec};
 
 #[derive(Clone, Debug)]
@@ -274,9 +273,7 @@ impl<S: AudioSink> RadioEngine<S> {
 /// Run until `stop` is set. Returns an error if a device cannot be opened.
 pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     let params = OfdmParams::by_name(&cfg.mode).ok_or_else(|| io::Error::other("mode must be narrow or wide"))?;
-    let mut modem = Modem::new(params, cfg.txdelay_s);
-    modem.ofdm.detector = cfg.detector;
-    let modem = Arc::new(modem);
+    let modem = Arc::new(Modem::new(params, cfg.txdelay_s).with_detector(cfg.detector));
     let ptt = vardefm_ptt::open(&cfg.ptt)?;
     let link = LinkConfig { max_level: cfg.max_level, start_level: cfg.max_level.min(1), ..LinkConfig::default() };
     let input = open_input(cfg.audio_in.as_deref(), cfg.in_channel)?;

@@ -343,6 +343,19 @@ impl Ofdm {
         }
     }
 
+    /// How many samples before the end of `rx` a streaming caller must search again
+    /// from after [`Ofdm::detect`] returned `None`, so as not to lose a frame that has
+    /// only partly arrived.
+    pub fn detect_history(&self) -> usize {
+        let l = self.p.symbol_len();
+        match self.detector {
+            // Preambles A and B, and margin for the fine timing around them.
+            Detector::SchmidlCox => 3 * l + 2 * self.p.nfft,
+            // The template, then the one-symbol search window after its first crossing.
+            Detector::MatchedFilter => self.mf.len + l,
+        }
+    }
+
     /// Matched-filter search: normalized cross-correlation of `rx` with the waveform of
     /// preambles A and B. The FM audio channel has no frequency offset and a smooth
     /// response, so the known waveform correlates coherently. Unlike the Schmidl-Cox
@@ -356,7 +369,11 @@ impl Ofdm {
     ///
     /// The correlation is computed in FFT blocks that start at `from`, so a later call
     /// with another `from` rounds it differently. That can only matter for a value
-    /// within float rounding of `MF_THRESHOLD`.
+    /// within float rounding of `MF_THRESHOLD`, or for two peaks in the window within
+    /// float rounding of each other, where the other one may win.
+    ///
+    /// A finite sample so large that the f32 FFT overflows (beyond about 1e35, far
+    /// outside any sound card's range) blanks the block it falls in.
     pub fn detect_mf(&self, rx: &[f32], from: usize) -> Option<usize> {
         let l = self.p.symbol_len();
         let mut peak: Option<(usize, f32, usize)> = None;
@@ -782,27 +799,67 @@ mod tests {
         roundtrip(OfdmParams::wide(), Modulation::Qam64, 1234);
     }
 
+    /// Where the body of preamble B starts in `lead` samples of silence followed by
+    /// `data` with a leader of `leader_s`.
+    fn known_start(ofdm: &Ofdm, lead: usize, leader_s: f32) -> usize {
+        let n_leader = (leader_s / ofdm.p.symbol_duration()).ceil() as usize;
+        lead + (n_leader + 1) * ofdm.p.symbol_len() + ofdm.p.ncp
+    }
+
     #[test]
-    fn matched_filter_finds_the_same_start_as_schmidl_cox() {
+    fn every_detector_finds_the_known_start() {
+        // Within a quarter of the cyclic prefix, as the detector evaluation counts a hit;
+        // the TX low-pass delays the waveform by a few samples.
         for p in [OfdmParams::narrow(), OfdmParams::wide()] {
-            let ofdm = Ofdm::new(p);
+            let mut ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 3);
             for (lead, sign) in [(0, 1.0), (777, 1.0), (4321, -1.0)] {
                 let mut rx = vec![0.0; lead];
                 rx.extend(ofdm.modulate_with_leader(&data, 0.1).iter().map(|v| v * sign));
                 rx.extend(vec![0.0; 2000]);
-                let sc = ofdm.detect_with(Detector::SchmidlCox, &rx, 0).expect("sc found nothing");
-                let mf = ofdm.detect_with(Detector::MatchedFilter, &rx, 0).expect("mf found nothing");
-                assert!(mf.abs_diff(sc) <= 2, "{}: lead {lead}: mf {mf}, sc {sc}", ofdm.p.name);
+                let want = known_start(&ofdm, lead, 0.1);
+                for d in Detector::ALL {
+                    ofdm.detector = d;
+                    let got = ofdm.detect(&rx, 0).unwrap_or_else(|| panic!("{d} found nothing"));
+                    let name = ofdm.p.name;
+                    assert!(got.abs_diff(want) <= ofdm.p.ncp / 4, "{name} {d}: lead {lead}: {got}, want {want}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_detector_finds_the_burst_with_a_receivers_history() {
+        // A streaming receiver calls detect on a growing buffer. After `None` it keeps
+        // only `detect_history` samples to search again; a detection must still be the
+        // one the whole recording gives.
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let mut ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 4);
+            let mut rx = vec![0.0; 1000];
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            for d in Detector::ALL {
+                ofdm.detector = d;
+                let full = ofdm.detect(&rx, 0).unwrap_or_else(|| panic!("{d} found nothing"));
+                for step in [1, 97, 480] {
+                    let mut search = 0;
+                    let got = (step..rx.len()).step_by(step).find_map(|end| {
+                        let b = ofdm.detect(&rx[..end], search);
+                        if b.is_none() {
+                            search = search.max(end.saturating_sub(ofdm.detect_history()));
+                        }
+                        b
+                    });
+                    assert_eq!(got, Some(full), "{} {d}: chunks of {step}", ofdm.p.name);
+                }
             }
         }
     }
 
     #[test]
     fn matched_filter_waits_for_the_whole_search_window() {
-        // A streaming receiver calls detect on a growing buffer, from wherever its
-        // search has got to. Whatever the buffer holds, a detection must be the one the
-        // whole recording gives.
+        // Whatever the buffer holds and wherever the search starts, a detection must be
+        // the one the whole recording gives.
         for p in [OfdmParams::narrow(), OfdmParams::wide()] {
             let ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 4);
@@ -823,11 +880,24 @@ mod tests {
     }
 
     #[test]
+    fn detector_list_is_complete() {
+        // A variant missing from `ALL` could not be chosen, benchmarked or evaluated.
+        // This match stops compiling when a variant is added, as a reminder.
+        let count = |d: Detector| match d {
+            Detector::SchmidlCox | Detector::MatchedFilter => 2,
+        };
+        assert_eq!(Detector::ALL.len(), count(Detector::default()));
+        for d in Detector::ALL {
+            assert_eq!(d.name().parse::<Detector>(), Ok(d));
+        }
+    }
+
+    #[test]
     fn matched_filter_ignores_silence_noise_and_tones() {
         for p in [OfdmParams::narrow(), OfdmParams::wide()] {
             let n = 2 * p.fs as usize;
             let mut rng = Prng::new(99);
-            let noise: Vec<f32> = (0..n).map(|_| (rng.next_u32() as f32 / u32::MAX as f32 - 0.5) * 0.6).collect();
+            let noise: Vec<f32> = (0..n).map(|_| 0.3 * rng.uniform()).collect();
             let tone: Vec<f32> =
                 (0..n).map(|i| 0.3 * (2.0 * std::f32::consts::PI * 1500.0 * i as f32 / p.fs).sin()).collect();
             let ofdm = Ofdm::new(p);
@@ -852,7 +922,7 @@ mod tests {
             // Two minutes of full-scale noise with NaN and infinities in it, then a
             // minute of exact silence, then the burst.
             let mut rng = Prng::new(7);
-            let mut rx: Vec<f32> = (0..120 * fs).map(|_| rng.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0).collect();
+            let mut rx: Vec<f32> = (0..120 * fs).map(|_| rng.uniform()).collect();
             for (i, v) in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN].into_iter().enumerate() {
                 rx[(i + 1) * 25 * fs] = v;
             }
