@@ -33,6 +33,15 @@ const HOLD_S: f32 = 0.15;
 /// close under the lowest wide carrier (281 Hz) to be filtered out there; the two
 /// wide carriers below this carry little of a burst's power.
 const MIN_LOW_HZ: f32 = 400.0;
+/// After our own transmission the radio is muted until it is back on receive (a
+/// handheld takes tens of ms, a VOX interface holds the transmitter for its hang
+/// time), and then the audio comes back abruptly: on a steady sound such as a CTCSS
+/// tone that clicks into the band. Nothing is measured until the audio comes back,
+/// nor for this many blocks after it (20 ms).
+const SETTLE_BLOCKS: usize = 2;
+/// Audio that comes back later than this many blocks after the transmission (1 s)
+/// is an ordinary onset.
+const RETURN_BLOCKS: usize = 100;
 
 pub struct BusyDetector {
     /// Band-pass filter (empty: broadband).
@@ -48,6 +57,12 @@ pub struct BusyDetector {
     powers: VecDeque<f32>,
     /// Samples since the last loud block.
     quiet: usize,
+    /// After a gap: samples left to wait for the audio to come back, and the level it
+    /// starts at (the muted radio).
+    wait: usize,
+    muted: Option<f32>,
+    /// Samples left to pass through the filter unmeasured after the audio came back.
+    settle: usize,
 }
 
 impl BusyDetector {
@@ -81,6 +96,9 @@ impl BusyDetector {
             n: 0,
             powers: VecDeque::new(),
             quiet: usize::MAX / 2,
+            wait: 0,
+            muted: None,
+            settle: 0,
         }
     }
 
@@ -88,7 +106,26 @@ impl BusyDetector {
         self.quiet < self.hold
     }
 
-    pub fn push(&mut self, samples: &[f32]) {
+    /// We transmitted, and the next audio does not follow on from the last. Nothing is
+    /// measured while the audio stays where it starts (the muted radio, maybe with a
+    /// DC offset), for at most `RETURN_BLOCKS`, nor for `SETTLE_BLOCKS` after it moves.
+    /// A sound that moves less than `MIN_RMS` cannot read busy anyway. The filter
+    /// keeps running: reset, it would click the same way when a tone comes back.
+    ///
+    /// A busy hold from before the transmission ends here: it bridges short pauses in
+    /// what we hear, and what we heard before we keyed up says nothing about now.
+    pub fn resume(&mut self) {
+        self.quiet = usize::MAX / 2;
+        (self.sum, self.sq, self.n) = (0.0, 0.0, 0);
+        self.wait = RETURN_BLOCKS * self.block;
+        self.muted = None;
+        self.settle = 0;
+    }
+
+    pub fn push(&mut self, mut samples: &[f32]) {
+        if self.wait > 0 || self.settle > 0 {
+            samples = self.after_gap(samples);
+        }
         for &x in samples {
             let x = self.band.process(x);
             self.sum += x as f64;
@@ -100,11 +137,40 @@ impl BusyDetector {
         }
     }
 
+    /// Runs the filter over the samples that `resume` leaves unmeasured and returns the rest.
+    fn after_gap<'a>(&mut self, samples: &'a [f32]) -> &'a [f32] {
+        for (i, &x) in samples.iter().enumerate() {
+            if self.wait == 0 && self.settle == 0 {
+                return &samples[i..];
+            }
+            self.band.process(x);
+            if self.wait > 0 {
+                self.wait -= 1;
+                let muted = *self.muted.get_or_insert(x);
+                if (x - muted).abs() >= MIN_RMS {
+                    (self.wait, self.settle) = (0, SETTLE_BLOCKS * self.block);
+                }
+            } else {
+                self.settle -= 1;
+            }
+        }
+        &[]
+    }
+
     fn end_block(&mut self) {
         let n = self.n as f64;
         // Variance: a DC offset from the sound card is not a signal.
-        let power = (self.sq / n - (self.sum / n).powi(2)).max(0.0) as f32;
+        let power = (self.sq / n - (self.sum / n).powi(2)) as f32;
         (self.sum, self.sq, self.n) = (0.0, 0.0, 0);
+        if !power.is_finite() {
+            // A NaN, an Inf or a sample far beyond full scale (the receiver drops those)
+            // got into the filter, whose state would stay NaN for good. Start it again,
+            // and read busy for the hold time: safer than not hearing anything.
+            self.band.reset();
+            self.quiet = 0;
+            return;
+        }
+        let power = power.max(0.0);
 
         let loud = power > MIN_RMS * MIN_RMS && power > ABOVE_BACKGROUND * self.background(power);
         if loud {
@@ -227,6 +293,24 @@ mod tests {
     }
 
     #[test]
+    fn a_signal_after_a_gap_is_busy_after_the_settle_time() {
+        // Starting at once, after a VOX hang, and after the wait for the audio is over.
+        for (muted_ms, settles) in [(0, true), (300, true), (1200, false)] {
+            let mut d = narrow();
+            d.push(&vec![0.0; FS as usize]);
+            d.resume();
+            d.push(&vec![0.0; muted_ms * 48]);
+            let ms = tone(0.05, 0.1).chunks(48).position(|c| {
+                d.push(c);
+                d.busy()
+            });
+            let ms = ms.expect("never busy") + 1;
+            let limit = 10 * if settles { SETTLE_BLOCKS + 2 } else { 2 };
+            assert!(ms <= limit, "muted {muted_ms} ms: busy after {ms} ms");
+        }
+    }
+
+    #[test]
     fn signal_well_above_hiss_is_busy() {
         let mut seed = 4;
         let mut d = narrow();
@@ -237,14 +321,20 @@ mod tests {
     }
 
     #[test]
-    fn a_non_finite_sample_does_not_make_it_deaf() {
-        for bad in [f32::NAN, f32::INFINITY] {
-            let mut d = narrow();
-            d.push(&vec![0.0; FS as usize]);
-            d.push(&[bad]);
-            d.push(&vec![0.0; FS as usize]);
-            d.push(&tone(0.3, 0.1));
-            assert!(d.busy(), "deaf after {bad}");
+    fn a_wild_sample_does_not_make_it_deaf() {
+        // The receiver drops these; a filter that overflows anyway reads busy and starts again.
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            for bad in [f32::NAN, f32::INFINITY, f32::MAX, -2e38, 1e38, 1e20] {
+                let mut d = BusyDetector::new(&p);
+                d.push(&vec![0.0; FS as usize]);
+                d.push(&[bad]);
+                d.push(&vec![0.0; 480]);
+                assert!(d.busy(), "{}: {bad} does not read busy", p.name);
+                d.push(&vec![0.0; FS as usize]);
+                assert!(!d.busy(), "{}: still busy a second after {bad}", p.name);
+                d.push(&tone(0.3, 0.1));
+                assert!(d.busy(), "{}: deaf after {bad}", p.name);
+            }
         }
     }
 

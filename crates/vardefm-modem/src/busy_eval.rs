@@ -148,9 +148,10 @@ fn add(a: &mut [f32], b: &[f32]) {
     a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
 }
 
-/// Simulator and hiss seed `k` (1-3) of trial `t`.
-fn seed(t: u32, k: u64) -> u64 {
-    t as u64 * 4 + k
+/// A simulator or hiss seed, drawn from the trial's generator so that it depends on
+/// the case name as well as the trial.
+fn seed(rng: &mut Prng) -> u64 {
+    rng.next_u32() as u64
 }
 
 /// The lead in front of every signal: 3 s plus up to one 10 ms block, so signals do
@@ -160,15 +161,15 @@ fn lead(rng: &mut Prng) -> usize {
 }
 
 /// `audio` sent over the simulated channel after the closed-squelch lead.
-fn on_air(ctx: &Ctx, rng: &mut Prng, t: u32, audio: &[f32]) -> Clip {
-    on_air_at(ctx.cnr, ctx, rng, t, audio)
+fn on_air(ctx: &Ctx, rng: &mut Prng, audio: &[f32]) -> Clip {
+    on_air_at(ctx.cnr, ctx, rng, audio)
 }
 
-fn on_air_at(cnr: f32, ctx: &Ctx, rng: &mut Prng, t: u32, audio: &[f32]) -> Clip {
+fn on_air_at(cnr: f32, ctx: &Ctx, rng: &mut Prng, audio: &[f32]) -> Clip {
     let lead = lead(rng);
     let cfg = FmChannelConfig {
         cnr_db: Some(cnr),
-        seed: seed(t, 1),
+        seed: seed(rng),
         lead_silence_s: lead as f32 / FS,
         trail_silence_s: 2.0,
         ..FmChannelConfig::by_name(ctx.mode).unwrap()
@@ -296,41 +297,41 @@ fn after_silence(rng: &mut Prng, interference: Vec<f32>) -> Clip {
     Clip { signal: lead..audio.len(), audio }
 }
 
-fn burst(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
+fn burst(ctx: &Ctx, rng: &mut Prng, _: u32) -> Clip {
     let a = burst_audio(ctx, rng);
-    on_air(ctx, rng, t, &a)
+    on_air(ctx, rng, &a)
 }
 
-fn voice_case(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
+fn voice_case(ctx: &Ctx, rng: &mut Prng, _: u32) -> Clip {
     let a = voice(rng, 4.0);
-    on_air(ctx, rng, t, &a)
+    on_air(ctx, rng, &a)
 }
 
 /// Listening to open-squelch hiss when a station sends a burst. Its carrier quiets
 /// the hiss; the hiss is back when the carrier drops.
-fn burst_under_hiss(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
+fn burst_under_hiss(ctx: &Ctx, rng: &mut Prng, _: u32) -> Clip {
     let a = burst_audio(ctx, rng);
     let cfg = FmChannelConfig {
         cnr_db: Some(ctx.cnr),
-        seed: seed(t, 1),
+        seed: seed(rng),
         keyup_delay_s: 0.0,
         squelch_tail_s: 0.0,
         lead_silence_s: 0.0,
         trail_silence_s: 0.0,
         ..FmChannelConfig::by_name(ctx.mode).unwrap()
     };
-    let mut audio = hiss(ctx, seed(t, 2), lead(rng));
+    let mut audio = hiss(ctx, seed(rng), lead(rng));
     let start = audio.len();
     audio.extend(transmit(&cfg, &a));
     let signal = start..audio.len();
-    audio.extend(hiss(ctx, seed(t, 3), samples(2.0)));
+    audio.extend(hiss(ctx, seed(rng), samples(2.0)));
     Clip { audio, signal }
 }
 
 /// A quiet voice received under strong hum from the sound card's ground loop.
 fn voice_under_hum(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
     let a = voice(rng, 4.0);
-    let mut clip = on_air(ctx, rng, t, &a);
+    let mut clip = on_air(ctx, rng, &a);
     let k = QUIET_VOICE_RMS / rms(&clip.audio[clip.signal.clone()]);
     scale(&mut clip.audio, k);
     let f = if t.is_multiple_of(2) { 50.0 } else { 60.0 };
@@ -343,19 +344,19 @@ fn burst_with_ctcss(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
     let mut a = burst_audio(ctx, rng);
     let tone = ctcss(t, a.len());
     add(&mut a, &tone);
-    on_air(ctx, rng, t, &a)
+    on_air(ctx, rng, &a)
 }
 
 fn voice_with_ctcss(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
     let mut a = voice(rng, 4.0);
     let tone = ctcss(t, a.len());
     add(&mut a, &tone);
-    on_air(ctx, rng, t, &a)
+    on_air(ctx, rng, &a)
 }
 
 /// The squelch opens on hiss and stays open.
-fn hiss_case(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
-    let h = hiss(ctx, seed(t, 2), samples(INTERFERENCE_S));
+fn hiss_case(ctx: &Ctx, rng: &mut Prng, _: u32) -> Clip {
+    let h = hiss(ctx, seed(rng), samples(INTERFERENCE_S));
     after_silence(rng, h)
 }
 
@@ -378,25 +379,25 @@ fn dc_steps(_: &Ctx, rng: &mut Prng, _: u32) -> Clip {
 }
 
 /// A keyed carrier with no audio on it.
-fn silent_carrier(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
-    on_air(ctx, rng, t, &vec![0.0; samples(INTERFERENCE_S)])
+fn silent_carrier(ctx: &Ctx, rng: &mut Prng, _: u32) -> Clip {
+    on_air(ctx, rng, &vec![0.0; samples(INTERFERENCE_S)])
 }
 
 /// A keyed carrier with only a CTCSS tone on it.
 fn ctcss_carrier(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
-    on_air(ctx, rng, t, &ctcss(t, samples(INTERFERENCE_S)))
+    on_air(ctx, rng, &ctcss(t, samples(INTERFERENCE_S)))
 }
 
 /// The strong-carrier cases separate what the carrier's own noise does (at 20 dB
 /// CNR it is well above -40 dBFS) from what a CTCSS tone does.
 const STRONG_CNR: f32 = 40.0;
 
-fn strong_silent_carrier(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
-    on_air_at(STRONG_CNR, ctx, rng, t, &vec![0.0; samples(INTERFERENCE_S)])
+fn strong_silent_carrier(ctx: &Ctx, rng: &mut Prng, _: u32) -> Clip {
+    on_air_at(STRONG_CNR, ctx, rng, &vec![0.0; samples(INTERFERENCE_S)])
 }
 
 fn strong_ctcss_carrier(ctx: &Ctx, rng: &mut Prng, t: u32) -> Clip {
-    on_air_at(STRONG_CNR, ctx, rng, t, &ctcss(t, samples(INTERFERENCE_S)))
+    on_air_at(STRONG_CNR, ctx, rng, &ctcss(t, samples(INTERFERENCE_S)))
 }
 
 /// The squelch opens on hiss that lies entirely above the band.
