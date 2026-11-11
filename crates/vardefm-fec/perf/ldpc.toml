@@ -1,6 +1,6 @@
 [source]
 what = "Eb/N0 at 1 % FER, BPSK over AWGN, layered offset min-sum, 50 iterations"
-commit = "a7f0dcf"
+commit = "75f1780"
 command = "WRITE=1 TRIALS=1000 cargo test --release -p vardefm-fec fer_curve -- --ignored"
 coarse_trials = 1000
 fine_trials = 4000
