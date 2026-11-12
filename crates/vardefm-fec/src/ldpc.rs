@@ -491,8 +491,9 @@ mod curve {
         Some(x0 + t * (x1 - x0))
     }
 
-    /// The commit of the working tree, marked when it has uncommitted changes other
-    /// than recorded baselines; "unknown" without git or outside a repository.
+    /// The commit of the working tree, marked when tracked files have uncommitted
+    /// changes other than recorded baselines; untracked files do not count.
+    /// "unknown" without git or outside a repository.
     fn commit() -> String {
         let git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -506,7 +507,7 @@ mod curve {
         let Some(head) = git(&["rev-parse", "--short", "HEAD"]) else {
             return "unknown".into();
         };
-        if git(&["status", "--porcelain", "--", ":/", ":(top,exclude,glob)**/perf/*.toml"])
+        if git(&["status", "--porcelain", "--untracked-files=no", "--", ":/", ":(top,exclude,glob)**/perf/*.toml"])
             .is_some_and(|s| s.is_empty())
         {
             head
@@ -515,9 +516,24 @@ mod curve {
         }
     }
 
+    /// Environment variable `name` as a count of at least 1, or `default` when unset.
+    /// A value that does not parse stops the run: falling back would quietly run
+    /// something else.
     fn env_or(name: &str, default: u32) -> u32 {
-        std::env::var(name)
-            .map_or(default, |v| v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} does not parse")))
+        let n = std::env::var(name)
+            .map_or(default, |v| v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} does not parse")));
+        assert!(n > 0, "{name} must be at least 1");
+        n
+    }
+
+    /// Environment variable `name` as a switch: unset, `0` or `false` is off, `1` or
+    /// `true` is on. Anything else stops the run, as with [`env_or`].
+    fn env_flag(name: &str) -> bool {
+        match std::env::var(name).as_deref().map(str::trim) {
+            Err(_) | Ok("0" | "false") => false,
+            Ok("1" | "true") => true,
+            Ok(v) => panic!("{name}={v:?}: use 1 or 0"),
+        }
     }
 
     /// Prints build time and frame error rate vs Eb/N0 for every code (BPSK, AWGN),
@@ -530,7 +546,7 @@ mod curve {
     #[ignore]
     fn fer_curve() {
         let trials = env_or("TRIALS", 200);
-        let write = std::env::var("WRITE").is_ok_and(|v| v == "1");
+        let write = env_flag("WRITE");
         // The tree as measured, not as it is when the run ends.
         let commit = commit();
         let mut total = 0.0;

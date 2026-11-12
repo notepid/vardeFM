@@ -45,7 +45,8 @@
 
 use super::*;
 use crate::detect_eval::{
-    burst, env_list, env_or, header_at, modem, on_every_core, payload_seed, received, true_position,
+    burst, env_flag, env_list, env_modes, env_or, header_at, modem, on_every_core, payload_seed, received,
+    true_position,
 };
 
 /// Error rate at which a point is recorded and gated.
@@ -136,12 +137,15 @@ enum Target {
 }
 
 impl std::str::FromStr for Target {
-    type Err = std::num::ParseIntError;
+    type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "h" {
-            Ok(Target::Header)
-        } else {
-            s.parse().map(Target::Level)
+            return Ok(Target::Header);
+        }
+        let last = LEVELS.len() - 1;
+        match s.parse() {
+            Ok(l) if (l as usize) <= last => Ok(Target::Level(l)),
+            _ => Err(format!("levels are 0 to {last}, or h for the header")),
         }
     }
 }
@@ -287,8 +291,9 @@ fn rate_at(grid: &[f32], rates: &[f32], x: f32) -> f32 {
     }
 }
 
-/// The commit of the working tree, marked when it has uncommitted changes other
-/// than recorded baselines; "unknown" without git or outside a repository.
+/// The commit of the working tree, marked when tracked files have uncommitted
+/// changes other than recorded baselines; untracked files do not count. "unknown"
+/// without git or outside a repository.
 fn commit() -> String {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -302,7 +307,9 @@ fn commit() -> String {
     let Some(head) = git(&["rev-parse", "--short", "HEAD"]) else {
         return "unknown".into();
     };
-    if git(&["status", "--porcelain", "--", ":/", ":(top,exclude,glob)**/perf/*.toml"]).is_some_and(|s| s.is_empty()) {
+    if git(&["status", "--porcelain", "--untracked-files=no", "--", ":/", ":(top,exclude,glob)**/perf/*.toml"])
+        .is_some_and(|s| s.is_empty())
+    {
         head
     } else {
         format!("{head}-dirty")
@@ -363,10 +370,11 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
 #[test]
 #[ignore]
 fn level_sweep() {
-    let modes: Vec<String> = env_list("MODES", ALL_MODES);
+    let modes = env_modes(ALL_MODES);
     let targets: Vec<Target> = env_list("LEVELS", ALL_TARGETS);
     let bursts = env_or("TRIALS", RECORD_BURSTS);
-    let write = std::env::var("WRITE").is_ok_and(|v| v == "1");
+    assert!(bursts > 0, "TRIALS must be at least 1");
+    let write = env_flag("WRITE");
     // The tree as measured, not as it is when the run ends.
     let commit = commit();
     // The file holds every point from one run; a partial run would drop the rest.
@@ -424,9 +432,10 @@ fn level_sweep() {
 #[test]
 #[ignore]
 fn level_gate() {
-    let modes: Vec<String> = env_list("MODES", ALL_MODES);
+    let modes = env_modes(ALL_MODES);
     let targets: Vec<Target> = env_list("LEVELS", ALL_TARGETS);
     let bursts = env_or("TRIALS", GATE_BURSTS);
+    assert!(bursts > 0, "TRIALS must be at least 1");
     let base = load();
     println!("baseline {} ({})", base.source.commit, base.source.command);
     let mut failed = Vec::new();
@@ -480,6 +489,7 @@ fn targets_parse() {
     let t: Vec<Target> = "h, 0,6".split(',').map(|s| s.trim().parse().unwrap()).collect();
     assert_eq!(t, [Target::Header, Target::Level(0), Target::Level(6)]);
     assert!("x".parse::<Target>().is_err());
+    assert!(LEVELS.len().to_string().parse::<Target>().is_err());
 }
 
 /// The committed baseline holds one consistent point per mode for the header and

@@ -214,9 +214,32 @@ pub(crate) fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
 
 /// Environment variable `name` as a comma-separated list of `T`, or `default` when
 /// unset. As with [`env_or`], an item that does not parse stops the run.
-pub(crate) fn env_list<T: std::str::FromStr>(name: &str, default: &str) -> Vec<T> {
+pub(crate) fn env_list<T: std::str::FromStr>(name: &str, default: &str) -> Vec<T>
+where
+    T::Err: std::fmt::Display,
+{
     let v = std::env::var(name).unwrap_or_else(|_| default.to_string());
-    v.split(',').map(|s| s.trim().parse().unwrap_or_else(|_| panic!("{name}: {s:?} does not parse"))).collect()
+    v.split(',').map(|s| s.trim().parse().unwrap_or_else(|e| panic!("{name}: {s:?}: {e}"))).collect()
+}
+
+/// `MODES` as a list, `default` when unset, each checked to be a mode up front so
+/// that a typo does not fail after the first mode has run.
+pub(crate) fn env_modes(default: &str) -> Vec<String> {
+    let modes: Vec<String> = env_list("MODES", default);
+    for mode in &modes {
+        assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
+    }
+    modes
+}
+
+/// Environment variable `name` as a switch: unset, `0` or `false` is off, `1` or
+/// `true` is on. Anything else stops the run, as with [`env_or`].
+pub(crate) fn env_flag(name: &str) -> bool {
+    match std::env::var(name).as_deref().map(str::trim) {
+        Err(_) | Ok("0" | "false") => false,
+        Ok("1" | "true") => true,
+        Ok(v) => panic!("{name}={v:?}: use 1 or 0"),
+    }
 }
 
 /// The kinds of audio without a burst in the false-detection pass, for [`noise_case`].
@@ -287,7 +310,7 @@ fn false_detections(m: &Modem, f: DetectFn, rx: &[f32]) -> (u32, u32) {
 #[test]
 #[ignore]
 fn detector_eval() {
-    let modes: String = env_or("MODES", "narrow,wide".to_string());
+    let modes = env_modes("narrow,wide");
     let trials: u32 = env_or("TRIALS", 100);
     let level: u8 = env_or("LEVEL", 1);
     let ncw: usize = env_or("NCW", 1);
@@ -295,11 +318,7 @@ fn detector_eval() {
     assert!((level as usize) < LEVELS.len(), "LEVEL {level}: levels are 0 to {}", LEVELS.len() - 1);
     assert!(trials > 0, "TRIALS must be at least 1");
     assert!(noise_s > 0.0, "NOISE_SECONDS={noise_s}: must be more than 0");
-    // Checked up front, so that a typo does not fail after the first mode has run.
-    let modes: Vec<&str> = modes.split(',').map(str::trim).collect();
-    for mode in &modes {
-        assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
-    }
+    let modes: Vec<&str> = modes.iter().map(String::as_str).collect();
     let cnr_list = |mode: &str| -> Vec<f32> {
         let default = if mode == "narrow" { "3,4,5,6,7,8,10" } else { "5,6,7,8,9,10,12" };
         env_list("CNRS", default)
