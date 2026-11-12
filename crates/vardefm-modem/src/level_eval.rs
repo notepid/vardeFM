@@ -413,11 +413,11 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
         c += 1;
         assert!(c < MAX_CNR_DB, "{label}: {rate_name} is still 10 % or more at {MAX_CNR_DB} dB");
     }
-    // Whole quarter dB steps, so the recorded grid reads as written. The search
-    // rests on few bursts, so its crossing can be off by more than the grid allows:
-    // the grid is moved to its own crossing, or by its width when it does not cross,
-    // until it carries the gate. A grid that cannot stops the run here, not after
-    // the whole sweep.
+    // Whole quarter dB steps, so the recorded grid reads as written. The search rests
+    // on few bursts, so its crossing can be off by more than the grid allows: the grid
+    // is moved to its own crossing, or by half its width (`FINE_STEPS`) when it does
+    // not cross, until it carries the gate. A grid that cannot stops the run here, not
+    // after the whole sweep.
     let margin = case.target.margin();
     let mut centre = c * 4 + 2;
     let mut moves = 0;

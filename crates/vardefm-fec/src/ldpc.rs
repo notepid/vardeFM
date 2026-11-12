@@ -580,9 +580,9 @@ mod curve {
             let coarse = crossing(&grid, &rates, TARGET_FER).expect("the coarse grid does not cross 1 % FER");
             // Whole steps of 0.05 dB, so the recorded grid reads as written. At few
             // frames the coarse crossing can sit well off, so the grid is moved to its
-            // own crossing, or by its width when it does not cross, until the gate's
-            // points lie on it. A grid that cannot stops the run here, before the
-            // remaining codes.
+            // own crossing, or by half its width (`FINE_STEPS`) when it does not cross,
+            // until the gate's points lie on it. A grid that cannot stops the run here,
+            // before the remaining codes.
             let mut centre = (coarse * 20.0).round() as i32;
             let mut moves = 0;
             let (grid, rates, ebn0_db) = loop {
