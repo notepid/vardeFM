@@ -9,8 +9,18 @@
 //!   preamble B alone, as `Receiver::step` does first. The header is coded and
 //!   modulated the same at every level, but `Modem::modulate` scales the whole
 //!   burst to its level's drive (`Modem::tx_rms`), so the header of a high level
-//!   goes out quieter. One point per mode and drive covers it, measured on bursts of
-//!   the lowest level sent at that drive.
+//!   goes out quieter. One point per mode and drive covers it, measured on
+//!   one-codeword bursts of the lowest level sent at that drive.
+//!
+//! Why one point per drive suffices: every symbol of a burst carries the same mean
+//! power before scaling, so the header's level depends on the drive and hardly on
+//! the burst's length or payload. Clipping, heavy at wide mode's 0.5 drive, does
+//! depend on the header codeword: with one fixed header the useful level at that
+//! drive varied by 0.3 dB between levels and codeword counts. So each header trial
+//! draws the fields that change from burst to burst at random (`trial_header`), and
+//! averaged over those draws the effective level agrees within
+//! `HEADER_LEVEL_TOLERANCE_DB` at every drive; `header_level_depends_only_on_drive`
+//! checks it.
 //!
 //! A burst decodes only if both its header and its codewords do. At level 0's drive
 //! the header's point lies above level 0's, so there the header limits a burst, and
@@ -25,8 +35,8 @@
 //!   not exercised.
 //!
 //! `perf/levels.toml` holds, per mode and drive, the CNR at which the HER crosses
-//! 10 % and, per mode and level, the CNR at which the CER does. `level_gate` fails when a point has
-//! moved by more than its margin (`GATE_MARGIN_DB`, `HEADER_MARGIN_DB` for the
+//! 10 % and, per mode and level, the CNR at which the CER does. `level_gate` fails
+//! when a point has moved by more than its margin (`GATE_MARGIN_DB`, `HEADER_MARGIN_DB` for the
 //! shallower header curve): the rate must be below 10 % that far above the point and
 //! above 10 % that far below. Each point decodes `GATE_BURSTS` bursts
 //! of up to `CODEWORDS` codewords, or `HEADERS_PER_BURST` times as many headers.
@@ -43,15 +53,15 @@
 //! `WRITE=1 cargo test --release -p vardefm-modem level_sweep -- --ignored --nocapture`
 //!
 //! Environment: `MODES` (narrow,wide), `LEVELS` (0,1,..,6; `h` is the header at
-//! every drive),
-//! `TRIALS` (bursts per point: 100 for the gate, 200 for the sweep's fine grid),
-//! `WRITE` (sweep only).
+//! every drive), `TRIALS` (bursts per point: 100 for the gate, 200 for the sweep's
+//! fine grid), `WRITE` (sweep only).
 
 use super::*;
 use crate::detect_eval::{
     burst, env_flag, env_list, env_modes, env_or, header_at, modem, on_every_core, payload_seed, received,
-    true_position,
+    through_channel, true_position,
 };
+use vardefm_dsp::prng::Prng;
 
 /// Error rate at which a point is recorded and gated.
 const TARGET_RATE: f32 = 0.1;
@@ -91,6 +101,9 @@ const CODEWORDS: usize = 4;
 /// more decisions than a level's: 1600 per gate point put sigma at 0.75 %. Header
 /// trials send bursts of one codeword, so they are cheap.
 const HEADERS_PER_BURST: u32 = 16;
+
+/// Seed of the header fields that header trials draw, mixed with the trial.
+const HEADER_SEED: u32 = 0x4ead_0001;
 
 /// The recorded points, `perf/levels.toml`.
 const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
@@ -277,6 +290,8 @@ impl<'a> Case<'a> {
         let (m, ncw) = (self.m, self.ncw);
         let (sent, rx) = received(m, self.mode, cnr, self.level, ncw, t);
         if let Target::Header(_) = self.target {
+            let sent = Burst { header: trial_header(self.level, ncw, t), ..sent };
+            let rx = through_channel(m, self.mode, cnr, &sent, t);
             return u32::from(header_at(m, &rx, self.truth) != Some(sent.header));
         }
         let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(self.level);
@@ -301,6 +316,27 @@ impl<'a> Case<'a> {
         let (trials, decisions) = self.trials(bursts);
         let errors: u32 = on_every_core(trials, |t| self.errors(cnr, t)).iter().sum();
         errors as f32 / decisions as f32
+    }
+}
+
+/// The header that header trial `t` sends: a data burst of `ncw` codewords at
+/// `level`, with the fields that change from burst to burst in a session drawn at
+/// random. Clipping depends on the header codeword, so a fixed header would measure
+/// one codeword rather than the drive (see the module doc).
+fn trial_header(level: u8, ncw: usize, t: u32) -> Header {
+    let mut rng = Prng::new(HEADER_SEED ^ t.wrapping_mul(2));
+    let mut field = |bits: u32| rng.next_u32() >> (32 - bits);
+    Header {
+        kind: Kind::Data,
+        session: field(8) as u8,
+        level,
+        ncw: ncw as u8,
+        req_level: (field(16) % LEVELS.len() as u32) as u8,
+        burst_id: field(3) as u8,
+        ack_burst: field(3) as u8,
+        ack_offset: field(24),
+        bitmap: field(24),
+        flags: field(1) as u8 * FLAG_POLL,
     }
 }
 
@@ -552,6 +588,94 @@ fn targets_parse() {
     assert_eq!(s, [Spec::Header, Spec::Level(0), Spec::Level(6)]);
     assert!("x".parse::<Spec>().is_err());
     assert!(LEVELS.len().to_string().parse::<Spec>().is_err());
+}
+
+/// How far the header's effective level may differ, at one drive, between the
+/// bursts the gate measures and any other level or codeword count, dB. Well inside
+/// `HEADER_MARGIN_DB`.
+const HEADER_LEVEL_TOLERANCE_DB: f32 = 0.1;
+/// Header trials averaged per level and codeword count by
+/// `header_level_depends_only_on_drive`.
+const HEADER_LEVEL_TRIALS: u32 = 32;
+/// SNR at which clipping distortion is weighed against channel noise, dB. The
+/// receiver's estimate on the header at the recorded header points is about -2 dB
+/// (median) and at most about 1 dB (90th percentile); a higher value weighs the
+/// distortion more.
+const HEADER_REFERENCE_SNR_DB: f32 = 3.0;
+
+/// What the receiver gets of the header's symbol bodies (the cyclic prefix is
+/// dropped) over `trials` header trials of a `level` burst of `ncw` codewords, the
+/// same bursts the gate sends: the useful level against the drive, dB, and the
+/// signal-to-distortion ratio of the clipping, dB. Noiseless.
+fn header_level(m: &Modem, level: u8, ncw: usize, trials: u32) -> (f32, f32) {
+    let sl = m.ofdm.p.symbol_len();
+    let start = (m.leader_symbols() + 2) * sl;
+    let end = start + m.header_symbols() * sl;
+    let bodies =
+        |x: &[f32]| -> Vec<f32> { x[start..end].chunks(sl).flat_map(|s| s[m.ofdm.p.ncp..].to_vec()).collect() };
+    // Linear reference: the same symbols scaled to the drive without clipping.
+    let tiny = 1e-3;
+    let (mut cl, mut ll, mut cc, mut n) = (0f64, 0f64, 0f64, 0usize);
+    for t in 0..trials {
+        let sent = Burst { header: trial_header(level, ncw, t), ..burst(level, ncw, payload_seed(t)) };
+        let linear = bodies(&m.ofdm.modulate_with_leader_rms(&m.symbols(&sent), m.txdelay, tiny));
+        let clipped = bodies(&m.modulate(&sent));
+        let k = (m.tx_rms(level) / tiny) as f64;
+        for (&c, &l) in clipped.iter().zip(&linear) {
+            let (c, l) = (c as f64, l as f64 * k);
+            (cl, ll, cc) = (cl + c * l, ll + l * l, cc + c * c);
+        }
+        n += linear.len();
+    }
+    // The clipped header is a times the linear one plus distortion.
+    let a = cl / ll;
+    let useful = a * a * ll;
+    let distortion = cc - 2.0 * a * cl + useful;
+    let level_db = 10.0 * (useful / n as f64).log10() - 20.0 * (m.tx_rms(level) as f64).log10();
+    (level_db as f32, (10.0 * (useful / distortion).log10()) as f32)
+}
+
+/// The gate's header points, measured on one-codeword bursts of the lowest level at
+/// each drive, stand for every level and codeword count at that drive: the header's
+/// effective level differs by at most `HEADER_LEVEL_TOLERANCE_DB`. `modulate`
+/// scales the whole burst to the drive, so the burst's length and payload could
+/// move the header; and it clips, which depends on the header codeword, so the
+/// gate draws the header's fields at random (`trial_header`) and this check
+/// averages over the same draws. Effective level: useful level less the noise the
+/// clipping adds at `HEADER_REFERENCE_SNR_DB`.
+#[test]
+fn header_level_depends_only_on_drive() {
+    let effective = |(level_db, sdr_db): (f32, f32)| {
+        let snr = 10f32.powf(HEADER_REFERENCE_SNR_DB / 10.0);
+        level_db - 10.0 * (1.0 + snr / 10f32.powf(sdr_db / 10.0)).log10()
+    };
+    for mode in ALL_MODES.split(',') {
+        let m = modem(mode);
+        let drives = drive_levels(&m);
+        let mut report = Vec::new();
+        let mut worst = 0f32;
+        for level in 0..LEVELS.len() as u8 {
+            let measured = *drives.iter().find(|&&d| m.tx_rms(d) == m.tx_rms(level)).unwrap();
+            let reference = effective(header_level(&m, measured, 1, HEADER_LEVEL_TRIALS));
+            for ncw in [1, m.max_ncw(level)] {
+                let (level_db, sdr_db) = header_level(&m, level, ncw, HEADER_LEVEL_TRIALS);
+                let d = effective((level_db, sdr_db)) - reference;
+                report.push(format!(
+                    "L{level} ncw {ncw}: level {level_db:+.3} dB, SDR {sdr_db:.1} dB, {d:+.3} dB against L{measured} ncw 1"
+                ));
+                worst = worst.max(d.abs());
+            }
+        }
+        assert!(
+            worst <= HEADER_LEVEL_TOLERANCE_DB,
+            "{mode}: the header's effective level differs by up to {worst:.3} dB at one drive:
+  {}",
+            report.join(
+                "
+  "
+            )
+        );
+    }
 }
 
 /// The header is measured at every drive a mode sends, once each.

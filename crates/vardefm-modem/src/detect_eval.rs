@@ -137,10 +137,16 @@ fn channel_seed(cnr: f32, t: u32) -> u64 {
 /// receiver gets from the `mode` channel at `cnr` dB.
 pub(crate) fn received(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, t: u32) -> (Burst, Vec<f32>) {
     let sent = burst(level, ncw, payload_seed(t));
+    let rx = through_channel(m, mode, cnr, &sent, t);
+    (sent, rx)
+}
+
+/// The audio the receiver gets when trial `t` sends `sent` over the `mode` channel
+/// at `cnr` dB.
+pub(crate) fn through_channel(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: u32) -> Vec<f32> {
     let cfg =
         FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..FmChannelConfig::by_name(mode).unwrap() };
-    let rx = transmit(&cfg, &m.modulate(&sent));
-    (sent, rx)
+    transmit(&cfg, &m.modulate(sent))
 }
 
 fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> Trial {
