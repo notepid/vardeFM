@@ -79,8 +79,9 @@ const GATE_MARGIN_DB: f32 = 0.25;
 /// ... and this far for the header. Its curve falls only by about a factor of 1.5
 /// per 0.25 dB around the point, so at `GATE_MARGIN_DB` the gate's rate above the
 /// point would sit about 3 to 5 sigma (0.75 %) below 10 %, too near for a sample
-/// that is not a replay. At 0.35 dB it sits about 5 sigma below, and the rate below
-/// the point 8 sigma or more above.
+/// that is not a replay. At 0.35 dB, on the recorded grids, it sits about 4.5 to 6
+/// sigma below (least at wide mode's level 0 drive), and the rate below the point
+/// 8 sigma or more above.
 const HEADER_MARGIN_DB: f32 = 0.35;
 /// Bursts per point of the gate. With 4 codewords per burst (2 at narrow level 0),
 /// the binomial sigma at 10 % CER is 1.5 % (2.1 %). That takes codewords as
