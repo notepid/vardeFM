@@ -288,12 +288,12 @@ impl<'a> Case<'a> {
     /// the header fails, or how many codewords do.
     fn errors(&self, cnr: f32, t: u32) -> u32 {
         let (m, ncw) = (self.m, self.ncw);
-        let (sent, rx) = received(m, self.mode, cnr, self.level, ncw, t);
         if let Target::Header(_) = self.target {
-            let sent = Burst { header: trial_header(self.level, ncw, t), ..sent };
+            let sent = Burst { header: trial_header(self.level, ncw, t), ..burst(self.level, ncw, payload_seed(t)) };
             let rx = through_channel(m, self.mode, cnr, &sent, t);
             return u32::from(header_at(m, &rx, self.truth) != Some(sent.header));
         }
+        let (sent, rx) = received(m, self.mode, cnr, self.level, ncw, t);
         let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(self.level);
         let Some(frame) = m.ofdm.demodulate_known(&rx, self.truth, nsym, &self.training) else {
             return ncw as u32;
