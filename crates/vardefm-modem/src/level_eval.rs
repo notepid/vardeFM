@@ -355,6 +355,43 @@ fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
     Some(x0 + t * (x1 - x0))
 }
 
+/// What [`fine_grid`] returns: the grid, its rates and the crossing; or the last
+/// grid and its rates when no grid carries the gate.
+type FineGrid = Result<(Vec<f32>, Vec<f32>, f32), (Vec<f32>, Vec<f32>)>;
+
+/// The sweep's fine grid: whole steps of `1 / per_db` dB, `half` steps either side
+/// of `centre` (in steps), with `rate` measured at each point. The grid is moved to
+/// its own crossing of `target`, or by `half` steps when it does not cross, until
+/// the crossing lies at least `margin` dB inside both ends, at most `MAX_MOVES`
+/// times. Returns the grid, its rates and the crossing rounded to 0.01 dB; or, when
+/// no grid carries the gate, the last grid and its rates.
+fn fine_grid(
+    mut centre: i32,
+    per_db: f32,
+    half: i32,
+    target: f32,
+    margin: f32,
+    mut rate: impl FnMut(f32) -> f32,
+) -> FineGrid {
+    let mut moves = 0;
+    loop {
+        let grid: Vec<f32> = (centre - half..=centre + half).map(|i| i as f32 / per_db).collect();
+        let rates: Vec<f32> = grid.iter().map(|&g| rate(g)).collect();
+        let next = match crossing(&grid, &rates, target).map(|x| (x * 100.0).round() / 100.0) {
+            Some(x) if grid[0] <= x - margin && x + margin <= grid[grid.len() - 1] => return Ok((grid, rates, x)),
+            Some(x) => (x * per_db).round() as i32,
+            None if rates[0] < target => centre - half,
+            None => centre + half,
+        };
+        if moves == MAX_MOVES || next == centre {
+            return Err((grid, rates));
+        }
+        println!("  fine grid moved: {:.2} -> {:.2} dB", centre as f32 / per_db, next as f32 / per_db);
+        centre = next;
+        moves += 1;
+    }
+}
+
 /// The rate at `x` on a grid, interpolated in log10 between the neighbouring points
 /// as in [`crossing`], or linearly next to a 0; clamped to the ends of the grid.
 fn rate_at(grid: &[f32], rates: &[f32], x: f32) -> f32 {
@@ -416,30 +453,14 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
         assert!(c < MAX_CNR_DB, "{label}: {rate_name} is still 10 % or more at {MAX_CNR_DB} dB");
     }
     // Whole quarter dB steps, so the recorded grid reads as written. The search rests
-    // on few bursts, so its crossing can be off by more than the grid allows: the grid
-    // is moved to its own crossing, or by half its width (`FINE_STEPS`) when it does
-    // not cross, until it carries the gate. A grid that cannot stops the run here, not
-    // after the whole sweep.
+    // on few bursts, so its crossing can be off by more than the grid allows, and
+    // `fine_grid` moves the grid until it carries the gate. A grid that cannot stops
+    // the run here, not after the whole sweep.
     let margin = case.target.margin();
-    let mut centre = c * 4 + 2;
-    let mut moves = 0;
-    let (grid, rates, cnr_db) = loop {
-        let grid: Vec<f32> = (centre - FINE_STEPS..=centre + FINE_STEPS).map(|i| i as f32 / 4.0).collect();
-        let rates: Vec<f32> = grid.iter().map(|&g| case.rate(g, bursts)).collect();
-        let next = match crossing(&grid, &rates, TARGET_RATE).map(|x| (x * 100.0).round() / 100.0) {
-            Some(x) if grid[0] <= x - margin && x + margin <= grid[grid.len() - 1] => break (grid, rates, x),
-            Some(x) => (x * 4.0).round() as i32,
-            None if rates[0] < TARGET_RATE => centre - FINE_STEPS,
-            None => centre + FINE_STEPS,
-        };
-        assert!(
-            moves < MAX_MOVES && next != centre,
-            "{label}: the fine grid {grid:?} does not carry the gate: {rate_name} {rates:?}"
-        );
-        println!("  {label}: fine grid moved, {:.2} -> {:.2} dB", centre as f32 / 4.0, next as f32 / 4.0);
-        centre = next;
-        moves += 1;
-    };
+    let measured = fine_grid(c * 4 + 2, 4.0, FINE_STEPS, TARGET_RATE, margin, |g| case.rate(g, bursts));
+    let (grid, rates, cnr_db) = measured.unwrap_or_else(|(grid, rates)| {
+        panic!("{label}: the fine grid {grid:?} does not carry the gate: {rate_name} {rates:?}")
+    });
 
     let line: String = grid.iter().zip(&rates).map(|(g, r)| format!(" {g:.2}:{r:.3}")).collect();
     println!("{label}: 10 % {rate_name} at {cnr_db:.2} dB;{line}");
@@ -573,6 +594,43 @@ fn crossing_interpolates_in_log() {
     assert_eq!(crossing(&grid, &[0.05, 0.02, 0.0], 0.1), None);
     // A rate exactly at the target, as a measured one can be, is not yet below it.
     assert_eq!(crossing(&[1.0, 1.5, 2.0, 2.5], &[0.2, 0.1, 0.1, 0.05], 0.1), Some(2.0));
+}
+
+/// A waterfall falling a decade per 0.5 dB from 1 at `x0` dB: it crosses 10 % at
+/// `x0 + 0.5`.
+#[cfg(test)]
+fn waterfall(x0: f32) -> impl Fn(f32) -> f32 {
+    move |x| 10f32.powf(-2.0 * (x - x0)).min(1.0)
+}
+
+/// `fine_grid` keeps a grid that carries the gate, moves one that does not, gives up
+/// on a curve that never crosses, and counts its moves.
+#[test]
+fn fine_grid_moves_until_it_carries_the_gate() {
+    let (per_db, half, margin) = (4.0, 4, 0.5);
+    let x = |r: FineGrid| r.ok().map(|(_, _, x)| x);
+    // Centred on the crossing (5.5 dB): kept.
+    assert_eq!(x(fine_grid(22, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
+    // The crossing too near the grid's top end for the gate: moved onto it.
+    assert_eq!(x(fine_grid(19, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
+    // Every rate above 10 %: moved up by half the grid, four times, until it crosses.
+    assert_eq!(x(fine_grid(4, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
+    // Every rate below 10 %: moved down.
+    assert_eq!(x(fine_grid(40, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
+    // A curve that never falls below 10 % (an error floor): gives up.
+    let mut calls = 0;
+    let budget = (MAX_MOVES as i32 + 1) * (2 * half + 1);
+    let floor = |_| {
+        calls += 1;
+        assert!(calls <= budget, "fine_grid measured more than MAX_MOVES moves allow");
+        0.5
+    };
+    assert!(fine_grid(0, per_db, half, 0.1, margin, floor).is_err());
+    // Too far to reach in `MAX_MOVES` moves of half the grid: gives up.
+    let far = (MAX_MOVES as i32 + 2) * half;
+    assert!(fine_grid(22 + far, per_db, half, 0.1, margin, waterfall(5.0)).is_err());
+    // A gate margin wider than the grid can hold: gives up rather than looping.
+    assert!(fine_grid(22, per_db, half, 0.1, 1.5, waterfall(5.0)).is_err());
 }
 
 #[test]
