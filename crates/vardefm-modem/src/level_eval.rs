@@ -12,15 +12,17 @@
 //!   goes out quieter. One point per mode and drive covers it, measured on
 //!   one-codeword bursts of the lowest level sent at that drive.
 //!
-//! Why one point per drive suffices: every symbol of a burst carries the same mean
-//! power before scaling, so the header's level depends on the drive and hardly on
-//! the burst's length or payload. Clipping, heavy at wide mode's 0.5 drive, does
+//! Why one point per drive should suffice: every symbol of a burst carries the same
+//! mean power before scaling, so the header's level depends on the drive and hardly
+//! on the burst's length or payload. Clipping, heavy at wide mode's 0.5 drive, does
 //! depend on the header codeword: with one fixed header the useful level at that
 //! drive varied by 0.3 dB between levels and codeword counts. So each header trial
-//! draws the fields that change from burst to burst at random (`trial_header`), and
-//! averaged over those draws the effective level agrees within
-//! `HEADER_LEVEL_TOLERANCE_DB` at every drive; `header_level_depends_only_on_drive`
-//! checks it.
+//! draws the fields that change from burst to burst at random (`trial_header`).
+//! `header_level_depends_only_on_drive` checks the claim as an estimate, not as a
+//! measured HER: on the noiseless transmitted header, averaged over those draws, the
+//! useful level less the clipping distortion (counted as noise at
+//! `HEADER_REFERENCE_SNR_DB`) agrees within `HEADER_LEVEL_TOLERANCE_DB` at every
+//! drive.
 //!
 //! A burst decodes only if both its header and its codewords do. At level 0's drive
 //! the header's point lies above level 0's, so there the header limits a burst, and

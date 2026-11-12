@@ -125,15 +125,17 @@ higher at the low levels and about 1 dB higher at levels 5 and 6. These are payl
 figures. The header, decoded from preamble B alone, is recorded separately in the same
 file, once per drive level, since a burst goes out at its level's TX RMS (§1.1), header
 included. The header's fields vary from burst to burst, and with them how much of it is
-clipped, so its points are averaged over random field values; at one drive, the header's
-effective level is then the same within 0.1 dB at every level and burst length
-(`header_level_depends_only_on_drive`). At level 0's drive it reaches 10 % header errors
-at about 3.7 dB (narrow) and 5.9 dB (wide), above level 0's point, and its error rate
-falls much more slowly than the payload's, so at the low levels the header limits a
-burst. At the lower drives of the high levels it needs up to about 0.5 dB (narrow) and
-1.4 dB (wide) more, still far below those levels' own points. Detection is not part of
-either. Below about 8 dB (narrow) and 11 dB (wide) some level 1 bursts are not detected
-at all.
+clipped, so its points are averaged over random field values. That one point per drive
+covers every level and burst length at that drive is an estimate, not a measured header
+error rate: on the noiseless transmitted header, the useful level less the clipping
+distortion, counted as noise at a 3 dB reference SNR, agrees within 0.1 dB
+(`header_level_depends_only_on_drive`). At level 0's drive the header reaches 10 %
+header errors at about 3.7 dB (narrow) and 5.9 dB (wide), above level 0's point, and its
+error rate falls much more slowly than the payload's, so at the low levels the header
+limits a burst. At the lower drives of the high levels it needs up to about 0.5 dB
+(narrow) and 1.4 dB (wide) more, still far below those levels' own points. Detection is
+not part of either. Below about 8 dB (narrow) and 11 dB (wide) some level 1 bursts are
+not detected at all.
 
 ### 2.3 Header (96 bits before coding)
 80 bits of fields, MSB first, then a CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over
