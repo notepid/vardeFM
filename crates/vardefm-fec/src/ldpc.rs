@@ -426,6 +426,8 @@ mod curve {
     /// Half-width of that grid in 0.05 dB steps: ±0.4 dB, so that a coarse crossing
     /// one 0.25 dB step off at few frames still leaves the true one inside.
     const FINE_STEPS: i32 = 8;
+    /// Times `fer_curve` may move its fine grid before it gives up.
+    const MAX_MOVES: u32 = 4;
 
     /// The recorded 1 % FER points, `perf/ldpc.toml`.
     const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/ldpc.toml");
@@ -577,21 +579,30 @@ mod curve {
             }
             let coarse = crossing(&grid, &rates, TARGET_FER).expect("the coarse grid does not cross 1 % FER");
             // Whole steps of 0.05 dB, so the recorded grid reads as written. At few
-            // frames the coarse crossing can sit a step or two off, so the grid is
-            // centred again on its own crossing until the gate's points lie on it.
+            // frames the coarse crossing can sit well off, so the grid is moved to its
+            // own crossing, or by its width when it does not cross, until the gate's
+            // points lie on it. A grid that cannot stops the run here, before the
+            // remaining codes.
             let mut centre = (coarse * 20.0).round() as i32;
+            let mut moves = 0;
             let (grid, rates, ebn0_db) = loop {
                 let grid: Vec<f32> = (centre - FINE_STEPS..=centre + FINE_STEPS).map(|i| i as f32 / 20.0).collect();
                 let rates: Vec<f32> = grid.iter().map(|&e| fer(&code, e, RECORD_TRIALS)).collect();
-                let x = crossing(&grid, &rates, TARGET_FER).expect("the fine grid does not cross 1 % FER");
-                let x = (x * 100.0).round() / 100.0;
-                let on_grid = grid[0] <= x - GATE_MARGIN_DB && x + GATE_MARGIN_DB <= grid[grid.len() - 1];
-                let next = (x * 20.0).round() as i32;
-                if on_grid || next == centre {
-                    break (grid, rates, x);
-                }
-                println!("  fine grid centred again: {:.2} -> {:.2} dB", centre as f32 / 20.0, next as f32 / 20.0);
+                let next = match crossing(&grid, &rates, TARGET_FER).map(|x| (x * 100.0).round() / 100.0) {
+                    Some(x) if grid[0] <= x - GATE_MARGIN_DB && x + GATE_MARGIN_DB <= grid[grid.len() - 1] => {
+                        break (grid, rates, x)
+                    }
+                    Some(x) => (x * 20.0).round() as i32,
+                    None if rates[0] < TARGET_FER => centre - FINE_STEPS,
+                    None => centre + FINE_STEPS,
+                };
+                assert!(
+                    moves < MAX_MOVES && next != centre,
+                    "({n},{k}): the fine grid {grid:?} does not carry the gate: FER {rates:?}"
+                );
+                println!("  fine grid moved: {:.2} -> {:.2} dB", centre as f32 / 20.0, next as f32 / 20.0);
                 centre = next;
+                moves += 1;
             };
             println!("  1 % FER at {ebn0_db:.2} dB");
             points.push(Point { name: name.into(), n, k, ebn0_db, grid_db: grid, fer: rates });

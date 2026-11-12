@@ -68,6 +68,10 @@ const GATE_BURSTS: u32 = 100;
 const RECORD_BURSTS: u32 = 200;
 /// Bursts per point of the sweep's coarse search for the crossing.
 const COARSE_BURSTS: u32 = 25;
+/// Half-width of the sweep's fine grid in 0.25 dB steps: ±1 dB.
+const FINE_STEPS: i32 = 4;
+/// Times the sweep may move its fine grid before it gives up.
+const MAX_MOVES: u32 = 4;
 /// The sweep's search gives up above this CNR, dB: a level that still fails there
 /// has an error floor.
 const MAX_CNR_DB: i32 = 40;
@@ -317,7 +321,8 @@ fn commit() -> String {
 }
 
 /// Measures the 10 % point of `case`: a 1 dB search for the crossing from `start`,
-/// then a 0.25 dB grid of ±1 dB around it. Returns the point and the whole dB the
+/// then a 0.25 dB grid of ±1 dB around it, moved until it crosses 10 % with the
+/// gate's two points on it. Returns the point and the whole dB the
 /// search ended at. Warns when the curve is too flat for the gate to tell a shift of
 /// the target's margin from noise.
 fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
@@ -335,25 +340,42 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
         c += 1;
         assert!(c < MAX_CNR_DB, "{label}: {rate_name} is still 10 % or more at {MAX_CNR_DB} dB");
     }
-    // Whole quarter dB steps, so the recorded grid reads as written.
-    let centre = c * 4 + 2;
-    let grid: Vec<f32> = (centre - 4..=centre + 4).map(|i| i as f32 / 4.0).collect();
-    let rates: Vec<f32> = grid.iter().map(|&g| case.rate(g, bursts)).collect();
-    let Some(x) = crossing(&grid, &rates, TARGET_RATE) else {
-        panic!("{label}: the grid {grid:?} does not cross 10 % {rate_name}: {rates:?}");
+    // Whole quarter dB steps, so the recorded grid reads as written. The search
+    // rests on few bursts, so its crossing can be off by more than the grid allows:
+    // the grid is moved to its own crossing, or by its width when it does not cross,
+    // until it carries the gate. A grid that cannot stops the run here, not after
+    // the whole sweep.
+    let margin = case.target.margin();
+    let mut centre = c * 4 + 2;
+    let mut moves = 0;
+    let (grid, rates, cnr_db) = loop {
+        let grid: Vec<f32> = (centre - FINE_STEPS..=centre + FINE_STEPS).map(|i| i as f32 / 4.0).collect();
+        let rates: Vec<f32> = grid.iter().map(|&g| case.rate(g, bursts)).collect();
+        let next = match crossing(&grid, &rates, TARGET_RATE).map(|x| (x * 100.0).round() / 100.0) {
+            Some(x) if grid[0] <= x - margin && x + margin <= grid[grid.len() - 1] => break (grid, rates, x),
+            Some(x) => (x * 4.0).round() as i32,
+            None if rates[0] < TARGET_RATE => centre - FINE_STEPS,
+            None => centre + FINE_STEPS,
+        };
+        assert!(
+            moves < MAX_MOVES && next != centre,
+            "{label}: the fine grid {grid:?} does not carry the gate: {rate_name} {rates:?}"
+        );
+        println!("  {label}: fine grid moved, {:.2} -> {:.2} dB", centre as f32 / 4.0, next as f32 / 4.0);
+        centre = next;
+        moves += 1;
     };
-    let cnr_db = (x * 100.0).round() / 100.0;
+
     let line: String = grid.iter().zip(&rates).map(|(g, r)| format!(" {g:.2}:{r:.3}")).collect();
     println!("{label}: 10 % {rate_name} at {cnr_db:.2} dB;{line}");
     // The rate the gate would see on either side, interpolated on the grid, against
     // the binomial sigma, which is somewhat optimistic (see `GATE_BURSTS`).
     let decisions = case.trials(GATE_BURSTS).1;
     let sigma = (TARGET_RATE * (1.0 - TARGET_RATE) / decisions as f32).sqrt();
-    let margin = case.target.margin();
     for d in [-margin, margin] {
-        let r = rate_at(&grid, &rates, x + d);
+        let r = rate_at(&grid, &rates, cnr_db + d);
         if (r - TARGET_RATE).abs() < 3.0 * sigma {
-            println!("  WARNING: {rate_name} {r:.3} at {:.2} dB is within 3 sigma of 10 %", x + d);
+            println!("  WARNING: {rate_name} {r:.3} at {:.2} dB is within 3 sigma of 10 %", cnr_db + d);
         }
     }
     let level = match case.target {
