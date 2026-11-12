@@ -5,8 +5,8 @@
 //! covers it):
 //! - per level, the codeword error rate (CER), with the sent header as channel
 //!   training, as `Receiver::step` decodes the payload once the header has decoded;
-//! - per mode and drive, the header error rate (HER): the header decoded from
-//!   preamble B alone, as `Receiver::step` does first. The header is coded and
+//! - per mode and drive, the header error rate (HER): the header decoded with
+//!   `Ofdm::demodulate_header`, as `Receiver::step` does first. The header is coded and
 //!   modulated the same at every level, but `Modem::modulate` scales the whole
 //!   burst to its level's drive (`Modem::tx_rms`), so the header of a high level
 //!   goes out quieter. One point per mode and drive covers it, measured on
@@ -334,7 +334,7 @@ impl<'a> Case<'a> {
 
 /// The burst that trial `t` sends: `ncw` codewords of payload at `level`, under
 /// [`trial_header`].
-fn trial_burst(level: u8, ncw: usize, t: u32) -> Burst {
+pub(crate) fn trial_burst(level: u8, ncw: usize, t: u32) -> Burst {
     Burst { header: trial_header(level, ncw, t), ..burst(level, ncw, payload_seed(t)) }
 }
 

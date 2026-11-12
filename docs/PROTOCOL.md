@@ -76,8 +76,10 @@ The reference receiver:
 2. Confirms the frame by cross-correlating with preamble B.
 3. Places the FFT window mid cyclic prefix, which absorbs clock drift of ±ncp/2 samples
    over the frame.
-4. Estimates the channel from preamble B, smoothed across frequency, and decodes the
-   header with it. Once the header has decoded, it demodulates the frame again with the
+4. Estimates the channel from preamble B and the pilots of the header symbols, as a
+   low-order polynomial fit across carriers after removing the timing slope (found by a
+   coherent search over all of them), and decodes the header with it. Once the header
+   has decoded, it demodulates the frame again with the
    header symbols (now known) averaged into the channel estimate, each weighted by the
    inverse of its noise: the header decodes through a click on one of its symbols, and
    that symbol must not corrupt the estimate.

@@ -165,7 +165,7 @@ impl Receiver {
                     return Some(false);
                 }
                 let header =
-                    m.ofdm.demodulate(&self.buf, b, hdr_syms).and_then(|f| m.decode_header(&f).map(|h| (h, f)));
+                    m.ofdm.demodulate_header(&self.buf, b, hdr_syms).and_then(|f| m.decode_header(&f).map(|h| (h, f)));
                 match header {
                     None => self.search = b,
                     Some((h, f)) if h.ncw == 0 => {

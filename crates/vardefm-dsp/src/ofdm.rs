@@ -25,6 +25,10 @@ const MIN_PREAMBLE_CORR: f32 = 0.3;
 /// noise scale. Normal symbols almost never get there (the per-symbol estimate averages
 /// 18-24 real noise samples).
 const SCALE_THRESHOLD: f32 = 2.0;
+/// Order of the header's channel fit. Order 2 already matches a genie that trains
+/// on the known header in the channel simulator; 4 leaves room for band edges
+/// steeper than its 4th-order audio filters, at under 0.1 dB.
+const HEADER_FIT_ORDER: usize = 4;
 /// TX low-pass cutoff relative to the top carrier frequency.
 const TX_LOWPASS_FACTOR: f32 = 1.15;
 /// Clip-and-filter passes before the final clamp.
@@ -321,16 +325,37 @@ impl Ofdm {
         self.demodulate_known(rx, b_start, nsym, &[])
     }
 
+    /// Like [`demodulate`](Self::demodulate), for a burst's header: nothing is known
+    /// yet but preamble B and the pilots, and the channel estimate is a low-order fit
+    /// across carriers to both (see `estimate_fit`). Its small bias at the band edges
+    /// is far below the header's noise, but would limit dense constellations, so
+    /// payload symbols use [`demodulate_known`](Self::demodulate_known).
+    pub fn demodulate_header(&self, rx: &[f32], b_start: usize, nsym: usize) -> Option<Frame> {
+        self.demodulate_with(rx, b_start, nsym, &[], Estimator::Fit { order: HEADER_FIT_ORDER })
+    }
+
     /// Like [`demodulate`](Self::demodulate), but the data-carrier values of the first
     /// `known.len()` symbols are known (for example a header that has already been
     /// decoded). Those symbols train the channel estimate together with preamble B.
     pub fn demodulate_known(&self, rx: &[f32], b_start: usize, nsym: usize, known: &[Vec<Complex32>]) -> Option<Frame> {
+        let known: Vec<Option<&[Complex32]>> = known.iter().take(nsym).map(|d| Some(d.as_slice())).collect();
+        self.demodulate_with(rx, b_start, nsym, &known, Estimator::Smooth)
+    }
+
+    /// Demodulate with an explicit training set and estimator. `known[i]`, where
+    /// present and `Some`, holds the data-carrier values of symbol `i`.
+    pub fn demodulate_with(
+        &self,
+        rx: &[f32],
+        b_start: usize,
+        nsym: usize,
+        known: &[Option<&[Complex32]>],
+        est: Estimator,
+    ) -> Option<Frame> {
         if nsym == 0 {
             return None;
         }
-        let n = self.p.nfft;
         let l = self.p.symbol_len() as isize;
-        let nc = self.p.num_carriers;
         // Centre the FFT window in the cyclic prefix. That leaves ncp/2 samples of
         // slack each way for sound-card clock drift without ever moving the window.
         let base = b_start as isize - (self.p.ncp / 2) as isize;
@@ -339,24 +364,33 @@ impl Ofdm {
         let ys: Vec<Vec<Complex32>> =
             (0..nsym).map(|i| self.carriers_at(rx, base + (i as isize + 1) * l)).collect::<Option<_>>()?;
 
+        let (hb, est_noise) = match est {
+            Estimator::Smooth => self.estimate_smooth(&yb, &ys, known),
+            Estimator::Fit { order } => self.estimate_fit(&yb, &ys, known, order),
+        };
+        self.equalize(ys, hb, &est_noise, base, nsym)
+    }
+
+    /// Channel estimate from preamble B and the known symbols, averaged and smoothed
+    /// [1 2 1]/4 across carriers. Returns the estimate and, per carrier, its noise
+    /// relative to one symbol's.
+    fn estimate_smooth(
+        &self,
+        yb: &[Complex32],
+        ys: &[Vec<Complex32>],
+        known: &[Option<&[Complex32]>],
+    ) -> (Vec<Complex32>, Vec<f32>) {
+        let nc = self.p.num_carriers;
         // Channel estimate: preamble B averaged with the known symbols. Clock drift moves
         // the timing by at most a sample or so over the header; the pilot tracking below
         // takes that out, so the symbols are simply averaged. (Removing each symbol's own
         // phase slope instead costs up to 2 dB at low SNR: the slope estimate is noisy and
         // its error grows across the band.)
-        let nk = known.len().min(nsym);
-        let mut obs: Vec<Vec<Complex32>> = Vec::with_capacity(nk + 1);
+        let mut obs: Vec<Vec<Complex32>> = Vec::with_capacity(known.len() + 1);
         obs.push((0..nc).map(|k| yb[k] / self.pre_b[k]).collect());
-        for (i, d) in known[..nk].iter().enumerate() {
-            assert_eq!(d.len(), self.data_idx.len(), "wrong number of known symbols");
-            let mut o = vec![Complex32::new(0.0, 0.0); nc];
-            for (j, &k) in self.data_idx.iter().enumerate() {
-                o[k] = ys[i][k] / d[j];
-            }
-            for (m, &k) in self.pilot_idx.iter().enumerate() {
-                o[k] = ys[i][k] * self.pilot_value(i, m);
-            }
-            obs.push(o);
+        for (i, d) in known.iter().enumerate().take(ys.len()) {
+            let Some(d) = d else { continue };
+            obs.push(self.known_obs(&ys[i], i, d));
         }
         // A header symbol hit by an FM click can still decode (the header code is rate
         // 0.24) and so be offered as training. At full weight it would corrupt the
@@ -381,7 +415,83 @@ impl Ofdm {
             .collect();
         // Noise the estimate adds to every equalized symbol, relative to one symbol's:
         // the kernel passes 3/8 of the noise of the `ntrain` averaged symbols.
-        let est_noise = 0.375 / ntrain;
+        (hb, vec![0.375 / ntrain; nc])
+    }
+
+    /// Channel observation of symbol `i` with known data-carrier values `d`: the
+    /// received carriers divided by what was sent, pilots included.
+    fn known_obs(&self, y: &[Complex32], i: usize, d: &[Complex32]) -> Vec<Complex32> {
+        assert_eq!(d.len(), self.data_idx.len(), "wrong number of known symbols");
+        let mut o = vec![Complex32::new(0.0, 0.0); self.p.num_carriers];
+        for (j, &k) in self.data_idx.iter().enumerate() {
+            o[k] = y[k] / d[j];
+        }
+        for (m, &k) in self.pilot_idx.iter().enumerate() {
+            o[k] = y[k] * self.pilot_value(i, m);
+        }
+        o
+    }
+
+    /// Channel estimate as a low-order fit across carriers: Legendre polynomials up
+    /// to `order` in carrier index with complex coefficients, after removing the
+    /// linear phase of the timing offset. Observations: preamble B on every carrier,
+    /// the known symbols on every carrier and the pilots of the other symbols.
+    /// Returns the estimate and, per carrier, its noise relative to one symbol's.
+    ///
+    /// The audio channel's response is smooth across the band, so a few coefficients
+    /// describe it, and the fit averages every observation into each of them. Before
+    /// the header has decoded, that brings in the pilots of every header symbol,
+    /// which an average per carrier could not use on the data carriers.
+    fn estimate_fit(
+        &self,
+        yb: &[Complex32],
+        ys: &[Vec<Complex32>],
+        known: &[Option<&[Complex32]>],
+        order: usize,
+    ) -> (Vec<Complex32>, Vec<f32>) {
+        let nc = self.p.num_carriers;
+        // Per carrier: the sum of its observations and how many there are.
+        let mut sum: Vec<Complex32> = (0..nc).map(|k| yb[k] / self.pre_b[k]).collect();
+        let mut cnt = vec![1f32; nc];
+        for (i, y) in ys.iter().enumerate() {
+            match known.get(i).copied().flatten() {
+                Some(d) => {
+                    sum.iter_mut().zip(self.known_obs(y, i, d)).for_each(|(s, o)| *s += o);
+                    cnt.iter_mut().for_each(|c| *c += 1.0);
+                }
+                None => {
+                    for (m, &k) in self.pilot_idx.iter().enumerate() {
+                        sum[k] += y[k] * self.pilot_value(i, m);
+                        cnt[k] += 1.0;
+                    }
+                }
+            }
+        }
+        let mean: Vec<Complex32> = sum.iter().zip(&cnt).map(|(s, c)| s / c).collect();
+        // The timing slope comes from a search that sums all observations coherently.
+        // The phase step between neighbouring carriers (as `remove_slope` takes it)
+        // multiplies two noisy observations, and at the header's SNR its error, which
+        // grows across the band, cost most of what the fit gains.
+        let slope = delay_search(&mean, &cnt);
+        let flat: Vec<Complex32> =
+            mean.iter().enumerate().map(|(k, &h)| h * Complex32::from_polar(1.0, -slope * k as f32)).collect();
+        let fit = weighted_fit(&legendre_basis(nc, order), &flat, &cnt);
+        let hb = (0..nc).map(|k| fit.value[k] * Complex32::from_polar(1.0, slope * k as f32)).collect();
+        (hb, fit.variance)
+    }
+
+    /// Equalize `ys` with channel estimate `hb` (whose noise per carrier, relative to
+    /// one symbol's, is `est_noise`) and the pilot tracking.
+    fn equalize(
+        &self,
+        ys: Vec<Vec<Complex32>>,
+        hb: Vec<Complex32>,
+        est_noise: &[f32],
+        base: isize,
+        nsym: usize,
+    ) -> Option<Frame> {
+        let n = self.p.nfft;
+        let l = self.p.symbol_len() as isize;
 
         // Pilot ratios against the channel estimate.
         let cs: Vec<Vec<Complex32>> = ys
@@ -414,7 +524,7 @@ impl Ofdm {
             .iter()
             .map(|&k| {
                 let (m, t) = self.pilot_pos(k);
-                (pilot_var[m] * (1.0 - t) + pilot_var[m + 1] * t) * (1.0 + est_noise)
+                (pilot_var[m] * (1.0 - t) + pilot_var[m + 1] * t) * (1.0 + est_noise[k])
             })
             .collect();
         let noise_var: Vec<f32> = raw_var.iter().map(|v| v.max(1e-6)).collect();
@@ -448,6 +558,138 @@ impl Ofdm {
         let dphi = (b * a.conj()).arg();
         Complex32::from_polar(mag, a.arg() + dphi * t)
     }
+}
+
+/// How [`Ofdm::demodulate_with`] estimates the channel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Estimator {
+    /// Preamble B and the known symbols averaged, smoothed [1 2 1]/4.
+    Smooth,
+    /// Polynomial fit of this order across carriers, the pilots of the unknown
+    /// symbols included.
+    Fit { order: usize },
+}
+
+/// Phase slope per carrier (the timing offset) that best lines up `h` (carrier
+/// means, `w` observations each): the peak of `|Σ w h e^{-j s k}|` on a grid 8 times
+/// finer than the carriers resolve. It sums the observations coherently, so unlike
+/// products of neighbours it holds up at low SNR.
+fn delay_search(h: &[Complex32], w: &[f32]) -> f32 {
+    let n = h.len();
+    let steps = 8 * n;
+    let mut best = (0f32, 0f32);
+    for i in 0..steps {
+        let s = -std::f32::consts::PI + 2.0 * std::f32::consts::PI * i as f32 / steps as f32;
+        let rot = Complex32::from_polar(1.0, -s);
+        let mut z = Complex32::new(1.0, 0.0);
+        let mut acc = Complex32::new(0.0, 0.0);
+        for (hk, wk) in h.iter().zip(w) {
+            acc += hk * z * wk;
+            z *= rot;
+        }
+        let m = acc.norm_sqr();
+        if m > best.0 {
+            best = (m, s);
+        }
+    }
+    best.1
+}
+
+/// Legendre polynomials 0..=`order` on `n` points spread over [-1, 1]; `[p][k]`.
+fn legendre_basis(n: usize, order: usize) -> Vec<Vec<f32>> {
+    let x: Vec<f32> = (0..n).map(|k| 2.0 * k as f32 / (n - 1).max(1) as f32 - 1.0).collect();
+    let mut b: Vec<Vec<f32>> = Vec::with_capacity(order + 1);
+    for p in 0..=order {
+        let row = match p {
+            0 => vec![1.0; n],
+            1 => x.clone(),
+            _ => {
+                let pf = p as f32;
+                (0..n).map(|k| ((2.0 * pf - 1.0) * x[k] * b[p - 1][k] - (pf - 1.0) * b[p - 2][k]) / pf).collect()
+            }
+        };
+        b.push(row);
+    }
+    b
+}
+
+/// A weighted least-squares fit: the fitted values and, per point, the variance of
+/// the fitted value in units of one observation's noise.
+struct Fit {
+    value: Vec<Complex32>,
+    variance: Vec<f32>,
+}
+
+/// Fit `y` (point `k` the mean of `w[k]` observations of equal noise) with the real
+/// `basis` and complex coefficients.
+fn weighted_fit(basis: &[Vec<f32>], y: &[Complex32], w: &[f32]) -> Fit {
+    let p = basis.len();
+    let n = y.len();
+    // Normal equations G a = r, G = Σ w φ φᵀ.
+    let mut g = vec![vec![0f64; p]; p];
+    let mut r = vec![(0f64, 0f64); p];
+    for k in 0..n {
+        let wk = w[k] as f64;
+        for i in 0..p {
+            let bi = basis[i][k] as f64 * wk;
+            for j in 0..p {
+                g[i][j] += bi * basis[j][k] as f64;
+            }
+            r[i].0 += bi * y[k].re as f64;
+            r[i].1 += bi * y[k].im as f64;
+        }
+    }
+    let ginv = invert(g);
+    let a: Vec<(f64, f64)> = (0..p)
+        .map(|i| (0..p).fold((0.0, 0.0), |(re, im), j| (re + ginv[i][j] * r[j].0, im + ginv[i][j] * r[j].1)))
+        .collect();
+    let value = (0..n)
+        .map(|k| {
+            let (re, im) = (0..p)
+                .fold((0.0, 0.0), |(re, im), i| (re + a[i].0 * basis[i][k] as f64, im + a[i].1 * basis[i][k] as f64));
+            Complex32::new(re as f32, im as f32)
+        })
+        .collect();
+    let variance = (0..n)
+        .map(|k| {
+            let mut v = 0f64;
+            for i in 0..p {
+                for j in 0..p {
+                    v += basis[i][k] as f64 * ginv[i][j] * basis[j][k] as f64;
+                }
+            }
+            v as f32
+        })
+        .collect();
+    Fit { value, variance }
+}
+
+/// Inverse of a small symmetric positive definite matrix (Gauss-Jordan).
+fn invert(mut a: Vec<Vec<f64>>) -> Vec<Vec<f64>> {
+    let n = a.len();
+    let mut inv: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| f64::from(u8::from(i == j))).collect()).collect();
+    for c in 0..n {
+        let piv = (c..n).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
+        a.swap(c, piv);
+        inv.swap(c, piv);
+        let d = a[c][c];
+        for j in 0..n {
+            a[c][j] /= d;
+            inv[c][j] /= d;
+        }
+        for i in 0..n {
+            if i != c {
+                let f = a[i][c];
+                if f != 0.0 {
+                    for j in 0..n {
+                        a[i][j] -= f * a[c][j];
+                        inv[i][j] -= f * inv[c][j];
+                    }
+                }
+            }
+        }
+    }
+    inv
 }
 
 /// Split the linear phase (the timing offset) off a per-carrier channel estimate.
@@ -576,6 +818,53 @@ mod tests {
     #[test]
     fn clean_roundtrip_wide() {
         roundtrip(OfdmParams::wide(), Modulation::Qam64, 1234);
+    }
+
+    #[test]
+    fn weighted_fit_is_exact_on_its_basis_and_counts_its_noise() {
+        let n = 49;
+        let basis = legendre_basis(n, 4);
+        let w: Vec<f32> = (0..n).map(|k| if k % 6 == 0 { 11.0 } else { 1.0 }).collect();
+        // A cubic with complex coefficients lies in the span of the basis.
+        let y: Vec<Complex32> = (0..n)
+            .map(|k| {
+                let x = 2.0 * k as f32 / (n - 1) as f32 - 1.0;
+                Complex32::new(0.5 - x + 0.3 * x * x * x, 0.2 + 0.7 * x * x)
+            })
+            .collect();
+        let fit = weighted_fit(&basis, &y, &w);
+        for (a, b) in fit.value.iter().zip(&y) {
+            assert!((a - b).norm() < 1e-4, "{a} vs {b}");
+        }
+        // Σ w·var is the trace of the hat matrix: the number of coefficients.
+        let trace: f32 = fit.variance.iter().zip(&w).map(|(v, w)| v * w).sum();
+        assert!((trace - 5.0).abs() < 1e-3, "trace {trace}");
+    }
+
+    #[test]
+    fn delay_search_finds_a_timing_slope() {
+        let h: Vec<Complex32> =
+            (0..62).map(|k| Complex32::from_polar(1.0 + 0.01 * k as f32, -0.39 * k as f32)).collect();
+        let s = delay_search(&h, &vec![1.0; 62]);
+        assert!((s + 0.39).abs() < 0.01, "slope {s}");
+    }
+
+    #[test]
+    fn header_fit_decodes_a_clean_frame() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let m = Modulation::Bpsk;
+            let data = random_frame(&ofdm, m, 10, 3);
+            let mut rx = vec![0.0; 555];
+            rx.extend(ofdm.modulate(&data));
+            rx.extend(vec![0.0; 2000]);
+            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let frame = ofdm.demodulate_header(&rx, b, data.len()).expect("demod failed");
+            for (got, sent) in frame.symbols.iter().flatten().zip(data.iter().flatten()) {
+                assert!((got - sent).norm() < 0.1, "{}: {got} vs {sent}", ofdm.p.name);
+            }
+            assert!(frame.snr_db > 25.0, "{}: snr {}", ofdm.p.name, frame.snr_db);
+        }
     }
 
     fn random_frame(ofdm: &Ofdm, m: Modulation, nsym: usize, seed: u32) -> Vec<Vec<Complex32>> {
