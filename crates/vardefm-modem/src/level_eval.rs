@@ -5,14 +5,17 @@
 //! covers it):
 //! - per level, the codeword error rate (CER), with the sent header as channel
 //!   training, as `Receiver::step` decodes the payload once the header has decoded;
-//! - per mode, the header error rate (HER): the header decoded from preamble B
-//!   alone, as `Receiver::step` does first. The header is coded and modulated the
-//!   same at every level, so one point per mode covers it.
+//! - per mode and drive, the header error rate (HER): the header decoded from
+//!   preamble B alone, as `Receiver::step` does first. The header is coded and
+//!   modulated the same at every level, but `Modem::modulate` scales the whole
+//!   burst to its level's drive (`Modem::tx_rms`), so the header of a high level
+//!   goes out quieter. One point per mode and drive covers it, measured on bursts of
+//!   the lowest level sent at that drive.
 //!
-//! A burst decodes only if both its header and its codewords do. The header's point
-//! lies above level 0's, so there the header limits a burst, and its curve is far
-//! shallower than any level's: at level 1's point a few per cent of headers still
-//! fail.
+//! A burst decodes only if both its header and its codewords do. At level 0's drive
+//! the header's point lies above level 0's, so there the header limits a burst, and
+//! its curve is far shallower than any level's: at level 1's point a few per cent of
+//! headers still fail.
 //!
 //! What the gate does not cover:
 //! - The receiver's SNR estimate, which the link's rate thresholds
@@ -21,8 +24,8 @@
 //!   channel presets have no clock offset, so pilot tracking over a long burst is
 //!   not exercised.
 //!
-//! `perf/levels.toml` holds, per mode, the CNR at which the HER crosses 10 % and, per
-//! mode and level, the CNR at which the CER does. `level_gate` fails when a point has
+//! `perf/levels.toml` holds, per mode and drive, the CNR at which the HER crosses
+//! 10 % and, per mode and level, the CNR at which the CER does. `level_gate` fails when a point has
 //! moved by more than its margin (`GATE_MARGIN_DB`, `HEADER_MARGIN_DB` for the
 //! shallower header curve): the rate must be below 10 % that far above the point and
 //! above 10 % that far below. Each point decodes `GATE_BURSTS` bursts
@@ -39,7 +42,8 @@
 //!
 //! `WRITE=1 cargo test --release -p vardefm-modem level_sweep -- --ignored --nocapture`
 //!
-//! Environment: `MODES` (narrow,wide), `LEVELS` (0,1,..,6; `h` is the header),
+//! Environment: `MODES` (narrow,wide), `LEVELS` (0,1,..,6; `h` is the header at
+//! every drive),
 //! `TRIALS` (bursts per point: 100 for the gate, 200 for the sweep's fine grid),
 //! `WRITE` (sweep only).
 
@@ -85,7 +89,7 @@ const ALL_TARGETS: &str = "h,0,1,2,3,4,5,6";
 const CODEWORDS: usize = 4;
 /// Headers measured for each burst of a level. The header's shallow curve needs
 /// more decisions than a level's: 1600 per gate point put sigma at 0.75 %. Header
-/// trials send the shortest burst, so they are cheap.
+/// trials send bursts of one codeword, so they are cheap.
 const HEADERS_PER_BURST: u32 = 16;
 
 /// The recorded points, `perf/levels.toml`.
@@ -95,7 +99,7 @@ const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
 #[serde(deny_unknown_fields)]
 struct Baseline {
     source: Source,
-    /// One header point per mode.
+    /// One header point per mode and drive.
     header: Vec<Point>,
     /// One codeword point per mode and level.
     level: Vec<Point>,
@@ -122,10 +126,11 @@ struct Source {
 #[serde(deny_unknown_fields)]
 struct Point {
     mode: String,
-    /// The level; absent for the header.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    level: Option<u8>,
+    /// The level; for the header, the lowest level sent at its drive.
+    level: u8,
     name: String,
+    /// The level's drive, `Modem::tx_rms`.
+    drive: f32,
     /// CNR at which the error rate crosses `TARGET_RATE`, dB.
     cnr_db: f32,
     /// The fine grid the crossing comes from, for review in diffs.
@@ -133,31 +138,62 @@ struct Point {
     rate: Vec<f32>,
 }
 
-/// What a point measures: the header, or the codewords of a level.
+/// An item of `LEVELS`: the header at every drive, or the codewords of a level.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Target {
+enum Spec {
     Header,
     Level(u8),
 }
 
-impl std::str::FromStr for Target {
+impl std::str::FromStr for Spec {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "h" {
-            return Ok(Target::Header);
+            return Ok(Spec::Header);
         }
         let last = LEVELS.len() - 1;
         match s.parse() {
-            Ok(l) if (l as usize) <= last => Ok(Target::Level(l)),
+            Ok(l) if (l as usize) <= last => Ok(Spec::Level(l)),
             _ => Err(format!("levels are 0 to {last}, or h for the header")),
         }
     }
 }
 
+/// The levels that are the lowest sent at their drive: the header is measured once
+/// per drive, on bursts of that level.
+fn drive_levels(m: &Modem) -> Vec<u8> {
+    let levels = 0..LEVELS.len() as u8;
+    levels.filter(|&l| (0..l).all(|j| m.tx_rms(j) != m.tx_rms(l))).collect()
+}
+
+/// What a point measures: the header at the drive of a level, or the codewords of
+/// a level.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Target {
+    Header(u8),
+    Level(u8),
+}
+
 impl Target {
+    /// The points `specs` stand for in mode `m`, in order.
+    fn all(m: &Modem, specs: &[Spec]) -> Vec<Target> {
+        let one = |s: &Spec| match *s {
+            Spec::Header => drive_levels(m).into_iter().map(Target::Header).collect(),
+            Spec::Level(l) => vec![Target::Level(l)],
+        };
+        specs.iter().flat_map(one).collect()
+    }
+
+    /// The level of the bursts sent.
+    fn level(self) -> u8 {
+        match self {
+            Target::Header(l) | Target::Level(l) => l,
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
-            Target::Header => "header",
+            Target::Header(_) => "header",
             Target::Level(l) => LEVELS[l as usize].name,
         }
     }
@@ -165,7 +201,7 @@ impl Target {
     /// How far either side of the recorded point the gate measures, dB.
     fn margin(self) -> f32 {
         match self {
-            Target::Header => HEADER_MARGIN_DB,
+            Target::Header(_) => HEADER_MARGIN_DB,
             Target::Level(_) => GATE_MARGIN_DB,
         }
     }
@@ -173,14 +209,14 @@ impl Target {
     /// `HER` or `CER`, for output.
     fn rate_name(self) -> &'static str {
         match self {
-            Target::Header => "HER",
+            Target::Header(_) => "HER",
             Target::Level(_) => "CER",
         }
     }
 
     fn label(self, mode: &str) -> String {
         match self {
-            Target::Header => format!("{mode} header"),
+            Target::Header(l) => format!("{mode} header at L{l} drive"),
             Target::Level(l) => format!("{mode} L{l} {}", self.name()),
         }
     }
@@ -193,11 +229,11 @@ fn load() -> Baseline {
 
 impl Baseline {
     fn point(&self, mode: &str, target: Target) -> &Point {
-        let (list, level) = match target {
-            Target::Header => (&self.header, None),
-            Target::Level(l) => (&self.level, Some(l)),
+        let list = match target {
+            Target::Header(_) => &self.header,
+            Target::Level(_) => &self.level,
         };
-        let p = list.iter().find(|p| p.mode == mode && p.level == level);
+        let p = list.iter().find(|p| p.mode == mode && p.level == target.level());
         p.unwrap_or_else(|| panic!("{BASELINE} has no {}", target.label(mode)))
     }
 }
@@ -207,10 +243,10 @@ struct Case<'a> {
     m: &'a Modem,
     mode: &'a str,
     target: Target,
-    /// The level of the bursts sent: the target's, or 0 for the header.
+    /// The level of the bursts sent.
     level: u8,
     /// Codewords per burst: `CODEWORDS`, or fewer where the level's burst holds
-    /// fewer; 1 for the header, whose bursts are as short as they come.
+    /// fewer; 1 for the header, whose bursts are kept short.
     ncw: usize,
     /// Where preamble B lands, the same in every trial.
     truth: usize,
@@ -221,14 +257,15 @@ struct Case<'a> {
 
 impl<'a> Case<'a> {
     fn new(m: &'a Modem, mode: &'a str, target: Target) -> Self {
-        let (level, ncw) = match target {
-            Target::Header => (0, 1),
-            Target::Level(l) => (l, m.max_ncw(l).min(CODEWORDS)),
+        let level = target.level();
+        let ncw = match target {
+            Target::Header(_) => 1,
+            Target::Level(l) => m.max_ncw(l).min(CODEWORDS),
         };
         let truth = true_position(m, mode, level, ncw);
         let training = match target {
             // The header is decoded without training.
-            Target::Header => Vec::new(),
+            Target::Header(_) => Vec::new(),
             Target::Level(_) => m.header_carriers(&burst(level, ncw, payload_seed(0)).header),
         };
         Case { m, mode, target, level, ncw, truth, training }
@@ -239,7 +276,7 @@ impl<'a> Case<'a> {
     fn errors(&self, cnr: f32, t: u32) -> u32 {
         let (m, ncw) = (self.m, self.ncw);
         let (sent, rx) = received(m, self.mode, cnr, self.level, ncw, t);
-        if self.target == Target::Header {
+        if let Target::Header(_) = self.target {
             return u32::from(header_at(m, &rx, self.truth) != Some(sent.header));
         }
         let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(self.level);
@@ -254,7 +291,7 @@ impl<'a> Case<'a> {
     /// burst, `HEADERS_PER_BURST` headers for each burst of the header.
     fn trials(&self, bursts: u32) -> (u32, usize) {
         match self.target {
-            Target::Header => (bursts * HEADERS_PER_BURST, (bursts * HEADERS_PER_BURST) as usize),
+            Target::Header(_) => (bursts * HEADERS_PER_BURST, (bursts * HEADERS_PER_BURST) as usize),
             Target::Level(_) => (bursts, bursts as usize * self.ncw),
         }
     }
@@ -378,22 +415,25 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
             println!("  WARNING: {rate_name} {r:.3} at {:.2} dB is within 3 sigma of 10 %", cnr_db + d);
         }
     }
-    let level = match case.target {
-        Target::Header => None,
-        Target::Level(l) => Some(l),
+    let p = Point {
+        mode: case.mode.into(),
+        level: case.level,
+        name: case.target.name().into(),
+        drive: case.m.tx_rms(case.level),
+        cnr_db,
+        grid_db: grid,
+        rate: rates,
     };
-    let p =
-        Point { mode: case.mode.into(), level, name: case.target.name().into(), cnr_db, grid_db: grid, rate: rates };
     (p, c)
 }
 
-/// Measures the header point of every mode and the codeword point of every mode and
-/// level; with `WRITE=1`, records them in `perf/levels.toml`.
+/// Measures the header point of every mode and drive and the codeword point of
+/// every mode and level; with `WRITE=1`, records them in `perf/levels.toml`.
 #[test]
 #[ignore]
 fn level_sweep() {
     let modes = env_modes(ALL_MODES);
-    let targets: Vec<Target> = env_list("LEVELS", ALL_TARGETS);
+    let specs: Vec<Spec> = env_list("LEVELS", ALL_TARGETS);
     let bursts = env_or("TRIALS", RECORD_BURSTS);
     assert!(bursts > 0, "TRIALS must be at least 1");
     let write = env_flag("WRITE");
@@ -407,25 +447,25 @@ fn level_sweep() {
     let (mut header, mut level) = (Vec::new(), Vec::new());
     for mode in &modes {
         let m = modem(mode);
-        // The level crossing mostly rises with the level; start each search at the last.
-        let mut start = 0i32;
-        for &target in &targets {
+        // Crossings mostly rise with the level; start each search at the last of its
+        // kind.
+        let (mut header_start, mut level_start) = (0i32, 0i32);
+        for target in Target::all(&m, &specs) {
             let case = Case::new(&m, mode, target);
-            match target {
-                Target::Header => header.push(sweep(&case, 0, bursts).0),
-                Target::Level(_) => {
-                    let (p, c) = sweep(&case, start, bursts);
-                    level.push(p);
-                    start = c;
-                }
-            }
+            let (list, start) = match target {
+                Target::Header(_) => (&mut header, &mut header_start),
+                Target::Level(_) => (&mut level, &mut level_start),
+            };
+            let (p, c) = sweep(&case, *start, bursts);
+            list.push(p);
+            *start = c;
         }
     }
     if write {
         // A grid that cannot carry the gate stops the run instead of reaching the file.
         for (points, margin) in [(&header, HEADER_MARGIN_DB), (&level, GATE_MARGIN_DB)] {
             for p in points {
-                let at = format!("{} {}", p.mode, p.name);
+                let at = format!("{} L{} {}", p.mode, p.level, p.name);
                 check_point(&at, &p.grid_db, &p.rate, p.cnr_db, TARGET_RATE, margin);
             }
         }
@@ -455,7 +495,7 @@ fn level_sweep() {
 #[ignore]
 fn level_gate() {
     let modes = env_modes(ALL_MODES);
-    let targets: Vec<Target> = env_list("LEVELS", ALL_TARGETS);
+    let specs: Vec<Spec> = env_list("LEVELS", ALL_TARGETS);
     let bursts = env_or("TRIALS", GATE_BURSTS);
     assert!(bursts > 0, "TRIALS must be at least 1");
     let base = load();
@@ -463,7 +503,7 @@ fn level_gate() {
     let mut failed = Vec::new();
     for mode in &modes {
         let m = modem(mode);
-        for &target in &targets {
+        for target in Target::all(&m, &specs) {
             let p = base.point(mode, target);
             let case = Case::new(&m, mode, target);
             let margin = target.margin();
@@ -508,10 +548,23 @@ fn rate_at_interpolates_in_log_and_clamps() {
 
 #[test]
 fn targets_parse() {
-    let t: Vec<Target> = "h, 0,6".split(',').map(|s| s.trim().parse().unwrap()).collect();
-    assert_eq!(t, [Target::Header, Target::Level(0), Target::Level(6)]);
-    assert!("x".parse::<Target>().is_err());
-    assert!(LEVELS.len().to_string().parse::<Target>().is_err());
+    let s: Vec<Spec> = "h, 0,6".split(',').map(|s| s.trim().parse().unwrap()).collect();
+    assert_eq!(s, [Spec::Header, Spec::Level(0), Spec::Level(6)]);
+    assert!("x".parse::<Spec>().is_err());
+    assert!(LEVELS.len().to_string().parse::<Spec>().is_err());
+}
+
+/// The header is measured at every drive a mode sends, once each.
+#[test]
+fn header_at_every_drive() {
+    for mode in ALL_MODES.split(',') {
+        let m = modem(mode);
+        let levels = drive_levels(&m);
+        assert_eq!(levels[0], 0);
+        let mut drives: Vec<f32> = (0..LEVELS.len() as u8).map(|l| m.tx_rms(l)).collect();
+        drives.dedup();
+        assert_eq!(levels.iter().map(|&l| m.tx_rms(l)).collect::<Vec<_>>(), drives, "{mode}");
+    }
 }
 
 /// The committed baseline holds one consistent point per mode for the header and
@@ -522,19 +575,26 @@ fn baseline_covers_every_mode_and_level() {
     let base = load();
     let recorded = (base.source.codewords, base.source.headers_per_burst);
     assert_eq!(recorded, (CODEWORDS, HEADERS_PER_BURST), "{BASELINE} was recorded with other bursts: record it again");
-    let modes: Vec<&str> = ALL_MODES.split(',').collect();
-    assert_eq!(base.header.len(), modes.len(), "{BASELINE}: header entries for unknown modes");
-    assert_eq!(base.level.len(), modes.len() * LEVELS.len(), "{BASELINE}: entries for unknown modes or levels");
-    let targets: Vec<Target> = ALL_TARGETS.split(',').map(|s| s.parse().unwrap()).collect();
-    assert_eq!(targets.len(), LEVELS.len() + 1, "ALL_TARGETS does not list every level");
-    for mode in modes {
-        for &target in &targets {
+    let specs: Vec<Spec> = ALL_TARGETS.split(',').map(|s| s.parse().unwrap()).collect();
+    assert_eq!(specs.len(), LEVELS.len() + 1, "ALL_TARGETS does not list every level");
+    let (mut headers, mut levels) = (0, 0);
+    for mode in ALL_MODES.split(',') {
+        let m = modem(mode);
+        for target in Target::all(&m, &specs) {
+            match target {
+                Target::Header(_) => headers += 1,
+                Target::Level(_) => levels += 1,
+            }
             let p = base.point(mode, target);
             let at = format!("{BASELINE}: {}", target.label(mode));
             assert_eq!(p.name, target.name(), "{at} is named {:?}", p.name);
+            // A changed drive table moves the points: record them again.
+            assert_eq!(p.drive, m.tx_rms(target.level()), "{at} was recorded at another drive");
             check_point(&at, &p.grid_db, &p.rate, p.cnr_db, TARGET_RATE, target.margin());
         }
     }
+    assert_eq!(base.header.len(), headers, "{BASELINE}: header entries for unknown modes or drives");
+    assert_eq!(base.level.len(), levels, "{BASELINE}: entries for unknown modes or levels");
 }
 
 /// A recorded point is the crossing of its own grid, and the gate's two points lie
