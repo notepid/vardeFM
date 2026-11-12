@@ -25,10 +25,10 @@
 //! `HEADER_REFERENCE_SNR_DB`) agrees within `HEADER_LEVEL_TOLERANCE_DB` at every
 //! drive.
 //!
-//! A burst decodes only if both its header and its codewords do. At level 0's drive
-//! the header's point lies above level 0's, so there the header limits a burst, and
-//! its curve is far shallower than any level's: at level 1's point a few per cent of
-//! headers still fail.
+//! A burst decodes only if both its header and its codewords do. At every drive the
+//! header's point lies below the codewords' of the levels sent at it (about 1 dB
+//! below level 0's), and its curve falls about as steeply as level 0's, so the
+//! codewords, not the header, limit a burst.
 //!
 //! What the gate does not cover:
 //! - The receiver's SNR estimate, which the link's rate thresholds
@@ -46,7 +46,7 @@
 //! `perf/levels.toml` holds, per mode and drive, the CNR at which the HER crosses
 //! 10 % and, per mode and level, the CNR at which the CER does. `level_gate` fails
 //! when a point has moved by more than its margin (`GATE_MARGIN_DB`, `HEADER_MARGIN_DB` for the
-//! shallower header curve): the rate must be below 10 % that far above the point and
+//! header): the rate must be below 10 % that far above the point and
 //! above 10 % that far below. Each point decodes `GATE_BURSTS` bursts
 //! of up to `CODEWORDS` codewords, or `HEADERS_PER_BURST` times as many headers.
 //! Results do not depend on the number of threads. They may differ in the last bits
@@ -76,13 +76,11 @@ use vardefm_dsp::prng::Prng;
 const TARGET_RATE: f32 = 0.1;
 /// The gate measures this far either side of a level's recorded point, dB.
 const GATE_MARGIN_DB: f32 = 0.25;
-/// ... and this far for the header. Its curve falls only by about a factor of 1.5
-/// per 0.25 dB around the point, so at `GATE_MARGIN_DB` the gate's rate above the
-/// point would sit about 3 to 5 sigma (0.75 %) below 10 %, too near for a sample
-/// that is not a replay. At 0.35 dB, on the recorded grids, it sits about 4.5 to 6
-/// sigma below (least at wide mode's level 0 drive), and the rate below the point
-/// 8 sigma or more above.
-const HEADER_MARGIN_DB: f32 = 0.35;
+/// ... and this far for the header. Its curve falls by a factor of about 2.5 per
+/// 0.25 dB around the point (it was far shallower before the header's channel fit,
+/// and its margin 0.35 dB), so on the recorded grids the gate's rate sits about 7.5
+/// sigma (0.75 %) or more below 10 % above the point, and 14 sigma above it below.
+const HEADER_MARGIN_DB: f32 = 0.25;
 /// Bursts per point of the gate. With 4 codewords per burst (2 at narrow level 0),
 /// the binomial sigma at 10 % CER is 1.5 % (2.1 %). That takes codewords as
 /// independent, which they are not quite: the interleaver spreads each codeword
@@ -115,9 +113,8 @@ const ALL_TARGETS: &str = "h,0,1,2,3,4,5,6";
 /// Codewords per burst, or fewer where a level's burst holds fewer (2 at narrow
 /// level 0).
 const CODEWORDS: usize = 4;
-/// Headers measured for each burst of a level. The header's shallow curve needs
-/// more decisions than a level's: 1600 per gate point put sigma at 0.75 %. Header
-/// trials send bursts of one codeword, so they are cheap.
+/// Headers measured for each burst of a level: 1600 per gate point put sigma at
+/// 0.75 %. Header trials send bursts of one codeword, so they are cheap.
 const HEADERS_PER_BURST: u32 = 16;
 
 /// Seed of the header fields that header trials draw, mixed with the trial.
@@ -718,9 +715,9 @@ const HEADER_LEVEL_TOLERANCE_DB: f32 = 0.1;
 /// `header_level_depends_only_on_drive`.
 const HEADER_LEVEL_TRIALS: u32 = 32;
 /// SNR at which clipping distortion is weighed against channel noise, dB. The
-/// receiver's estimate on the header at the recorded header points is about -2 dB
-/// (median) and at most about 1 dB (90th percentile); a higher value weighs the
-/// distortion more.
+/// receiver's estimate on the header at the header points was about -2 dB (median)
+/// and at most about 1 dB (90th percentile) before the header's channel fit; the
+/// points now lie about 1.7 dB lower. A higher value weighs the distortion more.
 const HEADER_REFERENCE_SNR_DB: f32 = 3.0;
 
 /// What the receiver gets of the header's symbol bodies (the cyclic prefix is
