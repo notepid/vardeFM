@@ -27,8 +27,10 @@
 //!
 //! A burst decodes only if both its header and its codewords do. At every drive the
 //! header's point lies below the codewords' of the levels sent at it (about 1 dB
-//! below level 0's), and its curve falls about as steeply as level 0's, so the
-//! codewords, not the header, limit a burst.
+//! below level 0's), so the codewords, not the header, limit a burst. Its curve
+//! falls by about 2.5 times per 0.25 dB around the point, far steeper than before
+//! the header's channel fit (1.5 times) but still shallower than level 0's (4 to
+//! 100 times), so near level 0's point a few in a thousand headers still fail.
 //!
 //! What the gate does not cover:
 //! - The receiver's SNR estimate, which the link's rate thresholds

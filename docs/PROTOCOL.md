@@ -133,8 +133,8 @@ error rate: on the noiseless transmitted header, the useful level less the clipp
 distortion, counted as noise at a 3 dB reference SNR, agrees within 0.1 dB
 (`header_level_depends_only_on_drive`). At level 0's drive the header reaches 10 %
 header errors at about 2.0 dB (narrow) and 4.1 dB (wide), about 1 dB below level 0's
-point, and its error rate falls about as steeply, so the payload, not the header, limits
-a burst. At the lower drives of the high levels it needs up to about 0.5 dB (narrow) and
+point, so the payload, not the header, limits a burst; its error rate falls more slowly
+than the payload's, and near level 0's point a few in a thousand headers still fail. At the lower drives of the high levels it needs up to about 0.5 dB (narrow) and
 1.7 dB (wide) more, still far below those levels' own points. Detection is
 not part of either. Below about 8 dB (narrow) and 11 dB (wide) some level 1 bursts are
 not detected at all.

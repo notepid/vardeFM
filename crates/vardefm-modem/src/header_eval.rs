@@ -7,10 +7,11 @@
 //!   the header fit;
 //! - `fitN`: a Legendre fit of order N across carriers to preamble B and the
 //!   header's pilots (`Ofdm::demodulate_header` uses one order of it);
-//! - `loo`: a genie that knows the header. Symbol `i` is equalized with an estimate
-//!   trained on preamble B and every other header symbol, smoothed, so no symbol
-//!   trains on its own noise. It shows how much an estimate from this burst can
-//!   give, short of knowing the channel.
+//! - `loo`: a reference that knows the header. Symbol `i` is equalized with the
+//!   smoothed estimate trained on preamble B and every other header symbol, so no
+//!   symbol trains on its own noise. It is not a limit: it takes the timing slope
+//!   from neighbouring carriers, as the smoothed estimate does, and below about
+//!   2 dB (narrow) and 4 dB (wide) the fit beats it.
 //!
 //! `cargo test --release -p vardefm-modem header_estimator_eval -- --ignored --nocapture`
 //!
@@ -49,6 +50,7 @@ fn header_loo(m: &Modem, rx: &[f32], b: usize, sent: &Header) -> Option<Header> 
 fn header_estimator_eval() {
     let modes = env_modes("narrow,wide");
     let trials: u32 = env_or("TRIALS", 1600);
+    assert!(trials > 0, "TRIALS must be at least 1");
     let orders: Vec<usize> = env_list("ORDERS", "2,4");
     let mut names = vec!["smooth".to_string(), "loo".to_string()];
     names.extend(orders.iter().map(|o| format!("fit{o}")));

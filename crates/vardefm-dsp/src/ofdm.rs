@@ -355,20 +355,30 @@ impl Ofdm {
         if nsym == 0 {
             return None;
         }
-        let l = self.p.symbol_len() as isize;
-        // Centre the FFT window in the cyclic prefix. That leaves ncp/2 samples of
-        // slack each way for sound-card clock drift without ever moving the window.
-        let base = b_start as isize - (self.p.ncp / 2) as isize;
-
-        let yb = self.carriers_at(rx, base)?;
-        let ys: Vec<Vec<Complex32>> =
-            (0..nsym).map(|i| self.carriers_at(rx, base + (i as isize + 1) * l)).collect::<Option<_>>()?;
-
+        let (base, yb, ys) = self.frame_carriers(rx, b_start, nsym)?;
         let (hb, est_noise) = match est {
             Estimator::Smooth => self.estimate_smooth(&yb, &ys, known),
             Estimator::Fit { order } => self.estimate_fit(&yb, &ys, known, order),
         };
         self.equalize(ys, hb, &est_noise, base, nsym)
+    }
+
+    /// The carriers of preamble B and of `nsym` symbols after it, for a frame whose
+    /// preamble B body starts at `b_start`, with the window start of preamble B.
+    fn frame_carriers(
+        &self,
+        rx: &[f32],
+        b_start: usize,
+        nsym: usize,
+    ) -> Option<(isize, Vec<Complex32>, Vec<Vec<Complex32>>)> {
+        let l = self.p.symbol_len() as isize;
+        // Centre the FFT window in the cyclic prefix. That leaves ncp/2 samples of
+        // slack each way for sound-card clock drift without ever moving the window.
+        let base = b_start as isize - (self.p.ncp / 2) as isize;
+        let yb = self.carriers_at(rx, base)?;
+        let ys: Vec<Vec<Complex32>> =
+            (0..nsym).map(|i| self.carriers_at(rx, base + (i as isize + 1) * l)).collect::<Option<_>>()?;
+        Some((base, yb, ys))
     }
 
     /// Channel estimate from preamble B and the known symbols, averaged and smoothed
@@ -445,9 +455,10 @@ impl Ofdm {
     ///
     /// The fit takes the noise as equal on every carrier, so on a carrier quieter
     /// than the band's average the estimate's noise relative to the carrier's own is
-    /// understated. It stays small: the estimate's noise is about (order + 1) / 140
-    /// of one symbol's on average, so even a carrier 3 times quieter than the
-    /// average sees about 0.1, against the symbol's own 1.
+    /// understated. It stays small: at order 4 the estimate's noise is about 0.03 of
+    /// one symbol's on average and 0.08 on the edge carriers, where the fit leans
+    /// most, so even an edge carrier 3 times quieter than the average (in wide mode
+    /// the quiet carriers are the low ones) sees about 0.25, against its own 1.
     fn estimate_fit(
         &self,
         yb: &[Complex32],
@@ -456,6 +467,9 @@ impl Ofdm {
         order: usize,
     ) -> (Vec<Complex32>, Vec<f32>) {
         let nc = self.p.num_carriers;
+        // The pilots alone must pin every coefficient; more would leave the fit to
+        // preamble B's noise between them, and from nc on it is singular.
+        assert!(order < self.pilot_idx.len(), "fit order {order} needs more than the {} pilots", self.pilot_idx.len());
         // One group of (carrier, observation) per training symbol: preamble B, each
         // known symbol whole, the pilots of each unknown one.
         let mut groups: Vec<Vec<(usize, Complex32)>> = vec![(0..nc).map(|k| (k, yb[k] / self.pre_b[k])).collect()];
@@ -497,16 +511,21 @@ impl Ofdm {
         // Through the fit, one symbol hit by an FM click would bend the estimate on
         // every carrier. As in `training_weights`, each symbol is weighted by the
         // inverse of its noise against the first fit once that noise is well above
-        // the typical level. In the channel simulator this changes nothing measurable;
-        // it guards against radios that click harder.
+        // the typical level. In the channel simulator it weights some symbol down in
+        // about 55-60 % of narrow headers near their 10 % point (FM clicks below
+        // threshold) and about 10 % of wide ones, and in about half of all headers
+        // at 30 dB CNR, where clipping distortion sets the residual; header error
+        // rates are the same as without it at every CNR measured (1.5 to 30 dB).
         // Every group is measured on the pilot carriers only: preamble B also covers
         // the band edges, where the fit's own bias would otherwise read as noise. And a
         // residual 30 dB below the channel is no click, however it compares.
-        let pilot = |k: usize| self.pilot_idx.binary_search(&k).is_ok();
+        let mut is_pilot = vec![false; nc];
+        self.pilot_idx.iter().for_each(|&k| is_pilot[k] = true);
         let e: Vec<f32> = groups
             .iter()
             .map(|g| {
-                let r: Vec<f32> = g.iter().filter(|&&(k, _)| pilot(k)).map(|&(k, o)| (o - hb[k]).norm_sqr()).collect();
+                let r: Vec<f32> =
+                    g.iter().filter(|&&(k, _)| is_pilot[k]).map(|&(k, o)| (o - hb[k]).norm_sqr()).collect();
                 r.iter().sum::<f32>() / r.len().max(1) as f32
             })
             .collect();
@@ -713,6 +732,7 @@ fn invert(mut a: Vec<Vec<f64>>) -> Vec<Vec<f64>> {
         a.swap(c, piv);
         inv.swap(c, piv);
         let d = a[c][c];
+        assert!(d.is_finite() && d.abs() > 1e-12, "singular normal equations (pivot {d})");
         for j in 0..n {
             a[c][j] /= d;
             inv[c][j] /= d;
@@ -889,6 +909,52 @@ mod tests {
         assert!((s + 0.39).abs() < 0.01, "slope {s}");
     }
 
+    /// Slope from neighbouring carriers, weighted by the smaller count, as the fit
+    /// first took it: what `delay_search` replaced.
+    fn neighbour_slope(h: &[Complex32], w: &[f32]) -> f32 {
+        (1..h.len()).map(|k| h[k] * h[k - 1].conj() * w[k].min(w[k - 1])).sum::<Complex32>().arg()
+    }
+
+    #[test]
+    fn delay_search_holds_up_at_the_headers_snr() {
+        // Narrow mode's header: preamble B on every carrier plus 10 pilot
+        // observations on every 6th, each at Es/N0 -5 dB, around a 0.39 rad/carrier
+        // slope. Gaussian noise from the Box-Muller transform.
+        let (nc, slope) = (49, -0.39f32);
+        let w: Vec<f32> = (0..nc).map(|k| if k % 6 == 0 { 11.0 } else { 1.0 }).collect();
+        let sigma = 10f32.powf(5.0 / 20.0) / SQRT_2;
+        let mut rng = Prng::new(77);
+        let mut uniform = || (rng.next_u32() as f32 + 1.0) / 4_294_967_296.0;
+        let pi = std::f32::consts::PI;
+        let wrap = |d: f32| (d + pi).rem_euclid(2.0 * pi) - pi;
+        let (mut search_err, mut neighbour_err) = (0f32, 0f32);
+        let trials = 200;
+        for _ in 0..trials {
+            let h: Vec<Complex32> = (0..nc)
+                .map(|k| {
+                    let r = (-2.0 * uniform().ln()).sqrt() * sigma / w[k].sqrt();
+                    let t = 2.0 * pi * uniform();
+                    Complex32::from_polar(1.0, slope * k as f32) + Complex32::from_polar(r, t)
+                })
+                .collect();
+            search_err += wrap(delay_search(&h, &w) - slope).powi(2);
+            neighbour_err += wrap(neighbour_slope(&h, &w) - slope).powi(2);
+        }
+        let (search, neighbour) = ((search_err / trials as f32).sqrt(), (neighbour_err / trials as f32).sqrt());
+        println!("rms slope error: search {search:.3}, neighbours {neighbour:.3} rad/carrier");
+        // 0.02 rad/carrier is 1 rad at the band's far end.
+        assert!(search < 0.02, "search: {search}");
+        assert!(search < neighbour / 3.0, "search {search}, neighbours {neighbour}");
+    }
+
+    #[test]
+    #[should_panic(expected = "needs more than")]
+    fn fit_order_beyond_the_pilots_is_refused() {
+        let ofdm = Ofdm::new(OfdmParams::narrow());
+        let rx = vec![0.0; 40 * ofdm.p.symbol_len()];
+        let _ = ofdm.demodulate_with(&rx, 2 * ofdm.p.symbol_len(), 10, &[], Estimator::Fit { order: 9 });
+    }
+
     #[test]
     fn header_fit_decodes_a_clean_frame() {
         for p in [OfdmParams::narrow(), OfdmParams::wide()] {
@@ -909,11 +975,7 @@ mod tests {
 
     /// The header fit's channel estimate for the frame at `b`.
     fn header_estimate(ofdm: &Ofdm, rx: &[f32], b: usize, nsym: usize) -> Vec<Complex32> {
-        let l = ofdm.p.symbol_len() as isize;
-        let base = b as isize - (ofdm.p.ncp / 2) as isize;
-        let yb = ofdm.carriers_at(rx, base).unwrap();
-        let ys: Vec<Vec<Complex32>> =
-            (0..nsym).map(|i| ofdm.carriers_at(rx, base + (i as isize + 1) * l).unwrap()).collect();
+        let (_, yb, ys) = ofdm.frame_carriers(rx, b, nsym).unwrap();
         ofdm.estimate_fit(&yb, &ys, &[], HEADER_FIT_ORDER).0
     }
 
@@ -953,14 +1015,21 @@ mod tests {
             let mut chain = Chain::bandpass4(ofdm.p.fs, lo, hi);
             chain.process_buf(&mut rx);
             let b = ofdm.detect(&rx, 0).expect("frame not detected");
-            let frame = ofdm.demodulate_header(&rx, b, data.len()).expect("demod failed");
-            let n = frame.symbols.iter().flatten().count() as f32;
-            let err = frame.symbols.iter().flatten().zip(data.iter().flatten()).map(|(g, s)| (g - s).norm_sqr());
-            let rms_db = 10.0 * (err.sum::<f32>() / n).log10();
-            println!("{}: error {rms_db:.1} dB", ofdm.p.name);
-            // Far below the header's noise at its 10 % point (Es/N0 about -5 dB). At the
-            // edges of so steep a band the old smoothed estimate erred as much.
-            assert!(rms_db < -20.0, "{}: error {rms_db:.1} dB", ofdm.p.name);
+            let error_db = |f: Frame| {
+                let n = f.symbols.iter().flatten().count() as f32;
+                let err = f.symbols.iter().flatten().zip(data.iter().flatten()).map(|(g, s)| (g - s).norm_sqr());
+                10.0 * (err.sum::<f32>() / n).log10()
+            };
+            let fit = error_db(ofdm.demodulate_header(&rx, b, data.len()).expect("demod failed"));
+            let smooth = error_db(ofdm.demodulate(&rx, b, data.len()).expect("demod failed"));
+            println!("{}: error {fit:.1} dB, smoothed estimate {smooth:.1} dB", ofdm.p.name);
+            // On a clean channel the fit's bias at these edges is larger than the old
+            // smoothed estimate's, which follows them carrier by carrier: about -31.6
+            // against -35.6 dB (narrow) and -22.5 against -23.9 dB (wide). Both are far
+            // below the header's noise at its 10 % point (Es/N0 about -5 dB). The bounds
+            // catch a fit that loses the edges, not a change of a dB.
+            assert!(fit < -20.0, "{}: error {fit:.1} dB", ofdm.p.name);
+            assert!(fit < smooth + 6.0, "{}: error {fit:.1} dB, smoothed {smooth:.1} dB", ofdm.p.name);
         }
     }
 
