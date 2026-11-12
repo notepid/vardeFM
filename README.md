@@ -152,7 +152,7 @@ level's 10 % codeword error point or the 10 % header error point at one of a mod
 drive levels (`crates/vardefm-modem/perf/levels.toml`), or a code's 1 % FER point
 (`crates/vardefm-fec/perf/ldpc.toml`), has moved. Times are from a 14-thread laptop:
 ```sh
-cargo test --release -p vardefm-modem level_gate -- --ignored --nocapture   # about 40 s
+cargo test --release -p vardefm-modem level_gate -- --ignored --nocapture   # about 45 s
 cargo test --release -p vardefm-fec fer_gate -- --ignored --nocapture       # about 7 s
 ```
 A deliberate change records new points in the same PR. Commit the code first, so the
