@@ -907,12 +907,6 @@ mod tests {
         }
     }
 
-    /// Worst error of the equalized symbols against `data`, skipping symbol `skip`.
-    fn worst_error(frame: &Frame, data: &[Vec<Complex32>], skip: Option<usize>) -> f32 {
-        let rows = frame.symbols.iter().zip(data).enumerate().filter(|(i, _)| Some(*i) != skip);
-        rows.flat_map(|(_, (got, sent))| got.iter().zip(sent).map(|(g, s)| (g - s).norm())).fold(0.0, f32::max)
-    }
-
     /// The header fit's channel estimate for the frame at `b`.
     fn header_estimate(ofdm: &Ofdm, rx: &[f32], b: usize, nsym: usize) -> Vec<Complex32> {
         let l = ofdm.p.symbol_len() as isize;
