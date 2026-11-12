@@ -47,14 +47,14 @@ pub(crate) const DETECTORS: &[(&str, DetectFn)] = &[("sc", |m, rx, from| m.ofdm.
 /// Leader length used by the evaluation, seconds (the `vardefm modem` default).
 const TXDELAY: f32 = 0.15;
 
-fn modem(mode: &str) -> Arc<Modem> {
+pub(crate) fn modem(mode: &str) -> Arc<Modem> {
     let mut m = Modem::new(OfdmParams::by_name(mode).unwrap(), TXDELAY);
     // Trials already run on every core.
     m.decode_threads = 1;
     Arc::new(m)
 }
 
-fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
+pub(crate) fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
     let mut rng = Prng::new(seed);
     let n = Modem::payload_bytes(level);
     Burst {
@@ -64,7 +64,7 @@ fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
 }
 
 /// The header of the burst whose preamble B starts at `b`, if it decodes.
-fn header_at(m: &Modem, rx: &[f32], b: usize) -> Option<Header> {
+pub(crate) fn header_at(m: &Modem, rx: &[f32], b: usize) -> Option<Header> {
     m.ofdm.demodulate(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f))
 }
 
@@ -122,7 +122,7 @@ struct Trial {
 }
 
 /// Payload seed of trial `t`: every trial sends its own data, the same at every CNR.
-fn payload_seed(t: u32) -> u32 {
+pub(crate) fn payload_seed(t: u32) -> u32 {
     1 + t
 }
 
@@ -133,11 +133,24 @@ fn channel_seed(cnr: f32, t: u32) -> u64 {
     (((cnr * 100.0).round() as i64 as u64) << 32) | t as u64
 }
 
-fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> Trial {
+/// The `level` burst of `ncw` codewords that trial `t` sends, and the audio the
+/// receiver gets from the `mode` channel at `cnr` dB.
+pub(crate) fn received(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, t: u32) -> (Burst, Vec<f32>) {
     let sent = burst(level, ncw, payload_seed(t));
+    let rx = through_channel(m, mode, cnr, &sent, t);
+    (sent, rx)
+}
+
+/// The audio the receiver gets when trial `t` sends `sent` over the `mode` channel
+/// at `cnr` dB.
+pub(crate) fn through_channel(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: u32) -> Vec<f32> {
     let cfg =
         FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..FmChannelConfig::by_name(mode).unwrap() };
-    let rx = transmit(&cfg, &m.modulate(&sent));
+    transmit(&cfg, &m.modulate(sent))
+}
+
+fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> Trial {
+    let (sent, rx) = received(m, mode, cnr, level, ncw, t);
     let tol = m.ofdm.p.ncp / 4;
     let det = DETECTORS
         .iter()
@@ -153,31 +166,31 @@ fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t
 /// Where preamble B of a `level` burst of `ncw` codewords lands after the channel.
 /// The channel's delays depend neither on its noise nor on the payload (the burst
 /// layout is fixed by level and size), so one noiseless copy gives it for every trial.
-fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
+pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
     let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
     let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
     m.ofdm.detect(&transmit(&clean, &tx), 0).expect("burst not found on a clean channel")
 }
 
-/// Run `trials` trials of a `level` burst of `ncw` codewords on every core.
-fn run_trials(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, trials: u32) -> Vec<Trial> {
-    let truth = true_position(m, mode, level, ncw);
+/// `f(t)` for every trial `t` in `0..trials`, spread over every core, in trial
+/// order. Each trial seeds itself, so the result does not depend on the threads.
+pub(crate) fn on_every_core<R: Send>(trials: u32, f: impl Fn(u32) -> R + Sync) -> Vec<R> {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as u32;
-    let mut out: Vec<(u32, Trial)> = std::thread::scope(|s| {
+    let f = &f;
+    let mut out: Vec<(u32, R)> = std::thread::scope(|s| {
         let workers: Vec<_> = (0..threads)
-            .map(|th| {
-                s.spawn(move || {
-                    (th..trials)
-                        .step_by(threads as usize)
-                        .map(|t| (t, trial(m, mode, cnr, level, ncw, truth, t)))
-                        .collect::<Vec<_>>()
-                })
-            })
+            .map(|th| s.spawn(move || (th..trials).step_by(threads as usize).map(|t| (t, f(t))).collect::<Vec<_>>()))
             .collect();
         workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
     });
     out.sort_by_key(|(t, _)| *t);
     out.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Run `trials` trials of a `level` burst of `ncw` codewords on every core.
+fn run_trials(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, trials: u32) -> Vec<Trial> {
+    let truth = true_position(m, mode, level, ncw);
+    on_every_core(trials, |t| trial(m, mode, cnr, level, ncw, truth, t))
 }
 
 /// Two-sided exact McNemar p-value for `b` and `c` discordant pairs.
@@ -198,10 +211,40 @@ fn mcnemar(b: u32, c: u32) -> f64 {
 
 /// Environment variable `name` parsed as `T`, or `default` when unset. A value that
 /// does not parse stops the run: falling back would quietly run something else.
-fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+pub(crate) fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
     match std::env::var(name) {
         Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} does not parse")),
         Err(_) => default,
+    }
+}
+
+/// Environment variable `name` as a comma-separated list of `T`, or `default` when
+/// unset. As with [`env_or`], an item that does not parse stops the run.
+pub(crate) fn env_list<T: std::str::FromStr>(name: &str, default: &str) -> Vec<T>
+where
+    T::Err: std::fmt::Display,
+{
+    let v = std::env::var(name).unwrap_or_else(|_| default.to_string());
+    v.split(',').map(|s| s.trim().parse().unwrap_or_else(|e| panic!("{name}: {s:?}: {e}"))).collect()
+}
+
+/// `MODES` as a list, `default` when unset, each checked to be a mode up front so
+/// that a typo does not fail after the first mode has run.
+pub(crate) fn env_modes(default: &str) -> Vec<String> {
+    let modes: Vec<String> = env_list("MODES", default);
+    for mode in &modes {
+        assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
+    }
+    modes
+}
+
+/// Environment variable `name` as a switch: unset, `0` or `false` is off, `1` or
+/// `true` is on. Anything else stops the run, as with [`env_or`].
+pub(crate) fn env_flag(name: &str) -> bool {
+    match std::env::var(name).as_deref().map(str::trim) {
+        Err(_) | Ok("0" | "false") => false,
+        Ok("1" | "true") => true,
+        Ok(v) => panic!("{name}={v:?}: use 1 or 0"),
     }
 }
 
@@ -273,7 +316,7 @@ fn false_detections(m: &Modem, f: DetectFn, rx: &[f32]) -> (u32, u32) {
 #[test]
 #[ignore]
 fn detector_eval() {
-    let modes: String = env_or("MODES", "narrow,wide".to_string());
+    let modes = env_modes("narrow,wide");
     let trials: u32 = env_or("TRIALS", 100);
     let level: u8 = env_or("LEVEL", 1);
     let ncw: usize = env_or("NCW", 1);
@@ -281,15 +324,10 @@ fn detector_eval() {
     assert!((level as usize) < LEVELS.len(), "LEVEL {level}: levels are 0 to {}", LEVELS.len() - 1);
     assert!(trials > 0, "TRIALS must be at least 1");
     assert!(noise_s > 0.0, "NOISE_SECONDS={noise_s}: must be more than 0");
-    // Checked up front, so that a typo does not fail after the first mode has run.
-    let modes: Vec<&str> = modes.split(',').map(str::trim).collect();
-    for mode in &modes {
-        assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
-    }
+    let modes: Vec<&str> = modes.iter().map(String::as_str).collect();
     let cnr_list = |mode: &str| -> Vec<f32> {
         let default = if mode == "narrow" { "3,4,5,6,7,8,10" } else { "5,6,7,8,9,10,12" };
-        let cnrs: String = env_or("CNRS", default.to_string());
-        cnrs.split(',').map(|c| c.trim().parse().unwrap_or_else(|_| panic!("CNRS: {c:?} is not a number"))).collect()
+        env_list("CNRS", default)
     };
     for mode in &modes {
         cnr_list(mode);
@@ -348,6 +386,12 @@ fn detector_eval() {
             println!("{line}");
         }
     }
+}
+
+#[test]
+fn on_every_core_keeps_trial_order() {
+    assert_eq!(on_every_core(37, |t| t), (0..37).collect::<Vec<_>>());
+    assert!(on_every_core(0, |t| t).is_empty());
 }
 
 /// The harness itself: on a strong signal every detector and the genie decode every

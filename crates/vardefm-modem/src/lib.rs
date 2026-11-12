@@ -211,6 +211,12 @@ impl Modem {
 
     /// Audio for one burst (starts with the leader; ends with the last symbol).
     pub fn modulate(&self, burst: &Burst) -> Vec<f32> {
+        self.ofdm.modulate_with_leader_rms(&self.symbols(burst), self.txdelay, self.tx_rms(burst.header.level))
+    }
+
+    /// The data-carrier values of a burst's header and payload symbols, as
+    /// [`Modem::modulate`] sends them.
+    fn symbols(&self, burst: &Burst) -> Vec<Vec<Complex32>> {
         let h = &burst.header;
         assert_eq!(h.ncw as usize, burst.payload.len());
         let nd = self.ofdm.data_carriers();
@@ -226,7 +232,7 @@ impl Modem {
                 symbols.push(m.map_all(chunk));
             }
         }
-        self.ofdm.modulate_with_leader_rms(&symbols, self.txdelay, self.tx_rms(h.level))
+        symbols
     }
 
     /// The header's data-carrier values, one Vec per OFDM symbol, as transmitted.
@@ -309,3 +315,6 @@ mod busy_eval;
 
 #[cfg(test)]
 mod detect_eval;
+
+#[cfg(test)]
+mod level_eval;

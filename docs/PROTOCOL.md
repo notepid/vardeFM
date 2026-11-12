@@ -115,10 +115,27 @@ carries `k/8 − 4` data bytes followed by a big-endian CRC-32.
 | 6 | 64QAM | 5/6 | 2000 | 246 | 7.4 kbit/s | 18.7 kbit/s |
 
 Net rate = data bytes of a full burst ÷ its airtime (leader, preambles and header
-included), before link-layer overhead. In the FM channel simulator, level 6 decodes
-error-free from about 16.5 dB carrier-to-noise in narrow mode and 24.5 dB in wide mode.
-Level 1 decodes every burst it detects from 4.5 dB (narrow) and 6.5 dB (wide); below
-about 8 dB (narrow) and 11 dB (wide) some bursts are not detected at all.
+included), before link-layer overhead. For each mode and level, the carrier-to-noise
+ratio in the FM channel simulator at which 10 % of codewords fail, decoded from the
+known burst position with the header taken as known, is recorded in
+`crates/vardefm-modem/perf/levels.toml` and checked by the `level_gate` test. That file
+is the reference; roughly, it runs from 3 dB (level 0) to 16 dB (level 6) in narrow
+mode and from 5 dB to 24 dB in wide mode. Error-free decoding begins about half a dB
+higher at the low levels and about 1 dB higher at levels 5 and 6. These are payload
+figures. The header, decoded from preamble B alone, is recorded separately in the same
+file, once per drive level, since a burst goes out at its level's TX RMS (§1.1), header
+included. The header's fields vary from burst to burst, and with them how much of it is
+clipped, so its points are averaged over random field values. That one point per drive
+covers every level and burst length at that drive is an estimate, not a measured header
+error rate: on the noiseless transmitted header, the useful level less the clipping
+distortion, counted as noise at a 3 dB reference SNR, agrees within 0.1 dB
+(`header_level_depends_only_on_drive`). At level 0's drive the header reaches 10 %
+header errors at about 3.7 dB (narrow) and 5.9 dB (wide), above level 0's point, and its
+error rate falls much more slowly than the payload's, so at the low levels the header
+limits a burst. At the lower drives of the high levels it needs up to about 0.5 dB
+(narrow) and 1.4 dB (wide) more, still far below those levels' own points. Detection is
+not part of either. Below about 8 dB (narrow) and 11 dB (wide) some level 1 bursts are
+not detected at all.
 
 ### 2.3 Header (96 bits before coding)
 80 bits of fields, MSB first, then a CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over
@@ -180,9 +197,10 @@ Informative: none of the graphs has a 4-cycle. The header and rate-1/2 graphs ha
 girth 8; the denser high-rate graphs have girth 6. Check degrees differ by at most 2
 within a code. The reference decoder is layered offset min-sum: every
 check-to-variable magnitude is `max(0, min − 0.5)`, with no scaling, for at most 50
-iterations, and input LLRs are clamped to ±40. On BPSK/AWGN with it, frame error rate
-1% is reached at Eb/N0 ≈ 1.5 dB (rate 1/2), 2.1 dB (2/3), 2.6 dB (3/4), 3.3 dB (5/6)
-and 2.2 dB (header).
+iterations, and input LLRs are clamped to ±40. The Eb/N0 at which each code reaches 1 %
+frame error rate with it on BPSK/AWGN is recorded in `crates/vardefm-fec/perf/ldpc.toml`
+and checked by the `fer_gate` test. That file is the reference; roughly, the points are
+1.5 dB (rate 1/2), 2.1 dB (2/3), 2.6 dB (3/4), 3.3 dB (5/6) and 2.2 dB (header).
 
 ### 2.5 Scrambling and interleaving
 - Information bits are XORed with xorshift32 bits before encoding. The seed is
