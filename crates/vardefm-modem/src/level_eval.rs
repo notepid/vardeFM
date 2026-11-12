@@ -717,7 +717,9 @@ const HEADER_LEVEL_TRIALS: u32 = 32;
 /// SNR at which clipping distortion is weighed against channel noise, dB. The
 /// receiver's estimate on the header at the header points was about -2 dB (median)
 /// and at most about 1 dB (90th percentile) before the header's channel fit; the
-/// points now lie about 1.7 dB lower. A higher value weighs the distortion more.
+/// points now lie about 1.7 dB lower, so the SNR there is lower too. A higher value
+/// weighs the distortion more, so 3 dB, now further above it, only makes the check
+/// stricter.
 const HEADER_REFERENCE_SNR_DB: f32 = 3.0;
 
 /// What the receiver gets of the header's symbol bodies (the cyclic prefix is

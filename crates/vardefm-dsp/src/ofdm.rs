@@ -442,6 +442,12 @@ impl Ofdm {
     /// describe it, and the fit averages every observation into each of them. Before
     /// the header has decoded, that brings in the pilots of every header symbol,
     /// which an average per carrier could not use on the data carriers.
+    ///
+    /// The fit takes the noise as equal on every carrier, so on a carrier quieter
+    /// than the band's average the estimate's noise relative to the carrier's own is
+    /// understated. It stays small: the estimate's noise is about (order + 1) / 140
+    /// of one symbol's on average, so even a carrier 3 times quieter than the
+    /// average sees about 0.1, against the symbol's own 1.
     fn estimate_fit(
         &self,
         yb: &[Complex32],
@@ -450,34 +456,68 @@ impl Ofdm {
         order: usize,
     ) -> (Vec<Complex32>, Vec<f32>) {
         let nc = self.p.num_carriers;
-        // Per carrier: the sum of its observations and how many there are.
-        let mut sum: Vec<Complex32> = (0..nc).map(|k| yb[k] / self.pre_b[k]).collect();
-        let mut cnt = vec![1f32; nc];
+        // One group of (carrier, observation) per training symbol: preamble B, each
+        // known symbol whole, the pilots of each unknown one.
+        let mut groups: Vec<Vec<(usize, Complex32)>> = vec![(0..nc).map(|k| (k, yb[k] / self.pre_b[k])).collect()];
         for (i, y) in ys.iter().enumerate() {
-            match known.get(i).copied().flatten() {
-                Some(d) => {
-                    sum.iter_mut().zip(self.known_obs(y, i, d)).for_each(|(s, o)| *s += o);
-                    cnt.iter_mut().for_each(|c| *c += 1.0);
-                }
-                None => {
-                    for (m, &k) in self.pilot_idx.iter().enumerate() {
-                        sum[k] += y[k] * self.pilot_value(i, m);
-                        cnt[k] += 1.0;
-                    }
+            groups.push(match known.get(i).copied().flatten() {
+                Some(d) => self.known_obs(y, i, d).into_iter().enumerate().collect(),
+                None => self.pilot_idx.iter().enumerate().map(|(m, &k)| (k, y[k] * self.pilot_value(i, m))).collect(),
+            });
+        }
+        let basis = legendre_basis(nc, order);
+        let fit_with = |w: &[f32]| {
+            // Per carrier: the weighted sum of its observations and their weight.
+            let mut sum = vec![Complex32::new(0.0, 0.0); nc];
+            let mut cnt = vec![0f32; nc];
+            for (g, &wg) in groups.iter().zip(w) {
+                for &(k, o) in g {
+                    sum[k] += o * wg;
+                    cnt[k] += wg;
                 }
             }
+            let mean: Vec<Complex32> = sum.iter().zip(&cnt).map(|(s, c)| s / c.max(1e-12)).collect();
+            // The timing slope comes from a search that sums all observations
+            // coherently. The phase step between neighbouring carriers (as
+            // `remove_slope` takes it) multiplies two noisy observations, and at the
+            // header's SNR its error, which grows across the band, cost most of what
+            // the fit gains.
+            let slope = delay_search(&mean, &cnt);
+            let flat: Vec<Complex32> =
+                mean.iter().enumerate().map(|(k, &h)| h * Complex32::from_polar(1.0, -slope * k as f32)).collect();
+            let fit = weighted_fit(&basis, &flat, &cnt);
+            let hb: Vec<Complex32> =
+                (0..nc).map(|k| fit.value[k] * Complex32::from_polar(1.0, slope * k as f32)).collect();
+            (hb, fit.variance)
+        };
+        let (hb, var) = fit_with(&vec![1.0; groups.len()]);
+        if groups.len() < 3 {
+            return (hb, var);
         }
-        let mean: Vec<Complex32> = sum.iter().zip(&cnt).map(|(s, c)| s / c).collect();
-        // The timing slope comes from a search that sums all observations coherently.
-        // The phase step between neighbouring carriers (as `remove_slope` takes it)
-        // multiplies two noisy observations, and at the header's SNR its error, which
-        // grows across the band, cost most of what the fit gains.
-        let slope = delay_search(&mean, &cnt);
-        let flat: Vec<Complex32> =
-            mean.iter().enumerate().map(|(k, &h)| h * Complex32::from_polar(1.0, -slope * k as f32)).collect();
-        let fit = weighted_fit(&legendre_basis(nc, order), &flat, &cnt);
-        let hb = (0..nc).map(|k| fit.value[k] * Complex32::from_polar(1.0, slope * k as f32)).collect();
-        (hb, fit.variance)
+        // Through the fit, one symbol hit by an FM click would bend the estimate on
+        // every carrier. As in `training_weights`, each symbol is weighted by the
+        // inverse of its noise against the first fit once that noise is well above
+        // the typical level. In the channel simulator this changes nothing measurable;
+        // it guards against radios that click harder.
+        // Every group is measured on the pilot carriers only: preamble B also covers
+        // the band edges, where the fit's own bias would otherwise read as noise. And a
+        // residual 30 dB below the channel is no click, however it compares.
+        let pilot = |k: usize| self.pilot_idx.binary_search(&k).is_ok();
+        let e: Vec<f32> = groups
+            .iter()
+            .map(|g| {
+                let r: Vec<f32> = g.iter().filter(|&&(k, _)| pilot(k)).map(|&(k, o)| (o - hb[k]).norm_sqr()).collect();
+                r.iter().sum::<f32>() / r.len().max(1) as f32
+            })
+            .collect();
+        let power = self.pilot_idx.iter().map(|&k| hb[k].norm_sqr()).sum::<f32>() / self.pilot_idx.len() as f32;
+        let reference = robust_reference(&e).max(1e-3 * power);
+        let w: Vec<f32> =
+            e.iter().map(|x| x / reference).map(|r| if r > SCALE_THRESHOLD { 1.0 / r } else { 1.0 }).collect();
+        if w.iter().all(|&w| w == 1.0) {
+            return (hb, var);
+        }
+        fit_with(&w)
     }
 
     /// Equalize `ys` with channel estimate `hb` (whose noise per carrier, relative to
@@ -864,6 +904,69 @@ mod tests {
                 assert!((got - sent).norm() < 0.1, "{}: {got} vs {sent}", ofdm.p.name);
             }
             assert!(frame.snr_db > 25.0, "{}: snr {}", ofdm.p.name, frame.snr_db);
+        }
+    }
+
+    /// Worst error of the equalized symbols against `data`, skipping symbol `skip`.
+    fn worst_error(frame: &Frame, data: &[Vec<Complex32>], skip: Option<usize>) -> f32 {
+        let rows = frame.symbols.iter().zip(data).enumerate().filter(|(i, _)| Some(*i) != skip);
+        rows.flat_map(|(_, (got, sent))| got.iter().zip(sent).map(|(g, s)| (g - s).norm())).fold(0.0, f32::max)
+    }
+
+    /// The header fit's channel estimate for the frame at `b`.
+    fn header_estimate(ofdm: &Ofdm, rx: &[f32], b: usize, nsym: usize) -> Vec<Complex32> {
+        let l = ofdm.p.symbol_len() as isize;
+        let base = b as isize - (ofdm.p.ncp / 2) as isize;
+        let yb = ofdm.carriers_at(rx, base).unwrap();
+        let ys: Vec<Vec<Complex32>> =
+            (0..nsym).map(|i| ofdm.carriers_at(rx, base + (i as isize + 1) * l).unwrap()).collect();
+        ofdm.estimate_fit(&yb, &ys, &[], HEADER_FIT_ORDER).0
+    }
+
+    #[test]
+    fn header_fit_shrugs_off_a_click_on_one_symbol() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Bpsk, 10, 4);
+            let mut rx = vec![0.0; 555];
+            rx.extend(ofdm.modulate(&data));
+            rx.extend(vec![0.0; 2000]);
+            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let clean = header_estimate(&ofdm, &rx, b, data.len());
+            // A 1 ms click of 10 times the signal's RMS in header symbol 4.
+            let l = ofdm.p.symbol_len();
+            let at = b + 5 * l - ofdm.p.ncp / 2 + ofdm.p.nfft / 3;
+            let width = (ofdm.p.fs / 1000.0) as usize;
+            rx[at..at + width].iter_mut().for_each(|x| *x += 2.5);
+            let clicked = header_estimate(&ofdm, &rx, b, data.len());
+            // At full weight its pilots would move the estimate on the worst carrier by
+            // 0.26 (narrow) and 1.7 (wide) of the channel; weighted, by 0.0015 and 0.011.
+            let moved = clean.iter().zip(&clicked).map(|(a, c)| (c / a - 1.0).norm()).fold(0.0, f32::max);
+            assert!(moved < 0.03, "{}: the click moves the estimate by {moved}", ofdm.p.name);
+        }
+    }
+
+    #[test]
+    fn header_fit_follows_band_edges_and_timing() {
+        // Steep audio filters just outside the carriers, as on a voice radio, and a
+        // frame that starts at an odd sample.
+        for (p, lo, hi) in [(OfdmParams::narrow(), 300.0, 3000.0), (OfdmParams::wide(), 200.0, 6500.0)] {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Bpsk, 10, 6);
+            let mut rx = vec![0.0; 777];
+            rx.extend(ofdm.modulate(&data));
+            rx.extend(vec![0.0; 2000]);
+            let mut chain = Chain::bandpass4(ofdm.p.fs, lo, hi);
+            chain.process_buf(&mut rx);
+            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let frame = ofdm.demodulate_header(&rx, b, data.len()).expect("demod failed");
+            let n = frame.symbols.iter().flatten().count() as f32;
+            let err = frame.symbols.iter().flatten().zip(data.iter().flatten()).map(|(g, s)| (g - s).norm_sqr());
+            let rms_db = 10.0 * (err.sum::<f32>() / n).log10();
+            println!("{}: error {rms_db:.1} dB", ofdm.p.name);
+            // Far below the header's noise at its 10 % point (Es/N0 about -5 dB). At the
+            // edges of so steep a band the old smoothed estimate erred as much.
+            assert!(rms_db < -20.0, "{}: error {rms_db:.1} dB", ofdm.p.name);
         }
     }
 
