@@ -373,11 +373,12 @@ mod curve {
     use super::*;
     use std::time::Instant;
 
-    /// Frame error rate of `code` at `ebn0_db` (BPSK, AWGN, 50 iterations).
-    /// Trial `t` uses the same data and noise at every Eb/N0, so the points of a
-    /// curve are correlated: the curve is smoother, and a gate's two points are
-    /// paired.
-    fn fer(code: &Ldpc, ebn0_db: f32, trials: u32) -> f32 {
+    /// Frame error rate of `code` at `ebn0_db` (BPSK, AWGN, 50 iterations) over
+    /// trials `first..first + trials`. Trial `t` uses the same data and noise at
+    /// every Eb/N0, so the points of a curve are correlated: the curve is smoother,
+    /// and a gate's two points are paired. The gate starts at `GATE_FIRST_TRIAL`, so
+    /// it draws frames the recorded grid never saw.
+    fn fer(code: &Ldpc, ebn0_db: f32, first: u32, trials: u32) -> f32 {
         let rate = code.k as f32 / code.n as f32;
         let esn0 = ebn0_db + 10.0 * rate.log10();
         let sigma = (0.5 * 10f32.powf(-esn0 / 10.0)).sqrt();
@@ -387,7 +388,7 @@ mod curve {
                 .map(|th| {
                     s.spawn(move || {
                         let mut fail = 0;
-                        for t in (th..trials).step_by(threads as usize) {
+                        for t in (first + th..first + trials).step_by(threads as usize) {
                             let info = Prng::new(1 + t).bits(code.k);
                             let cw = code.encode(&info);
                             let mut rng = Prng::new(1000 + t);
@@ -421,6 +422,10 @@ mod curve {
     /// either side, the header code's FER changes by about a factor of 3 and the
     /// payload codes' by an order of magnitude or more.
     const GATE_TRIALS: u32 = 4000;
+    /// The gate's first trial. Its frames are independent of the recorded grid's
+    /// (trials from 0), so the gate is a fresh sample rather than a replay, and the
+    /// sigma above applies.
+    const GATE_FIRST_TRIAL: u32 = 1 << 20;
     /// Frames per point of the fine grid that `fer_curve` records.
     const RECORD_TRIALS: u32 = 4000;
     /// Half-width of that grid in 0.05 dB steps: ±0.4 dB, so that a coarse crossing
@@ -601,7 +606,7 @@ mod curve {
             let (mut grid, mut rates) = (Vec::new(), Vec::new());
             for i in 0..=16 {
                 let ebn0 = 0.5 + 0.25 * i as f32;
-                let f = fer(&code, ebn0, trials);
+                let f = fer(&code, ebn0, 0, trials);
                 line += &format!(" {ebn0:.2}:{f:.3}");
                 grid.push(ebn0);
                 rates.push(f);
@@ -621,7 +626,7 @@ mod curve {
             // here, before the remaining codes.
             let centre = (coarse * 20.0).round() as i32;
             let measured =
-                fine_grid(centre, 20.0, FINE_STEPS, TARGET_FER, GATE_MARGIN_DB, |e| fer(&code, e, RECORD_TRIALS));
+                fine_grid(centre, 20.0, FINE_STEPS, TARGET_FER, GATE_MARGIN_DB, |e| fer(&code, e, 0, RECORD_TRIALS));
             let (grid, rates, ebn0_db) = measured.unwrap_or_else(|(grid, rates)| {
                 panic!("({n},{k}): the fine grid {grid:?} does not carry the gate: FER {rates:?}")
             });
@@ -665,9 +670,8 @@ mod curve {
         for (name, n, k, seed) in CODES {
             let p = base.point(n, k);
             let code = Ldpc::new(n, k, seed);
-            let above = fer(&code, p.ebn0_db + GATE_MARGIN_DB, trials);
-            let below = fer(&code, p.ebn0_db - GATE_MARGIN_DB, trials);
-            let ok = above < TARGET_FER && below > TARGET_FER;
+            let fer_at = |e| fer(&code, e, GATE_FIRST_TRIAL, trials);
+            let (below, above, ok) = gate(p.ebn0_db, GATE_MARGIN_DB, TARGET_FER, fer_at);
             println!(
                 "{:>6} at {:.2} dB: FER {below:.4} at -{GATE_MARGIN_DB} dB, {above:.4} at +{GATE_MARGIN_DB} dB {}",
                 name,
@@ -679,6 +683,26 @@ mod curve {
             }
         }
         assert!(failed.is_empty(), "1 % FER point moved for {failed:?}");
+    }
+
+    /// The gate's verdict on a point recorded at `point`: `rate` measured `margin`
+    /// dB below and above it, and whether it still crosses `target` between them.
+    fn gate(point: f32, margin: f32, target: f32, mut rate: impl FnMut(f32) -> f32) -> (f32, f32, bool) {
+        let below = rate(point - margin);
+        let above = rate(point + margin);
+        (below, above, above < target && below > target)
+    }
+
+    /// The gate passes a point at the curve's crossing and fails one shifted by
+    /// twice the margin, on either side.
+    #[test]
+    fn gate_fails_a_shifted_point() {
+        // Crosses 1 % at 2.0 dB.
+        let curve = waterfall(1.0);
+        let ok = |point| gate(point, GATE_MARGIN_DB, TARGET_FER, &curve).2;
+        assert!(ok(2.0));
+        assert!(!ok(2.0 - 2.0 * GATE_MARGIN_DB), "a point recorded too low passed");
+        assert!(!ok(2.0 + 2.0 * GATE_MARGIN_DB), "a point recorded too high passed");
     }
 
     #[test]
@@ -704,17 +728,23 @@ mod curve {
     /// on a curve that never crosses, and counts its moves.
     #[test]
     fn fine_grid_moves_until_it_carries_the_gate() {
-        let (per_db, half, margin) = (4.0, 4, 0.5);
+        // `fer_curve`'s grid: 0.05 dB steps, ±0.4 dB, the gate's margin inside.
+        let (per_db, half, target, margin) = (20.0, FINE_STEPS, TARGET_FER, GATE_MARGIN_DB);
+        let grid = |centre, margin, curve: &dyn Fn(f32) -> f32| fine_grid(centre, per_db, half, target, margin, curve);
         let x = |r: FineGrid| r.ok().map(|(_, _, x)| x);
-        // Centred on the crossing (5.5 dB): kept.
-        assert_eq!(x(fine_grid(22, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
+        // Crosses 1 % at 2.0 dB, step 40.
+        let curve = waterfall(1.0);
+        // Centred on the crossing: kept.
+        assert_eq!(x(grid(40, margin, &curve)), Some(2.0));
         // The crossing too near the grid's top end for the gate: moved onto it.
-        assert_eq!(x(fine_grid(19, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
-        // Every rate above 10 %: moved up by half the grid, four times, until it crosses.
-        assert_eq!(x(fine_grid(4, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
-        // Every rate below 10 %: moved down.
-        assert_eq!(x(fine_grid(40, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
-        // A curve that never falls below 10 % (an error floor): gives up.
+        assert_eq!(x(grid(36, margin, &curve)), Some(2.0));
+        // ... and too near its bottom end.
+        assert_eq!(x(grid(44, margin, &curve)), Some(2.0));
+        // Every rate above 1 %: moved up by half the grid, four times, until it crosses.
+        assert_eq!(x(grid(10, margin, &curve)), Some(2.0));
+        // Every rate below 1 %: moved down.
+        assert_eq!(x(grid(70, margin, &curve)), Some(2.0));
+        // A curve that never falls below 1 % (an error floor): gives up.
         let mut calls = 0;
         let budget = (MAX_MOVES as i32 + 1) * (2 * half + 1);
         let floor = |_| {
@@ -722,12 +752,12 @@ mod curve {
             assert!(calls <= budget, "fine_grid measured more than MAX_MOVES moves allow");
             0.5
         };
-        assert!(fine_grid(0, per_db, half, 0.1, margin, floor).is_err());
+        assert!(fine_grid(0, per_db, half, target, margin, floor).is_err());
         // Too far to reach in `MAX_MOVES` moves of half the grid: gives up.
         let far = (MAX_MOVES as i32 + 2) * half;
-        assert!(fine_grid(22 + far, per_db, half, 0.1, margin, waterfall(5.0)).is_err());
+        assert!(grid(40 + far, margin, &curve).is_err());
         // A gate margin wider than the grid can hold: gives up rather than looping.
-        assert!(fine_grid(22, per_db, half, 0.1, 1.5, waterfall(5.0)).is_err());
+        assert!(grid(40, 0.5, &curve).is_err());
     }
 
     /// The committed baseline holds one consistent point per code: the crossing of
@@ -735,6 +765,8 @@ mod curve {
     #[test]
     fn baseline_covers_every_code() {
         let base = load();
+        let c = &base.source.commit;
+        assert!(c != "unknown" && !c.ends_with("-dirty"), "{BASELINE} names no clean commit ({c:?}): record it again");
         assert_eq!(base.code.len(), CODES.len(), "{BASELINE}: entries for unknown codes");
         for (name, n, k, _) in CODES {
             let p = base.point(n, k);
