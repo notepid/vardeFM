@@ -654,11 +654,18 @@ fn header_level_depends_only_on_drive() {
         let drives = drive_levels(&m);
         let mut report = Vec::new();
         let mut worst = 0f32;
+        // The gate's burst at each drive: one codeword at the lowest level there.
+        let gate: Vec<(u8, (f32, f32))> =
+            drives.iter().map(|&d| (d, header_level(&m, d, 1, HEADER_LEVEL_TRIALS))).collect();
         for level in 0..LEVELS.len() as u8 {
-            let measured = *drives.iter().find(|&&d| m.tx_rms(d) == m.tx_rms(level)).unwrap();
-            let reference = effective(header_level(&m, measured, 1, HEADER_LEVEL_TRIALS));
+            let &(measured, at_gate) = gate.iter().find(|(d, _)| m.tx_rms(*d) == m.tx_rms(level)).unwrap();
+            let reference = effective(at_gate);
             for ncw in [1, m.max_ncw(level)] {
-                let (level_db, sdr_db) = header_level(&m, level, ncw, HEADER_LEVEL_TRIALS);
+                let (level_db, sdr_db) = if (level, ncw) == (measured, 1) {
+                    at_gate
+                } else {
+                    header_level(&m, level, ncw, HEADER_LEVEL_TRIALS)
+                };
                 let d = effective((level_db, sdr_db)) - reference;
                 report.push(format!(
                     "L{level} ncw {ncw}: level {level_db:+.3} dB, SDR {sdr_db:.1} dB, {d:+.3} dB against L{measured} ncw 1"
@@ -668,12 +675,8 @@ fn header_level_depends_only_on_drive() {
         }
         assert!(
             worst <= HEADER_LEVEL_TOLERANCE_DB,
-            "{mode}: the header's effective level differs by up to {worst:.3} dB at one drive:
-  {}",
-            report.join(
-                "
-  "
-            )
+            "{mode}: the header's effective level differs by up to {worst:.3} dB at one drive:\n  {}",
+            report.join("\n  ")
         );
     }
 }
