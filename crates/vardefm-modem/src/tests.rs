@@ -365,31 +365,16 @@ fn ctcss_tone_after_our_own_transmission_is_not_busy() {
 /// wide lag of nfft/2 and keeps the metric below threshold; 186.2 Hz is in phase and
 /// starts the plateau in the leader; 141.3 Hz reaches the narrow receiver through an
 /// audio output that passes the sub-tone (the narrow transmit band removes it). The
-/// tone is into the transmitter (`at_tx`) or added to the receiver's output, at
-/// `dev` Hz deviation on the mode's channel.
+/// tone is added as in `detector_eval`'s CTCSS pass, at `dev` Hz deviation on the
+/// mode's channel.
 #[test]
 fn a_burst_with_a_ctcss_tone_decodes() {
     let mut missed = Vec::new();
-    for (mode, f, dev, at_tx) in
-        [("wide", 94.8, 750.0, true), ("wide", 186.2, 1500.0, true), ("narrow", 141.3, 750.0, false)]
-    {
+    for (mode, f, dev) in [("wide", 94.8, 750.0), ("wide", 186.2, 1500.0), ("narrow", 141.3, 750.0)] {
         let m = modem(mode);
         let b = burst(1, 1, 7);
         let cfg = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
-        let rms = dev / cfg.deviation_hz / 2f32.sqrt();
-        let add_tone = |x: &mut Vec<f32>| {
-            let tone = sine(f, rms, x.len(), 0.0);
-            x.iter_mut().zip(tone).for_each(|(x, c)| *x += c);
-        };
-        let mut tx = m.modulate(&b);
-        let audio = if at_tx {
-            add_tone(&mut tx);
-            transmit(&cfg, &tx)
-        } else {
-            let mut audio = transmit(&cfg, &tx);
-            add_tone(&mut audio);
-            audio
-        };
+        let audio = crate::detect_eval::with_ctcss(&m, &cfg, &b, f, dev, 0.0);
         let got = receive(&mut Receiver::new(m.clone()), &audio);
         if !got.iter().any(|g| g.header == b.header && g.payload.first().and_then(|p| p.as_ref()) == b.payload.first())
         {

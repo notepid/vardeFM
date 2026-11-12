@@ -158,25 +158,32 @@ pub(crate) fn through_channel(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: 
 }
 
 /// As [`through_channel`], with a CTCSS tone of `f` Hz at `dev` Hz deviation (relative
-/// to the mode's channel), at a phase that varies with `t`. In wide mode the tone goes
-/// into the transmitter, as from a radio with tone squelch on its data port. The
-/// narrow transmit band would remove it, so in narrow mode it is added to the
-/// receiver's output instead, as from a radio whose audio output passes the sub-tone.
+/// to the mode's channel), at a phase that varies with `t`.
 fn through_channel_with_ctcss(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: u32, f: f32, dev: f32) -> Vec<f32> {
     let cfg =
         FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..FmChannelConfig::by_name(mode).unwrap() };
+    with_ctcss(m, &cfg, sent, f, dev, 0.7 * t as f64)
+}
+
+/// What the receiver gets when `sent` goes over channel `cfg` with a CTCSS tone of
+/// `f` Hz at `dev` Hz deviation (relative to `cfg`), starting at phase `ph`. In wide
+/// mode the tone goes into the transmitter, as from a radio with tone squelch on its
+/// data port. The narrow transmit band would remove it, so in narrow mode it is added
+/// to the receiver's output instead, as from a radio whose audio output passes the
+/// sub-tone.
+pub(crate) fn with_ctcss(m: &Modem, cfg: &FmChannelConfig, sent: &Burst, f: f32, dev: f32, ph: f64) -> Vec<f32> {
     let a = (dev / cfg.deviation_hz) as f64;
-    let (w, ph) = (2.0 * std::f64::consts::PI * f as f64 / m.fs() as f64, 0.7 * t as f64);
+    let w = 2.0 * std::f64::consts::PI * f as f64 / m.fs() as f64;
     let add_tone =
         |x: &mut Vec<f32>| x.iter_mut().enumerate().for_each(|(i, v)| *v += (a * (w * i as f64 + ph).sin()) as f32);
     let mut tx = m.modulate(sent);
-    if mode == "narrow" {
-        let mut rx = transmit(&cfg, &tx);
+    if m.ofdm.p.name == "narrow" {
+        let mut rx = transmit(cfg, &tx);
         add_tone(&mut rx);
         rx
     } else {
         add_tone(&mut tx);
-        transmit(&cfg, &tx)
+        transmit(cfg, &tx)
     }
 }
 
