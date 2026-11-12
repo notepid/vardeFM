@@ -16,8 +16,9 @@
 //! mean power before scaling, so the header's level depends on the drive and hardly
 //! on the burst's length or payload. Clipping, heavy at wide mode's 0.5 drive, does
 //! depend on the header codeword: with one fixed header the useful level at that
-//! drive varied by 0.3 dB between levels and codeword counts. So each header trial
-//! draws the fields that change from burst to burst at random (`trial_header`).
+//! drive varied by 0.3 dB between levels and codeword counts. So each trial draws
+//! the header fields that change from burst to burst at random (`trial_header`);
+//! for a level's codewords, that header is also the channel training.
 //! `header_level_depends_only_on_drive` checks the claim as an estimate, not as a
 //! measured HER: on the noiseless transmitted header, averaged over those draws, the
 //! useful level less the clipping distortion (counted as noise at
@@ -35,6 +36,12 @@
 //! - Long bursts and clock drift: bursts hold up to `CODEWORDS` codewords and the
 //!   channel presets have no clock offset, so pilot tracking over a long burst is
 //!   not exercised.
+//! - Error floors: the gate checks only where a rate crosses 10 %, so a change that
+//!   loses a few per cent of codewords at every CNR (LLR saturation, a demapper
+//!   edge case, a sync slip) still passes.
+//! - `Receiver` itself: the gate repeats its decoding steps (header from preamble
+//!   B, then the codewords with the header as training) rather than calling it, so
+//!   a change to how `Receiver::step` trains or decodes moves no point.
 //!
 //! `perf/levels.toml` holds, per mode and drive, the CNR at which the HER crosses
 //! 10 % and, per mode and level, the CNR at which the CER does. `level_gate` fails
@@ -60,8 +67,8 @@
 
 use super::*;
 use crate::detect_eval::{
-    burst, env_flag, env_list, env_modes, env_or, header_at, modem, on_every_core, payload_seed, received,
-    through_channel, true_position,
+    burst, env_flag, env_list, env_modes, env_or, header_at, modem, on_every_core, payload_seed, through_channel,
+    true_position,
 };
 use vardefm_dsp::prng::Prng;
 
@@ -70,16 +77,24 @@ const TARGET_RATE: f32 = 0.1;
 /// The gate measures this far either side of a level's recorded point, dB.
 const GATE_MARGIN_DB: f32 = 0.25;
 /// ... and this far for the header. Its curve falls only by about a factor of 1.5
-/// per 0.25 dB around the point, so at `GATE_MARGIN_DB` the gate's two rates would sit
-/// within 3 sigma of 10 %.
-const HEADER_MARGIN_DB: f32 = 0.5;
+/// per 0.25 dB around the point, so at `GATE_MARGIN_DB` the gate's rate above the
+/// point would sit about 3 to 5 sigma (0.75 %) below 10 %, too near for a sample
+/// that is not a replay. At 0.35 dB it sits about 5 sigma below, and the rate below
+/// the point 8 sigma or more above.
+const HEADER_MARGIN_DB: f32 = 0.35;
 /// Bursts per point of the gate. With 4 codewords per burst (2 at narrow level 0),
 /// the binomial sigma at 10 % CER is 1.5 % (2.1 %). That takes codewords as
 /// independent, which they are not quite: the interleaver spreads each codeword
 /// over the whole burst, so a click hits all of them, and they share one channel
-/// estimate. The real spread is somewhat larger; the recorded curves clear the
-/// margin by far more than that.
+/// estimate. If a burst's codewords failed together, sigma would be twice that
+/// (1.4 times at narrow level 0), and the level point with the least room, wide
+/// level 6 at +0.25 dB, would sit about 2 sigma below 10 % rather than 4.5. The
+/// sweep's warning uses the independent sigma too.
 const GATE_BURSTS: u32 = 100;
+/// The gate's first trial. Its bursts and noise are independent of the recorded
+/// grid's (trials from 0), so the gate is a fresh sample rather than a replay of
+/// the recording, and the sigmas above apply.
+const GATE_FIRST_TRIAL: u32 = 1 << 20;
 /// Bursts per point of the sweep's fine grid.
 const RECORD_BURSTS: u32 = 200;
 /// Bursts per point of the sweep's coarse search for the crossing.
@@ -265,9 +280,6 @@ struct Case<'a> {
     ncw: usize,
     /// Where preamble B lands, the same in every trial.
     truth: usize,
-    /// The header's carriers, the channel training of a level's codewords; every
-    /// trial sends the same header. Empty for the header itself.
-    training: Vec<Vec<Complex32>>,
 }
 
 impl<'a> Case<'a> {
@@ -278,26 +290,23 @@ impl<'a> Case<'a> {
             Target::Level(l) => m.max_ncw(l).min(CODEWORDS),
         };
         let truth = true_position(m, mode, level, ncw);
-        let training = match target {
-            // The header is decoded without training.
-            Target::Header(_) => Vec::new(),
-            Target::Level(_) => m.header_carriers(&burst(level, ncw, payload_seed(0)).header),
-        };
-        Case { m, mode, target, level, ncw, truth, training }
+        Case { m, mode, target, level, ncw, truth }
     }
 
     /// Failed decisions of trial `t` at `cnr` dB, from the true position: whether
     /// the header fails, or how many codewords do.
     fn errors(&self, cnr: f32, t: u32) -> u32 {
         let (m, ncw) = (self.m, self.ncw);
+        let sent = trial_burst(self.level, ncw, t);
+        let rx = through_channel(m, self.mode, cnr, &sent, t);
         if let Target::Header(_) = self.target {
-            let sent = Burst { header: trial_header(self.level, ncw, t), ..burst(self.level, ncw, payload_seed(t)) };
-            let rx = through_channel(m, self.mode, cnr, &sent, t);
             return u32::from(header_at(m, &rx, self.truth) != Some(sent.header));
         }
-        let (sent, rx) = received(m, self.mode, cnr, self.level, ncw, t);
+        // The sent header's carriers train the channel estimate, as in
+        // `Receiver::step` once the header has decoded.
+        let training = m.header_carriers(&sent.header);
         let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(self.level);
-        let Some(frame) = m.ofdm.demodulate_known(&rx, self.truth, nsym, &self.training) else {
+        let Some(frame) = m.ofdm.demodulate_known(&rx, self.truth, nsym, &training) else {
             return ncw as u32;
         };
         let got = m.decode_payload(&sent.header, &frame);
@@ -313,20 +322,31 @@ impl<'a> Case<'a> {
         }
     }
 
-    /// Error rate over `bursts` bursts' worth of trials at `cnr` dB, on every core.
-    fn rate(&self, cnr: f32, bursts: u32) -> f32 {
+    /// Error rate over `bursts` bursts' worth of trials at `cnr` dB, starting at
+    /// trial `first`, on every core.
+    fn rate(&self, cnr: f32, first: u32, bursts: u32) -> f32 {
         let (trials, decisions) = self.trials(bursts);
-        let errors: u32 = on_every_core(trials, |t| self.errors(cnr, t)).iter().sum();
+        let errors: u32 = on_every_core(trials, |t| self.errors(cnr, first + t)).iter().sum();
         errors as f32 / decisions as f32
     }
 }
 
-/// The header that header trial `t` sends: a data burst of `ncw` codewords at
-/// `level`, with the fields that change from burst to burst in a session drawn at
-/// random. Clipping depends on the header codeword, so a fixed header would measure
-/// one codeword rather than the drive (see the module doc).
+/// The burst that trial `t` sends: `ncw` codewords of payload at `level`, under
+/// [`trial_header`].
+fn trial_burst(level: u8, ncw: usize, t: u32) -> Burst {
+    Burst { header: trial_header(level, ncw, t), ..burst(level, ncw, payload_seed(t)) }
+}
+
+/// The header that trial `t` sends: a data burst of `ncw` codewords at `level`,
+/// with the fields that change from burst to burst in a session drawn at random.
+/// Clipping depends on the header codeword, so a fixed header would measure one
+/// codeword rather than the drive (see the module doc); it also sets the codewords'
+/// channel training.
 fn trial_header(level: u8, ncw: usize, t: u32) -> Header {
-    let mut rng = Prng::new(HEADER_SEED ^ t.wrapping_mul(2));
+    // xorshift is linear: seeds that differ only in their low bits give first
+    // outputs that differ only in theirs. The multiply spreads the trial over all
+    // 32 bits.
+    let mut rng = Prng::new(HEADER_SEED ^ t.wrapping_mul(0x9e37_79b9));
     let mut field = |bits: u32| rng.next_u32() >> (32 - bits);
     Header {
         kind: Kind::Data,
@@ -441,7 +461,7 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
     let label = case.target.label(case.mode);
     let rate_name = case.target.rate_name();
     let mut seen = std::collections::BTreeMap::new();
-    let mut at = |c: i32| *seen.entry(c).or_insert_with(|| case.rate(c as f32, COARSE_BURSTS));
+    let mut at = |c: i32| *seen.entry(c).or_insert_with(|| case.rate(c as f32, 0, COARSE_BURSTS));
     // c ends as the last whole dB at which the rate is still 10 % or more.
     let mut c = start;
     while at(c) < TARGET_RATE {
@@ -457,7 +477,7 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
     // `fine_grid` moves the grid until it carries the gate. A grid that cannot stops
     // the run here, not after the whole sweep.
     let margin = case.target.margin();
-    let measured = fine_grid(c * 4 + 2, 4.0, FINE_STEPS, TARGET_RATE, margin, |g| case.rate(g, bursts));
+    let measured = fine_grid(c * 4 + 2, 4.0, FINE_STEPS, TARGET_RATE, margin, |g| case.rate(g, 0, bursts));
     let (grid, rates, cnr_db) = measured.unwrap_or_else(|(grid, rates)| {
         panic!("{label}: the fine grid {grid:?} does not carry the gate: {rate_name} {rates:?}")
     });
@@ -566,9 +586,7 @@ fn level_gate() {
             let p = base.point(mode, target);
             let case = Case::new(&m, mode, target);
             let margin = target.margin();
-            let below = case.rate(p.cnr_db - margin, bursts);
-            let above = case.rate(p.cnr_db + margin, bursts);
-            let ok = above < TARGET_RATE && below > TARGET_RATE;
+            let (below, above, ok) = gate(p.cnr_db, margin, TARGET_RATE, |c| case.rate(c, GATE_FIRST_TRIAL, bursts));
             println!(
                 "{} at {:.2} dB: {} {below:.3} at -{margin} dB, {above:.3} at +{margin} dB {}",
                 target.label(mode),
@@ -582,6 +600,45 @@ fn level_gate() {
         }
     }
     assert!(failed.is_empty(), "10 % point moved for {failed:?}");
+}
+
+/// The gate's verdict on a point recorded at `point`: `rate` measured `margin` dB
+/// below and above it, and whether it still crosses `target` between them.
+fn gate(point: f32, margin: f32, target: f32, mut rate: impl FnMut(f32) -> f32) -> (f32, f32, bool) {
+    let below = rate(point - margin);
+    let above = rate(point + margin);
+    (below, above, above < target && below > target)
+}
+
+/// The gate passes a point at the curve's crossing and fails one shifted by twice
+/// the margin, on either side, for both margins.
+#[test]
+fn gate_fails_a_shifted_point() {
+    // Crosses 10 % at 5.5 dB.
+    let curve = waterfall(5.0);
+    for margin in [GATE_MARGIN_DB, HEADER_MARGIN_DB] {
+        let ok = |point| gate(point, margin, TARGET_RATE, &curve).2;
+        assert!(ok(5.5), "margin {margin}");
+        assert!(!ok(5.5 - 2.0 * margin), "margin {margin}: a point recorded too low passed");
+        assert!(!ok(5.5 + 2.0 * margin), "margin {margin}: a point recorded too high passed");
+    }
+}
+
+/// Every mode and target decodes nearly everything far above its point and nearly
+/// nothing far below, so the measurement path itself works: trial bursts, the
+/// header's training and decoding from the known position.
+#[test]
+fn measurement_decodes_far_above_and_fails_far_below() {
+    let bursts = 2;
+    for mode in ALL_MODES.split(',') {
+        let m = modem(mode);
+        for target in [Target::Header(0), Target::Level(0), Target::Level(LEVELS.len() as u8 - 1)] {
+            let case = Case::new(&m, mode, target);
+            let label = target.label(mode);
+            assert_eq!(case.rate(40.0, 0, bursts), 0.0, "{label} fails at 40 dB");
+            assert!(case.rate(-5.0, 0, bursts) > 0.9, "{label} decodes at -5 dB");
+        }
+    }
 }
 
 #[test]
@@ -613,6 +670,8 @@ fn fine_grid_moves_until_it_carries_the_gate() {
     assert_eq!(x(fine_grid(22, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
     // The crossing too near the grid's top end for the gate: moved onto it.
     assert_eq!(x(fine_grid(19, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
+    // ... and too near its bottom end.
+    assert_eq!(x(fine_grid(25, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
     // Every rate above 10 %: moved up by half the grid, four times, until it crosses.
     assert_eq!(x(fine_grid(4, per_db, half, 0.1, margin, waterfall(5.0))), Some(5.5));
     // Every rate below 10 %: moved down.
@@ -677,7 +736,7 @@ fn header_level(m: &Modem, level: u8, ncw: usize, trials: u32) -> (f32, f32) {
     let tiny = 1e-3;
     let (mut cl, mut ll, mut cc, mut n) = (0f64, 0f64, 0f64, 0usize);
     for t in 0..trials {
-        let sent = Burst { header: trial_header(level, ncw, t), ..burst(level, ncw, payload_seed(t)) };
+        let sent = trial_burst(level, ncw, t);
         let linear = bodies(&m.ofdm.modulate_with_leader_rms(&m.symbols(&sent), m.txdelay, tiny));
         let clipped = bodies(&m.modulate(&sent));
         let k = (m.tx_rms(level) / tiny) as f64;
@@ -733,6 +792,7 @@ fn header_level_depends_only_on_drive() {
                 worst = worst.max(d.abs());
             }
         }
+        println!("{mode}: the header's effective level differs by up to {worst:.3} dB at one drive");
         assert!(
             worst <= HEADER_LEVEL_TOLERANCE_DB,
             "{mode}: the header's effective level differs by up to {worst:.3} dB at one drive:\n  {}",
@@ -748,8 +808,13 @@ fn header_at_every_drive() {
         let m = modem(mode);
         let levels = drive_levels(&m);
         assert_eq!(levels[0], 0);
-        let mut drives: Vec<f32> = (0..LEVELS.len() as u8).map(|l| m.tx_rms(l)).collect();
-        drives.dedup();
+        // Every distinct drive, in order of the first level sent at it.
+        let mut drives: Vec<f32> = Vec::new();
+        for d in (0..LEVELS.len() as u8).map(|l| m.tx_rms(l)) {
+            if !drives.contains(&d) {
+                drives.push(d);
+            }
+        }
         assert_eq!(levels.iter().map(|&l| m.tx_rms(l)).collect::<Vec<_>>(), drives, "{mode}");
     }
 }
@@ -760,6 +825,8 @@ fn header_at_every_drive() {
 #[test]
 fn baseline_covers_every_mode_and_level() {
     let base = load();
+    let c = &base.source.commit;
+    assert!(c != "unknown" && !c.ends_with("-dirty"), "{BASELINE} names no clean commit ({c:?}): record it again");
     let recorded = (base.source.codewords, base.source.headers_per_burst);
     assert_eq!(recorded, (CODEWORDS, HEADERS_PER_BURST), "{BASELINE} was recorded with other bursts: record it again");
     let specs: Vec<Spec> = ALL_TARGETS.split(',').map(|s| s.parse().unwrap()).collect();
