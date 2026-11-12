@@ -360,25 +360,29 @@ fn ctcss_tone_after_our_own_transmission_is_not_busy() {
     }
 }
 
-/// A burst sent with a CTCSS tone on the carrier decodes. Each case broke the
-/// Schmidl-Cox search before it was high-passed (#12): 94.8 Hz is in antiphase at the
-/// wide lag of nfft/2 and keeps the metric below threshold; 186.2 Hz is in phase and
-/// starts the plateau in the leader; 141.3 Hz reaches the narrow receiver through an
-/// audio output that passes the sub-tone (the narrow transmit band removes it). The
-/// tone is added as in `detector_eval`'s CTCSS pass, at `dev` Hz deviation on the
-/// mode's channel.
+/// A burst sent with a CTCSS tone on the carrier decodes, on every receive path of
+/// `detector_eval`'s CTCSS pass. Each case missed the burst before detection was
+/// high-passed and confirmed on in-band energy (#12): 94.8 Hz is in antiphase at the
+/// wide lag of nfft/2 and keeps the Schmidl-Cox metric below threshold; 186.2 Hz is
+/// in phase and starts the plateau in the leader; in narrow mode, 141.3 Hz swells the
+/// energy that confirms preamble B.
 #[test]
 fn a_burst_with_a_ctcss_tone_decodes() {
+    use crate::detect_eval::{ctcss_cases, ctcss_channel, with_ctcss};
     let mut missed = Vec::new();
-    for (mode, f, dev) in [("wide", 94.8, 750.0), ("wide", 186.2, 1500.0), ("narrow", 141.3, 750.0)] {
+    for (mode, f, dev) in [("wide", 94.8, 1500.0), ("wide", 186.2, 1500.0), ("narrow", 141.3, 1500.0)] {
         let m = modem(mode);
         let b = burst(1, 1, 7);
-        let cfg = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
-        let audio = crate::detect_eval::with_ctcss(&m, &cfg, &b, f, dev, 0.0);
-        let got = receive(&mut Receiver::new(m.clone()), &audio);
-        if !got.iter().any(|g| g.header == b.header && g.payload.first().and_then(|p| p.as_ref()) == b.payload.first())
-        {
-            missed.push(format!("{mode}: {f} Hz at {dev} Hz deviation, {} burst(s) received", got.len()));
+        for case in ctcss_cases(mode) {
+            let cfg = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+            let audio = with_ctcss(&m, &ctcss_channel(&cfg, case), case.tap, &b, f, dev, 0.0);
+            let got = receive(&mut Receiver::new(m.clone()), &audio);
+            if !got
+                .iter()
+                .any(|g| g.header == b.header && g.payload.first().and_then(|p| p.as_ref()) == b.payload.first())
+            {
+                missed.push(format!("{mode}, {}: {f} Hz at {dev} Hz deviation, {} burst(s)", case.name, got.len()));
+            }
         }
     }
     assert!(missed.is_empty(), "{missed:#?}");

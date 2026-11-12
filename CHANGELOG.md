@@ -30,11 +30,13 @@ run the same minor version.
   transmission no longer carries over it. (#10)
 
 ### Fixed
-- A CTCSS tone in the received audio no longer makes the modem miss bursts. Burst
-  detection now high-passes the audio at 300 Hz in both modes. Before, a tone at the
-  usual 750 Hz deviation hid every burst for 12 of the 21 EIA tones on the wide data
-  port, and for 8 in narrow mode when the radio's audio output passes the sub-tone. At
-  1500 Hz deviation, twice the usual, two of the tones closest to 300 Hz still do. (#12)
+- A CTCSS tone in the received audio no longer hides bursts from detection. Detection
+  now high-passes the audio (8th order, 420 Hz narrow, 340 Hz wide) and confirms
+  preamble B on the high-passed audio. Before, a tone at the usual 750 Hz deviation hid
+  every burst for 12 of the 21 EIA tones on the wide data port, and almost every burst
+  in narrow mode on a radio whose de-emphasised audio output passes the sub-tone. In narrow mode the
+  higher corner also detects weak bursts better. The tone still corrupts demodulation at
+  the higher speed levels; that is not fixed here. (#12)
 - A NaN, an Inf or a sample far beyond full scale from the sound card no longer loses a
   burst it falls in or shortly before, and cannot leave busy detection deaf; the last
   good sample takes its place. (#10)

@@ -3,7 +3,8 @@
 //! Models what happens to modem audio between two FM radios:
 //! TX audio filtering, pre-emphasis, deviation limiting, the FM modulator, RF noise,
 //! the IF filter, the discriminator (including threshold "clicks" at low signal),
-//! de-emphasis, RX audio filtering, squelch, TX key-up delay, and sound-card clock offset.
+//! de-emphasis, RX audio filtering, squelch, TX key-up delay, sound-card clock offset,
+//! and optionally a CTCSS tone on the carrier.
 
 use num_complex::Complex32;
 use rand::rngs::StdRng;
@@ -38,6 +39,19 @@ pub struct FmChannelConfig {
     pub lead_silence_s: f32,
     pub trail_silence_s: f32,
     pub seed: u64,
+    /// CTCSS tone on the carrier, None for none.
+    pub ctcss: Option<Ctcss>,
+}
+
+/// A CTCSS tone, added at the modulator after the transmit audio chain and the
+/// deviation limiter, as a radio's tone encoder does. It runs while the carrier is up.
+#[derive(Clone, Debug)]
+pub struct Ctcss {
+    pub hz: f32,
+    /// Peak deviation of the tone in Hz.
+    pub deviation_hz: f32,
+    /// Phase at carrier up, radians.
+    pub phase: f32,
 }
 
 impl FmChannelConfig {
@@ -58,6 +72,7 @@ impl FmChannelConfig {
             lead_silence_s: 0.2,
             trail_silence_s: 0.2,
             seed: 1,
+            ctcss: None,
         }
     }
 
@@ -103,6 +118,13 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
         }
         v = v.clamp(-cfg.clip_level, cfg.clip_level);
         tx_audio[lead + i] = tx_chain.process(v);
+    }
+    if let Some(t) = &cfg.ctcss {
+        let a = (t.deviation_hz / cfg.deviation_hz) as f64;
+        let w = 2.0 * std::f64::consts::PI * t.hz as f64 / fs as f64;
+        for (i, v) in tx_audio[carrier.clone()].iter_mut().enumerate() {
+            *v += (a * (w * i as f64 + t.phase as f64).sin()) as f32;
+        }
     }
 
     // --- FM modulator + RF noise ---
