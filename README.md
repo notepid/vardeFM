@@ -148,19 +148,29 @@ cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture       # L
 ```
 
 Performance gates (ignored by default, run by hand in release mode). They fail when a
-level's 10 % codeword error point or a mode's 10 % header error point
-(`crates/vardefm-modem/perf/levels.toml`), or a code's 1 % FER point
-(`crates/vardefm-fec/perf/ldpc.toml`), has moved:
+level's 10 % codeword error point or the 10 % header error point at one of a mode's
+drive levels (`crates/vardefm-modem/perf/levels.toml`), or a code's 1 % FER point
+(`crates/vardefm-fec/perf/ldpc.toml`), has moved. Times are from a 14-thread laptop:
 ```sh
 cargo test --release -p vardefm-modem level_gate -- --ignored --nocapture   # about 40 s
-cargo test --release -p vardefm-fec fer_gate -- --ignored --nocapture       # about 5 s
+cargo test --release -p vardefm-fec fer_gate -- --ignored --nocapture       # about 7 s
 ```
-A deliberate change records new points in the same commit. Commit the code first, so
-the files name the commit measured, then run:
+A deliberate change records new points in the same PR. Commit the code first, so the
+files name the commit measured, then record and commit the files:
+```powershell
+# Windows PowerShell
+$env:WRITE = "1"; cargo test --release -p vardefm-modem level_sweep -- --ignored --nocapture; Remove-Item Env:WRITE
+$env:WRITE = "1"; $env:TRIALS = "1000"; cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture; Remove-Item Env:WRITE, Env:TRIALS
+```
+
 ```sh
+# Linux / macOS / Git Bash
 WRITE=1 cargo test --release -p vardefm-modem level_sweep -- --ignored --nocapture
 WRITE=1 TRIALS=1000 cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture
 ```
+The recorded commit must stay reachable from `master`, so merge such a PR with a merge
+commit. After a squash or rebase merge, or a rebase of the branch, the files name a
+commit that is gone: record them again on the result.
 
 ### Releases
 
