@@ -38,15 +38,9 @@ impl Biquad {
         Self::from_coeffs([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha])
     }
 
-    /// A non-finite output (from a sound-card glitch, or overflow) clears the state and gives 0:
-    /// left in an IIR state it would make every later output NaN.
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z1;
-        if !y.is_finite() {
-            (self.z1, self.z2) = (0.0, 0.0);
-            return 0.0;
-        }
         self.z1 = self.b1 * x - self.a1 * y + self.z2;
         self.z2 = self.b2 * x - self.a2 * y;
         if self.z1.abs() < FLUSH {
@@ -87,7 +81,7 @@ impl Chain {
     /// its biquads, so `other` may bring first-order sections only while this chain
     /// has no biquads; otherwise the sections would run out of order.
     pub fn then(mut self, other: Chain) -> Self {
-        debug_assert!(other.first.is_empty() || self.biquads.is_empty(), "Chain::then would reorder sections");
+        assert!(other.first.is_empty() || self.biquads.is_empty(), "Chain::then would reorder sections");
         self.first.extend(other.first);
         self.biquads.extend(other.biquads);
         self
@@ -131,6 +125,16 @@ impl Chain {
             *x = self.process(*x);
         }
     }
+
+    /// Clears the state of every section, as if no sample had been processed.
+    pub fn reset(&mut self) {
+        for f in &mut self.first {
+            f.z = 0.0;
+        }
+        for b in &mut self.biquads {
+            (b.z1, b.z2) = (0.0, 0.0);
+        }
+    }
 }
 
 /// First-order IIR from an analog prototype H(s) = (n0 + n1 s) / (d0 + d1 s).
@@ -164,14 +168,9 @@ impl FirstOrder {
         Self::from_analog(fs, g, 0.0, 1.0, tau)
     }
 
-    /// A non-finite output clears the state and gives 0, as in [`Biquad::process`].
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z;
-        if !y.is_finite() {
-            self.z = 0.0;
-            return 0.0;
-        }
         self.z = self.b1 * x - self.a1 * y;
         if self.z.abs() < FLUSH {
             self.z = 0.0;
@@ -262,19 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn filters_recover_from_non_finite_input() {
-        let fs = 48_000.0;
-        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut bp = Chain::bandpass4(fs, 300.0, 3000.0);
-            assert_eq!(bp.process(bad), 0.0);
-            assert!(tone_gain(&mut |x| bp.process(x), 1000.0, fs) > 0.9, "biquads after {bad}");
-            let mut de = FirstOrder::deemphasis(fs, 750e-6);
-            assert_eq!(de.process(bad), 0.0);
-            assert!(tone_gain(&mut |x| de.process(x), 1000.0, fs) > 0.9, "first order after {bad}");
-        }
-    }
-
-    #[test]
     fn silence_after_a_signal_never_leaves_subnormal_state() {
         let fs = 48_000.0;
         // The slowest-decaying filters in use: the simulator's 20 Hz edge and de-emphasis.
@@ -301,6 +287,15 @@ mod tests {
             let x = (i as f32 * 0.05).sin() + if i == 100 { 1.0 } else { 0.0 };
             assert_eq!(ab.process(x), b.process(a.process(x)), "sample {i}");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "reorder")]
+    fn then_refuses_to_reorder_sections() {
+        let fs = 48_000.0;
+        let mut de = Chain::new();
+        de.push_first_order(FirstOrder::deemphasis(fs, 750e-6));
+        let _ = Chain::highpass4(fs, 400.0).then(de);
     }
 
     #[test]

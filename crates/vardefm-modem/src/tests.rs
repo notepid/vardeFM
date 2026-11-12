@@ -313,3 +313,106 @@ fn burst_level_ignores_a_squelch_pop_after_the_burst() {
         assert!((level.peak_dbfs - expected.peak_dbfs).abs() < 0.5, "{level:?} vs {expected:?}");
     }
 }
+
+/// `rms` sine at `f` Hz, `n` samples starting at `phase`.
+fn sine(f: f32, rms: f32, n: usize, phase: f32) -> Vec<f32> {
+    let w = 2.0 * std::f32::consts::PI * f / 48_000.0;
+    (0..n).map(|i| rms * 2f32.sqrt() * (i as f32 * w + phase).sin()).collect()
+}
+
+/// A steady CTCSS tone (a keyed repeater) heard before and after our own transmission.
+/// The receiver is fed nothing while we transmit. After it, the radio is muted until
+/// it is back on receive (tens of ms for a handheld, a VOX interface's hang time of a
+/// few hundred ms), and then the tone comes back abruptly, at any phase.
+#[test]
+fn ctcss_tone_after_our_own_transmission_is_not_busy() {
+    let m = modem("wide");
+    let mut seed = 1u32;
+    for rms in [0.177, 0.354] {
+        for muted_ms in [0, 5, 30, 100, 300, 600] {
+            for jump in [0.5, 1.0, 1.5] {
+                for floor in [0.0, 3e-4] {
+                    let mut rx = Receiver::new(m.clone());
+                    for chunk in sine(254.1, rms, 3 * 48_000, 0.0).chunks(480) {
+                        rx.push(chunk);
+                    }
+                    assert!(!rx.busy());
+                    rx.reset();
+                    // The muted radio, with or without a faint noise floor from the sound card.
+                    let mut audio: Vec<f32> = (0..muted_ms * 48)
+                        .map(|_| {
+                            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                            floor * (seed as f32 / u32::MAX as f32 * 2.0 - 1.0)
+                        })
+                        .collect();
+                    audio.extend(sine(254.1, rms, 24_000, jump * std::f32::consts::PI));
+                    for (i, chunk) in audio.chunks(480).enumerate() {
+                        rx.push(chunk);
+                        assert!(
+                            !rx.busy(),
+                            "{rms} RMS, muted {muted_ms} ms, jump {jump} pi, floor {floor}: busy after {} ms",
+                            10 * (i + 1)
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Busy holds for a while after the last loud audio, but not across our own
+/// transmission: the channel is not busy when reception resumes just because it was
+/// busy shortly before we keyed up.
+#[test]
+fn a_busy_hold_does_not_outlast_our_own_transmission() {
+    let m = modem("narrow");
+    let mut rx = Receiver::new(m.clone());
+    rx.push(&vec![0.0; 48_000]);
+    for chunk in sine(993.0, 0.1, 4800, 0.0).chunks(480) {
+        rx.push(chunk);
+    }
+    rx.push(&vec![0.0; 4800]);
+    assert!(rx.busy(), "the hold runs 100 ms after the signal");
+    rx.reset();
+    rx.push(&[0.0; 48]);
+    assert!(!rx.busy(), "busy after our transmission");
+}
+
+/// A NaN, an Inf or a sample far beyond full scale from the sound card in a steady CTCSS tone, at its peak, up to
+/// 1500 Hz deviation on the wide port.
+#[test]
+fn a_non_finite_sample_in_a_ctcss_tone_is_not_busy() {
+    let m = modem("wide");
+    for rms in [0.177, 0.354] {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, -1e30, 5.0] {
+            let mut audio = sine(254.1, rms, 4 * 48_000, 0.0);
+            let peak = (3 * 48_000..3 * 48_000 + 200).max_by(|&a, &b| audio[a].total_cmp(&audio[b])).unwrap();
+            audio[peak] = bad;
+            let mut rx = Receiver::new(m.clone());
+            for (i, chunk) in audio.chunks(480).enumerate() {
+                rx.push(chunk);
+                assert!(!rx.busy(), "{rms} RMS, {bad}: busy after {} ms", 10 * (i + 1));
+            }
+        }
+    }
+}
+
+/// A NaN, an Inf or a sample far beyond full scale from the sound card before or inside a burst.
+#[test]
+fn a_non_finite_sample_does_not_hide_a_burst() {
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let b = burst(2, 2, 9);
+        for bad in [f32::NAN, f32::INFINITY, f32::MAX] {
+            // From 1000 samples before the burst's leader to well into its payload.
+            for at in (19_000..31_000).step_by(1000) {
+                let mut audio = vec![0.0; 20_000];
+                audio.extend(m.modulate(&b));
+                audio[at] = bad;
+                let got = receive(&mut Receiver::new(m.clone()), &audio);
+                assert_eq!(got.len(), 1, "{mode}, {bad} at {at}");
+                assert!(got[0].payload.iter().all(|p| p.is_some()), "{mode}, {bad} at {at}");
+            }
+        }
+    }
+}
