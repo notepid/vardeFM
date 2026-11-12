@@ -360,6 +360,45 @@ fn ctcss_tone_after_our_own_transmission_is_not_busy() {
     }
 }
 
+/// A burst sent with a CTCSS tone on the carrier decodes. Each case broke the
+/// Schmidl-Cox search before it was high-passed (#12): 94.8 Hz is in antiphase at the
+/// wide lag of nfft/2 and keeps the metric below threshold; 186.2 Hz is in phase and
+/// starts the plateau in the leader; 141.3 Hz reaches the narrow receiver through an
+/// audio output that passes the sub-tone (the narrow transmit band removes it). The
+/// tone is into the transmitter (`at_tx`) or added to the receiver's output, at
+/// `dev` Hz deviation on the mode's channel.
+#[test]
+fn a_burst_with_a_ctcss_tone_decodes() {
+    let mut missed = Vec::new();
+    for (mode, f, dev, at_tx) in
+        [("wide", 94.8, 750.0, true), ("wide", 186.2, 1500.0, true), ("narrow", 141.3, 750.0, false)]
+    {
+        let m = modem(mode);
+        let b = burst(1, 1, 7);
+        let cfg = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+        let rms = dev / cfg.deviation_hz / 2f32.sqrt();
+        let add_tone = |x: &mut Vec<f32>| {
+            let tone = sine(f, rms, x.len(), 0.0);
+            x.iter_mut().zip(tone).for_each(|(x, c)| *x += c);
+        };
+        let mut tx = m.modulate(&b);
+        let audio = if at_tx {
+            add_tone(&mut tx);
+            transmit(&cfg, &tx)
+        } else {
+            let mut audio = transmit(&cfg, &tx);
+            add_tone(&mut audio);
+            audio
+        };
+        let got = receive(&mut Receiver::new(m.clone()), &audio);
+        if !got.iter().any(|g| g.header == b.header && g.payload.first().and_then(|p| p.as_ref()) == b.payload.first())
+        {
+            missed.push(format!("{mode}: {f} Hz at {dev} Hz deviation, {} burst(s) received", got.len()));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
 /// Busy holds for a while after the last loud audio, but not across our own
 /// transmission: the channel is not busy when reception resumes just because it was
 /// busy shortly before we keyed up.

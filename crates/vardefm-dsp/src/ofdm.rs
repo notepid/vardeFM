@@ -236,17 +236,14 @@ impl Ofdm {
     /// body of preamble B starts.
     pub fn detect(&self, rx: &[f32], from: usize) -> Option<usize> {
         // Filtering keeps preamble A periodic (the filter is linear and time-invariant),
-        // so the autocorrelation still works on the filtered copy.
-        let filtered;
-        let sc: &[f32] = match self.p.detect_lowpass_hz {
-            Some(f) => {
-                let mut lp = Chain::lowpass4(self.p.fs, f);
-                filtered = rx[from..].iter().map(|&x| lp.process(x)).collect::<Vec<f32>>();
-                &filtered
-            }
-            None => &rx[from..],
+        // so the autocorrelation still works on the filtered copy. See
+        // `OfdmParams::detect_band_hz` for the band.
+        let mut filter = match self.p.detect_band_hz {
+            (lo, Some(hi)) => Chain::bandpass4(self.p.fs, lo, hi),
+            (lo, None) => Chain::highpass4(self.p.fs, lo),
         };
-        self.detect_in(rx, sc, from)
+        let sc: Vec<f32> = rx[from..].iter().map(|&x| filter.process(x)).collect();
+        self.detect_in(rx, &sc, from)
     }
 
     /// Schmidl-Cox search over `sc` (which starts at `rx[from]`), confirmed on `rx`.
