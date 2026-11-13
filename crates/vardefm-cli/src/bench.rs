@@ -14,7 +14,8 @@
 //!   [`Modem::decode_passes`] times in all (at 16QAM and 64QAM). Such a burst
 //!   cannot be made from audio on demand, so the worst case adds to the measured
 //!   delay of the noise payload its decoding time (that delay less the clean one)
-//!   once per later pass, an estimate.
+//!   once per later pass, for all codewords but one: an upper bound, since a later
+//!   pass decodes only the codewords still failing.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -106,8 +107,8 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
         link.turnaround_s, link.response_timeout_s
     );
     println!(
-        "Worst case = a payload that fails to decode. At 16QAM and 64QAM its decoding is counted {MAX_PASSES} \
-         times (an estimate): when some codewords of a burst decode, the receiver decodes the failed ones again."
+        "Worst case = a payload that fails to decode. At 16QAM and 64QAM its decoding is counted up to \
+         {MAX_PASSES} times (an upper bound): when some codewords of a burst decode, the receiver decodes the failed ones again."
     );
 
     for &mode in modes {
@@ -144,12 +145,14 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
             // The failing decodes cost about the worst delay less the clean one (which
             // holds demodulation and a few-iteration decode); the later passes repeat
             // that part only.
-            let failing_s = (worst.delay - clean.delay).max(0.0);
+            // A later pass runs only when a codeword has decoded, so it decodes at
+            // most ncw - 1 of them.
+            let ncw = b.payload.len();
+            let failing_s = (worst.delay - clean.delay).max(0.0) * (ncw - 1) as f64 / ncw as f64;
             let extra_s = (Modem::decode_passes(level) - 1) as f64 * failing_s;
             worst.delay += extra_s;
-            worst.load += extra_s / modem.burst_seconds(level, b.payload.len()) as f64;
+            worst.load += extra_s / modem.burst_seconds(level, ncw) as f64;
 
-            let ncw = b.payload.len();
             let verdict = if clean.found == 0 || worst.found == 0 {
                 "burst not found!"
             } else if clean.decoded < ncw {

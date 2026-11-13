@@ -355,7 +355,8 @@ impl Modem {
     }
 
     /// LLRs as [`Modem::llrs`], with the bits `known` (one per slot of the payload,
-    /// [`UNKNOWN_BIT`] where not known) taken as given.
+    /// [`UNKNOWN_BIT`] where not known) taken as given. Points whose bits are all
+    /// known are not demapped: their LLRs are 0.
     fn llrs_known(m: Modulation, f: &Frame, from: usize, known: &[u8]) -> Vec<f32> {
         let symbols = &f.symbols[from..];
         let bps = m.bits_per_symbol();
@@ -366,7 +367,13 @@ impl Modem {
         debug_assert_eq!(symbols.len() * f.noise_var.len() * bps, known.len(), "one known bit per slot");
         let mut out = Vec::with_capacity(known.len());
         for ((y, nv), k) in carriers.zip(known.chunks_exact(bps)) {
-            m.demap_llr_known(y, nv, k, &mut out);
+            if k.contains(&UNKNOWN_BIT) {
+                m.demap_llr_known(y, nv, k, &mut out);
+            } else {
+                // Every bit of this point belongs to a decoded codeword: no failed
+                // codeword reads its LLRs.
+                out.extend(std::iter::repeat_n(0.0, bps));
+            }
         }
         out
     }

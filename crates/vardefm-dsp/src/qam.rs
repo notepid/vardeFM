@@ -201,4 +201,54 @@ mod tests {
             assert_eq!(a, b, "{m:?}");
         }
     }
+
+    /// Max-log LLR of bit `b` of `m` at `y`, by brute force over every point whose
+    /// bits agree with `known` (except bit `b` itself).
+    fn brute_llr(m: Modulation, y: Complex32, noise_var: f32, known: &[u8], b: usize) -> f32 {
+        let n = m.bits_per_symbol();
+        let (mut d0, mut d1) = (f32::INFINITY, f32::INFINITY);
+        for word in 0..1usize << n {
+            let bits: Vec<u8> = (0..n).map(|i| (word >> (n - 1 - i)) as u8 & 1).collect();
+            let agrees = (0..n).all(|i| i == b || known[i] == UNKNOWN_BIT || known[i] == bits[i]);
+            if !agrees {
+                continue;
+            }
+            let d = (y - m.map(&bits)).norm_sqr();
+            if bits[b] == 0 {
+                d0 = d0.min(d);
+            } else {
+                d1 = d1.min(d);
+            }
+        }
+        (d1 - d0) / noise_var
+    }
+
+    #[test]
+    fn known_bits_match_brute_force_at_64qam() {
+        // 1 and 2 of the 3 bits of an axis known, on either axis or both, against
+        // the max-log LLR over every allowed point of the whole constellation.
+        let m = Modulation::Qam64;
+        let mut rng = Prng::new(11);
+        let patterns: [[bool; 6]; 6] = [
+            [true, false, false, false, false, false],
+            [false, false, true, false, false, false],
+            [true, true, false, false, false, false],
+            [false, true, true, false, true, false],
+            [false, false, false, true, false, true],
+            [true, false, true, false, true, true],
+        ];
+        for t in 0..200 {
+            let sent = rng.bits(6);
+            let noise = |r: &mut Prng| (r.next_u32() as f32 / u32::MAX as f32 - 0.5) * 0.4;
+            let y = m.map(&sent) + Complex32::new(noise(&mut rng), noise(&mut rng));
+            let pat = &patterns[t % patterns.len()];
+            let known: Vec<u8> = (0..6).map(|i| if pat[i] { sent[i] } else { UNKNOWN_BIT }).collect();
+            let mut got = Vec::new();
+            m.demap_llr_known(y, 0.05, &known, &mut got);
+            for b in (0..6).filter(|&b| !pat[b]) {
+                let want = brute_llr(m, y, 0.05, &known, b);
+                assert!((got[b] - want).abs() <= 1e-3 * want.abs().max(1.0), "trial {t} bit {b}: {got:?} vs {want}");
+            }
+        }
+    }
 }

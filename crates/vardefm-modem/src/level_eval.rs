@@ -30,6 +30,11 @@
 //! its curve is far shallower than any level's: at level 1's point a few per cent of
 //! headers still fail.
 //!
+//! The codewords decode as `Receiver::step` decodes them, with the later passes of
+//! `Modem::decode_payload_passes` at 16QAM and 64QAM (issue #2). Points recorded
+//! before them (eb35213 and earlier) are single-pass; recording again moves levels 3
+//! to 6 down.
+//!
 //! What the gate does not cover:
 //! - The receiver's SNR estimate, which the link's rate thresholds
 //!   (`SNR_THRESHOLDS_DB`) are compared against. `level_table` reports it.

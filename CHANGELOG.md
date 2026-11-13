@@ -20,10 +20,10 @@ run the same minor version.
 - **The receiver decodes failed 16QAM and 64QAM codewords again** with the bits of the
   codewords of the same burst that did decode: they share points with them, which leaves
   fewer possible points for the failed ones' bits. At most two passes follow the first.
-  In the channel simulator, at each level's 10 % codeword error rate, this rescues 14 to
-  90 % of the failed codewords (most at code rates 1/2 and 2/3, and in wide mode), and
-  6 to 80 % of the bursts that would have needed a resend need none. It costs
-  decode time only when some codewords of a burst fail; `vardefm bench` counts its worst
+  In the channel simulator, at each level's single-pass 10 % codeword error rate on full
+  bursts, this rescues 14 to 90 % of the failed codewords (most at code rates 1/2 and
+  2/3, and in wide mode), and 6 to 80 % of the bursts that would have needed a resend
+  need none. It costs decode time only when some codewords of a burst fail; `vardefm bench` counts its worst
   case. Receive-only: on-air compatible, and peers without it interoperate. `level_gate`
   still passes on the recorded points: its bursts hold only 4 codewords, so fewer
   decoded neighbours share points with a failed one than in a full burst. `rescue_probe`

@@ -89,8 +89,8 @@ The reference receiver:
    point, so the coded bits of the decoded codewords leave fewer possible points for the
    failed ones' bits, and those are demapped again against only those points. It repeats
    while a pass rescues a codeword, in at most three passes over the burst. Near a level's
-   threshold this decodes about a seventh to nine tenths of the codewords the first pass
-   lost (issue #2). Peers without it interoperate: nothing on the air changes.
+   single-pass threshold this decodes about a seventh to nine tenths of the codewords the
+   first pass lost (issue #2). Peers without it interoperate: nothing on the air changes.
 
 Because the window never moves, a frame should stay shorter than
 `ncp / 2 / (clock error)`. At 100 ppm that is 13 s (narrow) or 6.7 s (wide).
@@ -125,7 +125,9 @@ Net rate = data bytes of a full burst ÷ its airtime (leader, preambles and head
 included), before link-layer overhead. For each mode and level, the carrier-to-noise
 ratio in the FM channel simulator at which 10 % of codewords fail, decoded from the
 known burst position with the header taken as known, is recorded in
-`crates/vardefm-modem/perf/levels.toml` and checked by the `level_gate` test. That file
+`crates/vardefm-modem/perf/levels.toml` and checked by the `level_gate` test, which
+decodes as the receiver does, later passes (section 1.5) included; the points recorded
+so far predate those passes. That file
 is the reference; roughly, it runs from 3 dB (level 0) to 16 dB (level 6) in narrow
 mode and from 5 dB to 24 dB in wide mode. Error-free decoding begins about half a dB
 higher at the low levels and about 1 dB higher at levels 5 and 6. These are payload

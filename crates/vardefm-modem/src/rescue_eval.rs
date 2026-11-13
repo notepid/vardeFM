@@ -6,9 +6,13 @@
 //! fewer possible points for the rest. This probe measures, per mode and level 3 to
 //! 6, around the CNR at which the level's codeword error rate crosses 10 %
 //! (`perf/levels.toml`), from the known burst position with the sent header as
-//! training, as `level_eval` does:
+//! training, as `level_eval` does. `level_eval` decodes as the receiver does, with
+//! the later passes, so once the baseline has been recorded with them its points
+//! lie lower than the single-pass ones this probe was first run around (recorded at
+//! eb35213): the probe prints the first pass's CER at each point, so read the
+//! offsets against that rather than against the point. It reports:
 //! - `fail1`: codewords that fail the first pass, of all sent;
-//! - `rescued`: of those, the ones a later pass decodes; and how many of the bursts
+//! - `rescued`: of those, the ones a later pass decodes correctly; and how many of the bursts
 //!   whose codewords all decoded only thanks to it (`saved`) of those that had a
 //!   failure (`mixed` or all failed);
 //! - the decode time of the first pass and the extra time of the later passes, per
@@ -108,7 +112,9 @@ fn trial(m: &Modem, mode: &str, level: u8, ncw: usize, truth: usize, cnr: f32, t
     let ok1 = once.data.iter().zip(&sent.payload).filter(|(g, w)| g.as_ref() == Some(*w)).count() as u32;
     let ok2 = twice.data.iter().zip(&sent.payload).filter(|(g, w)| g.as_ref() == Some(*w)).count() as u32;
     out.fail1 = ncw as u32 - ok1;
-    out.rescued = twice.rescued as u32;
+    // Counted against the sent data, as `fail1` is, so that a codeword that passes
+    // its CRC with wrong data cannot count as rescued.
+    out.rescued = ok2.saturating_sub(ok1);
     let rescued_wrong =
         |j: usize| once.data[j].is_none() && twice.data[j].as_ref().is_some_and(|d| *d != sent.payload[j]);
     out.wrong = (0..ncw).filter(|&j| rescued_wrong(j)).count() as u32;
@@ -172,8 +178,8 @@ const TEST_BURSTS: u32 = 20;
 /// Near level 3's threshold, the later passes decode a codeword the first pass
 /// lost, with the data that was sent, and leave alone what the first pass decoded.
 /// The CNR is fixed rather than read from `perf/levels.toml`, so that recording the
-/// baseline again cannot move it; at 6.25 dB about 8 % of narrow level 3's
-/// codewords fail the first pass and half of those are rescued.
+/// baseline again cannot move it. It lies near narrow level 3's single-pass 10 %
+/// point, where `rescue_probe` finds rescues in a good share of bursts.
 #[test]
 fn second_pass_rescues_a_codeword() {
     let (mode, level, cnr) = ("narrow", 3u8, 6.25);
