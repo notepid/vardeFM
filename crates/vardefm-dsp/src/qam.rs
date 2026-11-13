@@ -1,5 +1,8 @@
 use num_complex::Complex32;
 
+/// A bit of [`Modulation::demap_llr_known`] that is not known.
+pub const UNKNOWN_BIT: u8 = 2;
+
 /// Constellations with Gray mapping and unit average power.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Modulation {
@@ -88,18 +91,39 @@ impl Modulation {
     /// Max-log LLRs (positive means bit 0) for one received symbol.
     /// `noise_var` is the complex noise variance (both axes together).
     pub fn demap_llr(self, y: Complex32, noise_var: f32, out: &mut Vec<f32>) {
+        self.demap_llr_known(y, noise_var, &[UNKNOWN_BIT; 6][..self.bits_per_symbol()], out);
+    }
+
+    /// Max-log LLRs as [`Modulation::demap_llr`], given that some of the symbol's
+    /// bits are already known: `known[i]` is 0 or 1 for a known bit and
+    /// [`UNKNOWN_BIT`] otherwise. Only the points that agree with the known bits on
+    /// the same axis count. The LLR of a known bit itself is computed as if it were
+    /// unknown; callers do not use it.
+    pub fn demap_llr_known(self, y: Complex32, noise_var: f32, known: &[u8], out: &mut Vec<f32>) {
+        debug_assert_eq!(known.len(), self.bits_per_symbol());
         let m = self.bits_per_axis();
         let s = self.scale();
         let axis_var = (noise_var / 2.0).max(1e-9);
         let axes = [y.re, y.im];
         let n_axes = if self == Self::Bpsk { 1 } else { 2 };
         let l = 1usize << m;
-        for &v in &axes[..n_axes] {
+        for (a, &v) in axes[..n_axes].iter().enumerate() {
+            // Known bits of this axis, as a mask and their values, MSB first.
+            let (mut kmask, mut kval) = (0usize, 0usize);
+            for (bit, &k) in known[a * m..(a + 1) * m].iter().enumerate() {
+                if k != UNKNOWN_BIT {
+                    kmask |= 1 << (m - 1 - bit);
+                    kval |= (k as usize & 1) << (m - 1 - bit);
+                }
+            }
             for bit in 0..m {
                 let mask = 1 << (m - 1 - bit);
+                // Constrain on the other known bits only, so the bit's own LLR stays
+                // finite.
+                let (cmask, cval) = (kmask & !mask, kval & !mask);
                 let mut d0 = f32::INFINITY;
                 let mut d1 = f32::INFINITY;
-                for word in 0..l {
+                for word in (0..l).filter(|w| w & cmask == cval) {
                     let d = v - Self::pam_level(word, m) * s;
                     let d = d * d;
                     if word & mask == 0 {
@@ -138,6 +162,31 @@ mod tests {
                 m.hard_bits(*s, &mut out);
             }
             assert_eq!(out, bits, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn known_bits_sharpen_the_rest_of_the_axis() {
+        let m = Modulation::Qam16;
+        let s = m.scale();
+        // Between the two inner points of the I axis, the sign (first bit) is
+        // unsure. Knowing the second bit says the point is an outer one (+-3), whose
+        // distance from y differs three times as much between the signs.
+        let y = Complex32::new(0.1 * s, 0.0);
+        let (mut free, mut given) = (Vec::new(), Vec::new());
+        m.demap_llr(y, 0.5, &mut free);
+        m.demap_llr_known(y, 0.5, &[UNKNOWN_BIT, 0, UNKNOWN_BIT, UNKNOWN_BIT], &mut given);
+        assert!(free[0] < 0.0 && given[0] < 0.0, "y > 0 means bit 1: {free:?} {given:?}");
+        assert!((given[0] / free[0] - 3.0).abs() < 1e-3, "{free:?} {given:?}");
+        // The other axis and the known bit's own LLR are left as they are.
+        assert_eq!(free[1..], given[1..]);
+        // Nothing known is the plain demapper.
+        for m in Modulation::ALL {
+            let y = Complex32::new(0.3, -0.7);
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            m.demap_llr(y, 0.2, &mut a);
+            m.demap_llr_known(y, 0.2, &vec![UNKNOWN_BIT; m.bits_per_symbol()], &mut b);
+            assert_eq!(a, b, "{m:?}");
         }
     }
 }

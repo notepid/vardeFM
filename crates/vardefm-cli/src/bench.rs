@@ -9,13 +9,17 @@
 //! Each speed level is measured with its longest burst, twice:
 //! - clean: a strong signal, where every codeword decodes in a few iterations;
 //! - worst case: the payload is noise, so every codeword runs the decoder's
-//!   full iteration count and fails.
+//!   full iteration count and fails. A burst where a few codewords decode and the
+//!   rest fail costs more: the receiver decodes the failed ones again, up to
+//!   [`Modem::decode_passes`] times in all (at 16QAM and 64QAM). Such a burst
+//!   cannot be made from audio on demand, so the worst case reported is the
+//!   measured delay of the noise payload times that, an upper estimate.
 
 use std::sync::Arc;
 use std::time::Instant;
 use vardefm_dsp::prng::Prng;
 use vardefm_link::LinkConfig;
-use vardefm_modem::{Burst, Header, Kind, Modem, OfdmParams, Receiver, LEVELS};
+use vardefm_modem::{Burst, Header, Kind, Modem, OfdmParams, Receiver, LEVELS, MAX_PASSES};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 const CHUNK: usize = 480; // 10 ms, as the sound card delivers it
@@ -100,6 +104,10 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
          may come too late.",
         link.turnaround_s, link.response_timeout_s
     );
+    println!(
+        "Worst case = a payload that fails to decode. At 16QAM and 64QAM its delay is the measured one \
+         times {MAX_PASSES}: when some codewords of a burst decode, the receiver decodes the failed ones again."
+    );
 
     for &mode in modes {
         let params = OfdmParams::by_name(mode).ok_or("mode must be narrow, wide or both")?;
@@ -130,7 +138,9 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
             for x in &mut bad[hdr_end..] {
                 *x = noise(&mut rng, 0.3);
             }
-            let worst = run(&modem, &on_air(mode, &bad));
+            let mut worst = run(&modem, &on_air(mode, &bad));
+            // A mixed burst decodes its failed codewords up to decode_passes times.
+            worst.delay *= Modem::decode_passes(level) as f64;
 
             let ncw = b.payload.len();
             let verdict = if clean.found == 0 || worst.found == 0 {

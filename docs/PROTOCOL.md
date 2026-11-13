@@ -84,6 +84,13 @@ The reference receiver:
 5. Tracks it with pilots averaged over ±4 symbols and interpolated in magnitude and phase.
 6. Estimates the noise per carrier and, from the pilots, a noise scale per symbol, so
    that a symbol hit by an FM click or a squelch pop gets low-confidence LLRs.
+7. At 16QAM and 64QAM, when some codewords of a burst decode and others fail, decodes
+   the failed ones again: the interleaver puts bits of several codewords on one axis of a
+   point, so the coded bits of the decoded codewords leave fewer possible points for the
+   failed ones' bits, and those are demapped again against only those points. It repeats
+   while a pass rescues a codeword, in at most three passes over the burst. Near a level's
+   threshold this decodes about a seventh to nine tenths of the codewords the first pass
+   lost (issue #2). Peers without it interoperate: nothing on the air changes.
 
 Because the window never moves, a frame should stay shorter than
 `ncp / 2 / (clock error)`. At 100 ppm that is 13 s (narrow) or 6.7 s (wide).
