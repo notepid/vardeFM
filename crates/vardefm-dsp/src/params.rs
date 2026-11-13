@@ -26,10 +26,23 @@ pub struct OfdmParams {
     /// is clean: the floor set by clipping at that level's drive (and the radio).
     /// With `level_tx_rms` it lets the link predict another level's SNR from a burst's.
     pub level_snr_ceiling_db: [f32; 7],
-    /// Low-pass the received audio at this frequency before searching for preamble A.
-    /// On the flat data port, FM noise rises with frequency, so the lower part of the
-    /// band gives a much cleaner detection metric.
-    pub detect_lowpass_hz: Option<f32>,
+    /// Band the received audio is filtered to before searching for preamble A: an
+    /// 8th-order high-pass at the first frequency (Hz) and, if given, a 4th-order
+    /// low-pass at the second. Preamble B is confirmed on the high-passed audio.
+    ///
+    /// The high-pass attenuates CTCSS tones (67.0-254.1 Hz). A tone adds all its power
+    /// to the Schmidl-Cox metric's energy term but only part of it, or a negative
+    /// part, to its correlation term, depending on the tone, so a strong one either
+    /// holds the metric below threshold or stretches the plateau into the leader; it
+    /// also swells the energy that preamble B is confirmed against. The corner sits as
+    /// high as preamble A's lowest carrier allows (375 Hz wide, 469 Hz narrow): high
+    /// enough that, in `detector_eval`, every tone at up to 1500 Hz deviation (twice the
+    /// usual) leaves detection as good as without a tone. In narrow mode the higher
+    /// corner also removes de-emphasised noise and detects weak bursts better.
+    ///
+    /// The low-pass is for the flat data port, where FM noise rises with frequency, so
+    /// the lower part of the band gives a much cleaner detection metric.
+    pub detect_band_hz: (f32, Option<f32>),
 }
 
 /// Per-level drive, measured in the FM channel simulator (`level_table` benchmark).
@@ -54,7 +67,8 @@ impl OfdmParams {
             tx_rms: 0.25,
             level_tx_rms: NARROW_LEVEL_RMS,
             level_snr_ceiling_db: NARROW_SNR_CEILING_DB,
-            detect_lowpass_hz: None,
+            // 35 dB down at 254.1 Hz, 0.7 dB at preamble A's lowest carrier (469 Hz).
+            detect_band_hz: (420.0, None),
         }
     }
 
@@ -73,7 +87,8 @@ impl OfdmParams {
             tx_rms: 0.3,
             level_tx_rms: WIDE_LEVEL_RMS,
             level_snr_ceiling_db: WIDE_SNR_CEILING_DB,
-            detect_lowpass_hz: Some(2500.0),
+            // 20 dB down at 254.1 Hz, 0.8 dB at preamble A's lowest carrier (375 Hz).
+            detect_band_hz: (340.0, Some(2500.0)),
         }
     }
 

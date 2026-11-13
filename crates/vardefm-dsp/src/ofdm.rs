@@ -235,22 +235,42 @@ impl Ofdm {
     /// Search `rx` from `from` for a frame. Returns the sample index where the
     /// body of preamble B starts.
     pub fn detect(&self, rx: &[f32], from: usize) -> Option<usize> {
-        // Filtering keeps preamble A periodic (the filter is linear and time-invariant),
-        // so the autocorrelation still works on the filtered copy.
-        let filtered;
-        let sc: &[f32] = match self.p.detect_lowpass_hz {
-            Some(f) => {
-                let mut lp = Chain::lowpass4(self.p.fs, f);
-                filtered = rx[from..].iter().map(|&x| lp.process(x)).collect::<Vec<f32>>();
-                &filtered
-            }
-            None => &rx[from..],
-        };
-        self.detect_in(rx, sc, from)
+        self.detect_band(rx, from, self.p.detect_band_hz)
     }
 
-    /// Schmidl-Cox search over `sc` (which starts at `rx[from]`), confirmed on `rx`.
-    fn detect_in(&self, rx: &[f32], sc: &[f32], from: usize) -> Option<usize> {
+    /// [`detect`](Self::detect) with the detection band `band` in place of the mode's.
+    fn detect_band(&self, rx: &[f32], from: usize, (lo, hi): (f32, Option<f32>)) -> Option<usize> {
+        // Filtering keeps preamble A periodic (the filter is linear and time-invariant),
+        // so the autocorrelation still works on the filtered copy. See
+        // `OfdmParams::detect_band_hz` for the band.
+        let mut hp = Chain::highpass8(self.p.fs, lo);
+        let hp: Vec<f32> = rx[from..].iter().map(|&x| hp.process(x)).collect();
+        let lp = hi.map(|hi| {
+            let mut lp = Chain::lowpass4(self.p.fs, hi);
+            hp.iter().map(|&x| lp.process(x)).collect::<Vec<f32>>()
+        });
+        self.detect_in(&hp, lp.as_deref().unwrap_or(&hp), &self.pre_b_template(lo), from)
+    }
+
+    /// The body of preamble B as it comes out of the high-pass at `lo` Hz in steady
+    /// state (preamble B is cyclic, so a few periods settle the filter), scaled to the
+    /// energy of the unfiltered body. Correlating high-passed audio against it gives
+    /// the same timing as unfiltered audio against the body: both carry the same delay.
+    fn pre_b_template(&self, lo: f32) -> Vec<f32> {
+        let n = self.p.nfft;
+        let mut f = Chain::highpass8(self.p.fs, lo);
+        let periods = 4;
+        let y: Vec<f32> = self.pre_b_body.iter().cycle().take(periods * n).map(|&x| f.process(x)).collect();
+        let mut t = y[(periods - 1) * n..].to_vec();
+        let norm = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let g = norm(&self.pre_b_body) / norm(&t).max(1e-12);
+        t.iter_mut().for_each(|x| *x *= g);
+        t
+    }
+
+    /// Schmidl-Cox search over `sc` (which starts at `rx[from]`), confirmed on `hp`,
+    /// the high-passed copy of `rx[from..]`, against preamble B's `template`.
+    fn detect_in(&self, hp: &[f32], sc: &[f32], template: &[f32], from: usize) -> Option<usize> {
         let n = self.p.nfft;
         let h = n / 2;
         let ncp = self.p.ncp;
@@ -278,8 +298,8 @@ impl Ofdm {
                     plateau = None;
                     if end - start >= ncp / 4 {
                         let a0 = from + ((start + end) / 2).saturating_sub(ncp / 2);
-                        if let Some(b) = self.fine_timing(rx, a0 + l + ncp) {
-                            return Some(b);
+                        if let Some(b) = self.fine_timing(hp, template, a0 - from + l + ncp) {
+                            return Some(from + b);
                         }
                     }
                 }
@@ -292,22 +312,28 @@ impl Ofdm {
         None
     }
 
-    /// Cross-correlate with preamble B around `expected` and return the best start.
-    fn fine_timing(&self, rx: &[f32], expected: usize) -> Option<usize> {
+    /// Cross-correlate `x` with preamble B's `template` around `expected` and return
+    /// the best start.
+    ///
+    /// Detection passes the high-passed audio and the template filtered the same way,
+    /// so the timing carries no filter delay. On unfiltered audio a sub-tone would leak
+    /// into the correlation with preamble B's lowest carriers (281 Hz in wide) and
+    /// swell the energy it is normalised by, and the confirmation would fail.
+    fn fine_timing(&self, x: &[f32], template: &[f32], expected: usize) -> Option<usize> {
         let n = self.p.nfft;
         let span = self.p.ncp as isize;
         let mut best = (0.0f32, 0usize);
         for off in -span..=span {
             let s = expected as isize + off;
-            if s < 0 || s as usize + n > rx.len() {
+            if s < 0 || s as usize + n > x.len() {
                 continue;
             }
-            let w = &rx[s as usize..s as usize + n];
+            let w = &x[s as usize..s as usize + n];
             let e = w.iter().map(|x| x * x).sum::<f32>().sqrt();
             if e <= 0.0 {
                 continue;
             }
-            let c = w.iter().zip(&self.pre_b_body).map(|(a, b)| a * b).sum::<f32>().abs() / e;
+            let c = w.iter().zip(template).map(|(a, b)| a * b).sum::<f32>().abs() / e;
             if c > best.0 {
                 best = (c, s as usize);
             }
@@ -576,6 +602,37 @@ mod tests {
     #[test]
     fn clean_roundtrip_wide() {
         roundtrip(OfdmParams::wide(), Modulation::Qam64, 1234);
+    }
+
+    /// Every EIA CTCSS tone at 1500 Hz deviation (twice the usual), on the mode's
+    /// channel deviation (2.5 kHz narrow, 3 kHz wide), at two phases: detection finds
+    /// the frame where it finds it without a tone (#12).
+    #[test]
+    fn ctcss_tones_do_not_hide_a_frame() {
+        const CTCSS_HZ: [f32; 21] = [
+            67.0, 71.9, 77.0, 82.5, 88.5, 94.8, 100.0, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2,
+            203.5, 218.1, 233.6, 250.3, 254.1,
+        ];
+        let mut missed = Vec::new();
+        for (p, deviation_hz) in [(OfdmParams::narrow(), 2500.0), (OfdmParams::wide(), 3000.0)] {
+            let ofdm = Ofdm::new(p);
+            let mut rx = vec![0.0; 1000];
+            rx.extend(ofdm.modulate_with_leader(&random_frame(&ofdm, Modulation::Qpsk, 4, 1), 0.15));
+            rx.extend(vec![0.0; 1000]);
+            let truth = ofdm.detect(&rx, 0).expect("frame not detected without a tone");
+            let a = 1500.0 / deviation_hz;
+            for f in CTCSS_HZ {
+                for ph in [0.0, 1.9] {
+                    let w = 2.0 * std::f32::consts::PI * f / ofdm.p.fs;
+                    let x: Vec<f32> = rx.iter().enumerate().map(|(i, v)| v + a * (w * i as f32 + ph).sin()).collect();
+                    let got = ofdm.detect(&x, 0);
+                    if got != Some(truth) {
+                        missed.push(format!("{} {f} Hz phase {ph}: {got:?}, want {truth}", ofdm.p.name));
+                    }
+                }
+            }
+        }
+        assert!(missed.is_empty(), "{missed:#?}");
     }
 
     fn random_frame(ofdm: &Ofdm, m: Modulation, nsym: usize, seed: u32) -> Vec<Vec<Complex32>> {

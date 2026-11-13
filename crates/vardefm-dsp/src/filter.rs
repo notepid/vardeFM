@@ -61,6 +61,8 @@ pub struct Chain {
 }
 
 const BUTTER4_Q: [f32; 2] = [0.541_196_1, 1.306_563];
+/// Section Q of an 8th-order Butterworth: 1 / (2 sin((2k - 1) pi / 16)), k = 1..4.
+const BUTTER8_Q: [f32; 4] = [0.509_795_6, 0.601_344_9, 0.899_976_2, 2.562_915_4];
 
 impl Chain {
     pub fn new() -> Self {
@@ -91,6 +93,15 @@ impl Chain {
     pub fn highpass4(fs: f32, f: f32) -> Self {
         let mut c = Self::new();
         for q in BUTTER4_Q {
+            c.biquads.push(Biquad::highpass(fs, f, q));
+        }
+        c
+    }
+
+    /// 8th-order Butterworth highpass.
+    pub fn highpass8(fs: f32, f: f32) -> Self {
+        let mut c = Self::new();
+        for q in BUTTER8_Q {
             c.biquads.push(Biquad::highpass(fs, f, q));
         }
         c
