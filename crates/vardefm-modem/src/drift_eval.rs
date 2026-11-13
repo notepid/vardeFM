@@ -13,7 +13,8 @@
 //! `cargo test --release -p vardefm-modem drift_eval -- --ignored --nocapture`
 //!
 //! Environment: `MODES` (narrow,wide), `LEVELS` (5,6), `PPMS` (-150,-100,0,100,150),
-//! `TRIALS` (bursts per point, 100), `EVM_TRIALS` (20).
+//! `TRIALS` (bursts per point, 100), `EVM_TRIALS` (20), `NCW` (codewords per burst; 0,
+//! the default, is the most a burst of the level holds).
 
 use super::*;
 use crate::detect_eval::{burst, env_list, env_modes, env_or, on_every_core, payload_seed};
@@ -69,7 +70,11 @@ impl std::ops::AddAssign for Stats {
 }
 
 fn evm_db((e, s): (f64, f64)) -> f64 {
-    10.0 * (e / s.max(1e-30)).log10()
+    if s == 0.0 {
+        f64::NAN
+    } else {
+        10.0 * (e / s).log10()
+    }
 }
 
 /// Decode `rx` (preamble B at `b`) with `m`, against the sent `burst`.
@@ -101,9 +106,9 @@ fn decode(m: &Modem, rx: &[f32], b: usize, sent: &Burst, decode_cws: bool) -> St
 
 /// Totals of `trials` bursts through the channel at `cnr` and `ppm`, for the box
 /// average and for drift removal.
-fn run(mode: &str, level: u8, cnr: Option<f32>, ppm: f32, trials: u32, decode_cws: bool) -> [Stats; 2] {
+fn run(mode: &str, level: u8, ncw: usize, cnr: Option<f32>, ppm: f32, trials: u32, decode_cws: bool) -> [Stats; 2] {
     let ms = [modem(mode, false), modem(mode, true)];
-    let ncw = ms[0].max_ncw(level);
+
     // The channel's delays do not depend on its noise or the payload.
     let clean = transmit(&channel(mode, None, ppm, 1), &ms[0].modulate(&burst(level, ncw, payload_seed(0))));
     let b = ms[0].ofdm.detect(&clean, 0).expect("burst not found on a clean channel");
@@ -125,21 +130,23 @@ fn run(mode: &str, level: u8, cnr: Option<f32>, ppm: f32, trials: u32, decode_cw
 #[ignore]
 fn drift_eval() {
     let trials: u32 = env_or("TRIALS", 100);
+    let ncw_env: usize = env_or("NCW", 0);
     let evm_trials: u32 = env_or("EVM_TRIALS", 20);
     let levels: Vec<u8> = env_list("LEVELS", "5,6");
     let ppms: Vec<f32> = env_list("PPMS", "-150,-100,0,100,150");
     for mode in env_modes("narrow,wide") {
         for &level in &levels {
             let cnr = level_point(&mode, level);
-            let ncw = modem(&mode, false).max_ncw(level);
+            let max = modem(&mode, false).max_ncw(level);
+            let ncw = if ncw_env == 0 { max } else { ncw_env.min(max) };
             println!(
                 "{mode} level {level} ({}), {ncw} codewords; EVM without noise, CER at {cnr:.2} dB",
                 LEVELS[level as usize].name
             );
             println!("    ppm | EVM edge box/drift dB | EVM mid box/drift dB | CER box   drift");
             for &ppm in &ppms {
-                let evm = run(&mode, level, None, ppm, evm_trials, false);
-                let cer = run(&mode, level, Some(cnr), ppm, trials, true);
+                let evm = run(&mode, level, ncw, None, ppm, evm_trials, false);
+                let cer = run(&mode, level, ncw, Some(cnr), ppm, trials, true);
                 let rate = |s: &Stats| s.cw_errors as f64 / s.cws.max(1) as f64;
                 println!(
                     "  {ppm:5.0} | {:7.2} {:7.2}       | {:7.2} {:7.2}      | {:.4} {:.4}  ({} cws)",

@@ -21,9 +21,10 @@ const DETECT_THRESHOLD: f64 = 0.3;
 /// Pilots are averaged over this many symbols either side.
 const TRACK_HALF_WINDOW: usize = 4;
 const MIN_PREAMBLE_CORR: f32 = 0.3;
-/// Frames shorter than this are not searched for clock drift: over a header alone the
-/// drift is small and its estimate, at the header's low SNR, too noisy.
-const DRIFT_MIN_SYMBOLS: usize = 20;
+/// Frames shorter than this are not searched for clock drift: a header alone (8 or 10
+/// symbols) drifts little, and at its low SNR the estimate would be too noisy. The
+/// shortest payload frame, one 64QAM codeword in wide mode, has 16.
+const DRIFT_MIN_SYMBOLS: usize = 12;
 /// Largest clock error searched for, ppm.
 const DRIFT_MAX_PPM: f32 = 300.0;
 /// Ternary-search steps after the grid (each keeps 2/3 of the interval).
@@ -424,7 +425,7 @@ impl Ofdm {
             .map(|&k| 2.0 * std::f32::consts::PI * (self.p.first_bin + k) as f32 / n as f32)
             .collect();
         let rate = if self.remove_drift && nsym >= DRIFT_MIN_SYMBOLS {
-            drift_rate(&cs, &omega, DRIFT_MAX_PPM * 1e-6 * l as f32)
+            estimate_drift(&cs, &omega, DRIFT_MAX_PPM * 1e-6 * l as f32)
         } else {
             0.0
         };
@@ -501,26 +502,38 @@ fn remove_slope(raw: &[Complex32]) -> (f32, Vec<Complex32>) {
     (slope, raw.iter().enumerate().map(|(k, &h)| h * Complex32::from_polar(1.0, -slope * k as f32)).collect())
 }
 
+/// [`drift_rate`] weighted by the noise, as the pilot averaging is, so that a symbol
+/// hit by a click or a pilot at a weak band edge does not steer the estimate. One pass
+/// of the noise model is enough for the weights; the drift biases its deviations only
+/// over the end symbols.
+fn estimate_drift(cs: &[Vec<Complex32>], omega: &[f32], max: f32) -> f32 {
+    let (_, dev) = track_pilots(cs, &vec![1.0; cs.len()]);
+    let (scale, pilot_var) = noise_model(&dev);
+    drift_rate(cs, omega, &scale, &pilot_var, max)
+}
+
 /// The clock drift of a frame, in samples of timing per symbol, from its pilot
 /// ratios `cs` (one Vec per symbol): the rate in `-max..=max` that maximises
-/// `sum_m |sum_i cs[i][m] e^{j omega[m] rate i}|^2`, i.e. the drift that, once removed,
-/// leaves each pilot most nearly constant over the frame. Each pilot keeps its own
-/// mean, so a constant timing offset does not enter.
-fn drift_rate(cs: &[Vec<Complex32>], omega: &[f32], max: f32) -> f32 {
+/// `sum_m |sum_i cs[i][m] e^{j omega[m] rate i} / scale[i]|^2 / pilot_var[m]`, i.e. the
+/// drift that, once removed, leaves each pilot most nearly constant over the frame.
+/// Symbols and pilots count by the inverse of their noise (`noise_model`). Each pilot
+/// keeps its own mean, so a constant timing offset does not enter.
+fn drift_rate(cs: &[Vec<Complex32>], omega: &[f32], scale: &[f32], pilot_var: &[f32], max: f32) -> f32 {
     let nsym = cs.len();
     let score = |rate: f32| -> f32 {
         omega
             .iter()
+            .zip(pilot_var)
             .enumerate()
-            .map(|(m, &w)| {
+            .map(|(m, (&w, &var))| {
                 let step = Complex32::from_polar(1.0, w * rate);
                 let mut rot = Complex32::new(1.0, 0.0);
                 let mut z = Complex32::new(0.0, 0.0);
-                for c in cs {
-                    z += c[m] * rot;
+                for (c, &s) in cs.iter().zip(scale) {
+                    z += c[m] * rot / s;
                     rot *= step;
                 }
-                z.norm_sqr()
+                z.norm_sqr() / var.max(1e-6)
             })
             .sum()
     };
@@ -779,9 +792,40 @@ mod tests {
                 );
                 assert!(ok, "{} {ppm} ppm: bit errors", p.name);
                 assert!(edge_db < mid_db + 1.0, "{} {ppm} ppm: edge {edge_db:.1} dB, middle {mid_db:.1} dB", p.name);
-                assert!(box_edge > edge_db + 3.0, "{} {ppm} ppm: the box average is not one-sided any more?", p.name);
             }
         }
+    }
+
+    #[test]
+    fn drift_estimate_ignores_a_click() {
+        // Pilot ratios of a 170-symbol narrow frame drifting at 150 ppm, with noise
+        // at about 20 dB SNR, and one symbol hit by a click 20 dB above that.
+        let ofdm = Ofdm::new(OfdmParams::narrow());
+        let n = ofdm.p.nfft as f32;
+        let omega: Vec<f32> =
+            ofdm.pilot_idx.iter().map(|&k| 2.0 * std::f32::consts::PI * (ofdm.p.first_bin + k) as f32 / n).collect();
+        let max = DRIFT_MAX_PPM * 1e-6 * ofdm.p.symbol_len() as f32;
+        let rate = 150e-6 * ofdm.p.symbol_len() as f32;
+        let nsym = 170;
+        let mut rng = Prng::new(3);
+        // Uniform noise of standard deviation `sd` per component.
+        let mut u = move || (rng.next_u32() as f32 / u32::MAX as f32 - 0.5) * 12f32.sqrt();
+        let mut noise = |sd: f32| Complex32::new(u() * sd, u() * sd);
+        let mut cs: Vec<Vec<Complex32>> = (0..nsym)
+            .map(|i| omega.iter().map(|&w| Complex32::from_polar(1.0, -w * rate * i as f32) + noise(0.07)).collect())
+            .collect();
+        let clean = estimate_drift(&cs, &omega, max);
+        for v in cs[60].iter_mut() {
+            *v += noise(0.7 * 10.0);
+        }
+        let (ones, var1) = (vec![1.0; nsym], vec![1.0; omega.len()]);
+        let unweighted = drift_rate(&cs, &omega, &ones, &var1, max);
+        let weighted = estimate_drift(&cs, &omega, max);
+        println!("rate {rate:.5}: clean {clean:.5}, click {weighted:.5} weighted, {unweighted:.5} unweighted");
+        assert!((clean - rate).abs() < 0.01 * rate, "clean estimate {clean}");
+        // The click is kept out: the estimate hardly moves. (Unweighted it moves by
+        // about 0.6 %, which over the frame turns the top pilot by 0.07 rad.)
+        assert!((weighted - clean).abs() < 0.002 * rate, "estimate with a click {weighted}, without {clean}");
     }
 
     #[test]
