@@ -35,7 +35,7 @@
 //!   (`SNR_THRESHOLDS_DB`) are compared against. `level_table` reports it.
 //! - Long bursts and clock drift: bursts hold up to `CODEWORDS` codewords and the
 //!   channel presets have no clock offset, so pilot tracking over a long burst is
-//!   not exercised.
+//!   not exercised. `drift_eval` measures it at the 64QAM levels, without a gate.
 //! - Error floors: the gate checks only where a rate crosses 10 %, so a change that
 //!   loses a few per cent of codewords at every CNR (LLR saturation, a demapper
 //!   edge case, a sync slip) still passes.

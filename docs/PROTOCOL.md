@@ -82,6 +82,10 @@ The reference receiver:
    inverse of its noise: the header decodes through a click on one of its symbols, and
    that symbol must not corrupt the estimate.
 5. Tracks it with pilots averaged over ±4 symbols and interpolated in magnitude and phase.
+   On frames of 20 symbols or more it first estimates the clock drift over the whole
+   frame (the timing slope that leaves each pilot most nearly constant) and takes that
+   phase ramp off the pilots before averaging, so that the one-sided average over the
+   first and last symbols does not lag the drift.
 6. Estimates the noise per carrier and, from the pilots, a noise scale per symbol, so
    that a symbol hit by an FM click or a squelch pop gets low-confidence LLRs.
 

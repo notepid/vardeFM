@@ -17,6 +17,12 @@ run the same minor version.
   files.
 
 ### Changed
+- **The receiver removes sound-card clock drift before it averages the pilots.** It
+  estimates the drift once per burst from all pilots and takes its phase ramp off, so the
+  last symbols of a long burst no longer lag it. At ±150 ppm the EVM of the last four
+  symbols of a full 64QAM burst improves by 6–13 dB, and the codeword error rate at the
+  64QAM levels' 10 % points drops by up to a fifth; at 0 ppm nothing changes.
+  Receiver-only. (#3)
 - **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).
   A CTCSS tone, mains hum, a DC step or hiss above the band no longer reads as a busy
   channel, and no longer hides a signal inside the band. A keyed carrier with only a CTCSS

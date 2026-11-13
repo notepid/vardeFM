@@ -21,6 +21,13 @@ const DETECT_THRESHOLD: f64 = 0.3;
 /// Pilots are averaged over this many symbols either side.
 const TRACK_HALF_WINDOW: usize = 4;
 const MIN_PREAMBLE_CORR: f32 = 0.3;
+/// Frames shorter than this are not searched for clock drift: over a header alone the
+/// drift is small and its estimate, at the header's low SNR, too noisy.
+const DRIFT_MIN_SYMBOLS: usize = 20;
+/// Largest clock error searched for, ppm.
+const DRIFT_MAX_PPM: f32 = 300.0;
+/// Ternary-search steps after the grid (each keeps 2/3 of the interval).
+const DRIFT_REFINE_STEPS: usize = 20;
 /// A symbol whose pilot noise exceeds this many times the typical level gets its own
 /// noise scale. Normal symbols almost never get there (the per-symbol estimate averages
 /// 18-24 real noise samples).
@@ -44,6 +51,10 @@ pub struct Ofdm {
     pre_b: Vec<Complex32>,
     /// Time-domain body (no cyclic prefix) of preamble B, unit energy.
     pre_b_body: Vec<f32>,
+    /// Estimate the clock drift over each frame and take its phase ramp off the pilots
+    /// before they are averaged (see [`drift_rate`]). Off, the box average alone
+    /// follows the drift. Public so that evaluations can compare the two.
+    pub remove_drift: bool,
 }
 
 /// A demodulated frame.
@@ -97,8 +108,19 @@ impl Ofdm {
         let mut rng = Prng::new(0x5eed_00b2);
         let pre_b = (0..nc).map(|_| Complex32::new(rng.bpsk(), 0.0)).collect();
 
-        let mut s =
-            Self { p, fft, ifft, pilot_idx, data_idx, pilot_table, gains, pre_a, pre_b, pre_b_body: Vec::new() };
+        let mut s = Self {
+            p,
+            fft,
+            ifft,
+            pilot_idx,
+            data_idx,
+            pilot_table,
+            gains,
+            pre_a,
+            pre_b,
+            pre_b_body: Vec::new(),
+            remove_drift: true,
+        };
         let b = s.symbol_time(&s.pre_b);
         let mut body = b[s.p.ncp..].to_vec();
         let e = body.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -392,13 +414,34 @@ impl Ofdm {
             })
             .collect();
 
+        // Clock drift moves the timing by the same number of samples every symbol, so
+        // pilot m turns by omega[m] * rate per symbol. Take that ramp off before
+        // averaging: a box average that runs into the end of the frame is one-sided
+        // and would lag the ramp there. It is put back on the averages below.
+        let omega: Vec<f32> = self
+            .pilot_idx
+            .iter()
+            .map(|&k| 2.0 * std::f32::consts::PI * (self.p.first_bin + k) as f32 / n as f32)
+            .collect();
+        let rate = if self.remove_drift && nsym >= DRIFT_MIN_SYMBOLS {
+            drift_rate(&cs, &omega, DRIFT_MAX_PPM * 1e-6 * l as f32)
+        } else {
+            0.0
+        };
+        let ramp = |i: usize, m: usize| Complex32::from_polar(1.0, omega[m] * rate * i as f32);
+        let cs: Vec<Vec<Complex32>> =
+            cs.iter().enumerate().map(|(i, c)| c.iter().enumerate().map(|(m, &v)| v * ramp(i, m)).collect()).collect();
+
         // Average each pilot over neighbouring symbols, weighting each symbol by the
         // inverse of its noise. The first pass (equal weights) finds symbols hit by an
         // FM click or a fade; the second keeps them out of their neighbours' averages.
         let (_, dev) = track_pilots(&cs, &vec![1.0; nsym]);
         let (scale, _) = noise_model(&dev);
-        let (avg, dev) = track_pilots(&cs, &scale);
+        let (mut avg, dev) = track_pilots(&cs, &scale);
         let (scale, pilot_var) = noise_model(&dev);
+        for (i, a) in avg.iter_mut().enumerate() {
+            a.iter_mut().enumerate().for_each(|(m, v)| *v *= ramp(i, m).conj());
+        }
 
         // Interpolate between pilots and equalize. Each carrier only depends on nearby
         // pilots, so noisy pilots at one end of the band do not corrupt carriers at the
@@ -456,6 +499,47 @@ fn remove_slope(raw: &[Complex32]) -> (f32, Vec<Complex32>) {
     let rot: Complex32 = raw.windows(2).map(|w| w[1] * w[0].conj()).sum();
     let slope = rot.arg();
     (slope, raw.iter().enumerate().map(|(k, &h)| h * Complex32::from_polar(1.0, -slope * k as f32)).collect())
+}
+
+/// The clock drift of a frame, in samples of timing per symbol, from its pilot
+/// ratios `cs` (one Vec per symbol): the rate in `-max..=max` that maximises
+/// `sum_m |sum_i cs[i][m] e^{j omega[m] rate i}|^2`, i.e. the drift that, once removed,
+/// leaves each pilot most nearly constant over the frame. Each pilot keeps its own
+/// mean, so a constant timing offset does not enter.
+fn drift_rate(cs: &[Vec<Complex32>], omega: &[f32], max: f32) -> f32 {
+    let nsym = cs.len();
+    let score = |rate: f32| -> f32 {
+        omega
+            .iter()
+            .enumerate()
+            .map(|(m, &w)| {
+                let step = Complex32::from_polar(1.0, w * rate);
+                let mut rot = Complex32::new(1.0, 0.0);
+                let mut z = Complex32::new(0.0, 0.0);
+                for c in cs {
+                    z += c[m] * rot;
+                    rot *= step;
+                }
+                z.norm_sqr()
+            })
+            .sum()
+    };
+    // The peak is about 2 pi / (omega_top nsym) wide: search a grid of an eighth of
+    // that, then narrow down around the best grid point.
+    let w_top = omega.iter().copied().fold(0.0, f32::max);
+    let h = (std::f32::consts::PI / (4.0 * w_top * nsym as f32)).min(max);
+    let steps = (max / h).ceil() as i32;
+    let best = (-steps..=steps).map(|s| s as f32 * h).max_by(|&a, &b| score(a).total_cmp(&score(b))).unwrap_or(0.0);
+    let (mut lo, mut hi) = (best - h, best + h);
+    for _ in 0..DRIFT_REFINE_STEPS {
+        let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if score(a) < score(b) {
+            lo = a;
+        } else {
+            hi = b;
+        }
+    }
+    ((lo + hi) / 2.0).clamp(-max, max)
 }
 
 /// Average each pilot over up to `TRACK_HALF_WINDOW` symbols either side, weighting
@@ -647,6 +731,56 @@ mod tests {
             let raw_db = 10.0 * (pr[1] / pr[0]).log10();
             println!("{}: out-of-band {oob_db:.1} dB (clipped only: {raw_db:.1} dB)", ofdm.p.name);
             assert!(oob_db < -30.0, "{}: out-of-band power {oob_db:.1} dB", ofdm.p.name);
+        }
+    }
+
+    /// EVM in dB of `got` against `want`, over the given symbols.
+    fn evm_db(got: &[Vec<Complex32>], want: &[Vec<Complex32>], syms: std::ops::Range<usize>) -> f32 {
+        let (e, s) = syms.fold((0.0, 0.0), |(e, s), i| {
+            got[i].iter().zip(&want[i]).fold((e, s), |(e, s), (y, x)| (e + (y - x).norm_sqr(), s + x.norm_sqr()))
+        });
+        10.0 * (e / s).log10()
+    }
+
+    #[test]
+    fn drift_removal_holds_64qam_to_the_burst_end_at_150_ppm() {
+        // The longest 64QAM bursts the modem sends (header and payload symbols: 16
+        // codewords in narrow mode, 24 in wide), with the sound card's clock 150 ppm
+        // off. The box average of the pilots is one-sided over the last symbols and
+        // lags the drift there; with the drift removed they are as clean as the rest.
+        let m = Modulation::Qam64;
+        for (p, nsym) in [(OfdmParams::narrow(), 170), (OfdmParams::wide(), 200)] {
+            let edge = TRACK_HALF_WINDOW;
+            for ppm in [-150.0, 150.0] {
+                let mut ofdm = Ofdm::new(p.clone());
+                let data = random_frame(&ofdm, m, nsym, 11);
+                let sent = Prng::new(11).bits(nsym * ofdm.data_carriers() * m.bits_per_symbol());
+                let mut tx = vec![0.0; 1500];
+                // Quiet enough not to clip: clipping alone puts a bit error into the
+                // wide frame.
+                tx.extend(ofdm.modulate_with_leader_rms(&data, 0.0, 0.05));
+                tx.extend(vec![0.0; 2000]);
+                let rx = crate::filter::resample_cubic(&tx, 1.0 + ppm * 1e-6);
+                let b = ofdm.detect(&rx, 0).expect("frame not detected");
+                let mut evm = |remove_drift| {
+                    ofdm.remove_drift = remove_drift;
+                    let f = ofdm.demodulate(&rx, b, nsym).expect("demod failed");
+                    let mut bits = Vec::new();
+                    f.symbols.iter().flatten().for_each(|s| m.hard_bits(*s, &mut bits));
+                    let ok = bits == sent;
+                    (evm_db(&f.symbols, &data, nsym - edge..nsym), evm_db(&f.symbols, &data, edge..nsym - edge), ok)
+                };
+                let (box_edge, box_mid, _) = evm(false);
+                let (edge_db, mid_db, ok) = evm(true);
+                println!(
+                    "{} {ppm} ppm: last {edge} symbols {box_edge:.1} dB with the box average, {edge_db:.1} dB with \
+                     drift removal; the rest {box_mid:.1} / {mid_db:.1} dB",
+                    p.name
+                );
+                assert!(ok, "{} {ppm} ppm: bit errors", p.name);
+                assert!(edge_db < mid_db + 1.0, "{} {ppm} ppm: edge {edge_db:.1} dB, middle {mid_db:.1} dB", p.name);
+                assert!(box_edge > edge_db + 3.0, "{} {ppm} ppm: the box average is not one-sided any more?", p.name);
+            }
         }
     }
 
