@@ -5,7 +5,7 @@
 
 use std::f32::consts::PI;
 use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
-use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
+use vardefm_dsp::{Detector, Modulation, Ofdm, OfdmParams};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 const FS: u32 = 48_000;
@@ -121,7 +121,7 @@ fn survives_16bit_wav_roundtrip() {
 fn no_frames_found_in_non_modem_audio() {
     let n = FS as usize * 2;
     let mut rng = vardefm_dsp::prng::Prng::new(99);
-    let noise: Vec<f32> = (0..n).map(|_| (rng.next_u32() as f32 / u32::MAX as f32 - 0.5) * 0.6).collect();
+    let noise: Vec<f32> = (0..n).map(|_| 0.3 * rng.uniform()).collect();
     let tone = |f: f32| (0..n).map(|i| 0.3 * (2.0 * PI * f * i as f32 / FS as f32).sin()).collect::<Vec<f32>>();
     let cases: Vec<(&str, Vec<f32>)> = vec![
         ("silence", vec![0.0; n]),
@@ -134,7 +134,9 @@ fn no_frames_found_in_non_modem_audio() {
     for mode in ["narrow", "wide"] {
         let ofdm = modem(mode);
         for (name, audio) in &cases {
-            assert!(ofdm.detect(audio, 0).is_none(), "{mode}: false frame in {name}");
+            for d in Detector::ALL {
+                assert!(ofdm.detect_with(d, audio, 0).is_none(), "{mode} {d}: false frame in {name}");
+            }
         }
     }
 }
@@ -145,7 +147,9 @@ fn squelch_noise_is_not_a_frame() {
     for mode in ["narrow", "wide"] {
         let cfg = FmChannelConfig { cnr_db: Some(-10.0), keyup_delay_s: 0.0, ..channel(mode) };
         let rx = transmit(&cfg, &vec![0.0; FS as usize * 2]);
-        assert!(modem(mode).detect(&rx, 0).is_none(), "{mode}");
+        for d in Detector::ALL {
+            assert!(modem(mode).detect_with(d, &rx, 0).is_none(), "{mode} {d}");
+        }
     }
 }
 

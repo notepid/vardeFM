@@ -12,7 +12,7 @@ mod receiver;
 
 pub use header::{Header, Kind, FLAG_POLL};
 pub use receiver::{AudioLevel, Receiver, RxBurst};
-pub use vardefm_dsp::OfdmParams;
+pub use vardefm_dsp::{Detector, OfdmParams};
 
 use vardefm_dsp::{Complex32, Frame, Modulation, Ofdm};
 use vardefm_fec::{bytes_to_bits, crc, permutation, scramble_bits, Ldpc};
@@ -105,6 +105,12 @@ impl Modem {
         }
     }
 
+    /// This modem with its receiver finding bursts with `detector`.
+    pub fn with_detector(mut self, detector: Detector) -> Self {
+        self.ofdm.detector = detector;
+        self
+    }
+
     pub fn fs(&self) -> f32 {
         self.ofdm.p.fs
     }
@@ -155,7 +161,7 @@ impl Modem {
     }
 
     fn leader_symbols(&self) -> usize {
-        (self.txdelay / self.ofdm.p.symbol_duration()).ceil() as usize
+        self.ofdm.leader_symbols(self.txdelay)
     }
 
     /// Length in samples of a burst.

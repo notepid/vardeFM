@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use vardefm_dsp::prng::Prng;
 use vardefm_link::LinkConfig;
-use vardefm_modem::{Burst, Header, Kind, Modem, OfdmParams, Receiver, LEVELS};
+use vardefm_modem::{Burst, Detector, Header, Kind, Modem, OfdmParams, Receiver, LEVELS};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 const CHUNK: usize = 480; // 10 ms, as the sound card delivers it
@@ -58,7 +58,7 @@ fn run(modem: &Arc<Modem>, audio: &[f32]) -> Run {
 
 /// Uniform noise with the given RMS (good enough for timing).
 fn noise(rng: &mut Prng, rms: f32) -> f32 {
-    (rng.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0) * rms * 3f32.sqrt()
+    rng.uniform() * rms * 3f32.sqrt()
 }
 
 fn burst(modem: &Modem, level: u8, seed: u32) -> Burst {
@@ -88,7 +88,7 @@ fn on_air(mode: &str, tx: &[f32]) -> Vec<f32> {
     transmit(&cfg, tx)
 }
 
-pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
+pub fn bench(modes: &[&str], threads: Option<usize>, detector: Detector) -> Result<(), String> {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let threads = threads.unwrap_or(cores).max(1);
     let link = LinkConfig::default();
@@ -103,19 +103,31 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
 
     for &mode in modes {
         let params = OfdmParams::by_name(mode).ok_or("mode must be narrow, wide or both")?;
-        let mut modem = Modem::new(params, 0.15);
-        modem.decode_threads = threads;
-        let modem = Arc::new(modem);
+        let with = |d: Detector| {
+            let mut m = Modem::new(params.clone(), 0.15).with_detector(d);
+            m.decode_threads = threads;
+            Arc::new(m)
+        };
+        let modem = with(detector);
+        // Warm up caches and the CPU clock before timing anything.
+        let _ = run(&modem, &on_air(mode, &modem.modulate(&burst(&modem, 0, 1))));
 
         // Listening to an empty channel (noise): the preamble search runs on every chunk.
         let mut rng = Prng::new(3);
         let empty: Vec<f32> = (0..(5.0 * modem.fs()) as usize).map(|_| noise(&mut rng, 0.1)).collect();
-        let idle = run(&modem, &empty);
-        // Warm up caches and the CPU clock before timing bursts.
-        let _ = run(&modem, &on_air(mode, &modem.modulate(&burst(&modem, 0, 1))));
+        // The best of three runs per detector, so that a cold cache or a busy core does
+        // not set the figure.
+        let idle: Vec<String> = Detector::ALL
+            .iter()
+            .map(|&d| {
+                let m = with(d);
+                let load = (0..3).map(|_| run(&m, &empty).load).fold(f64::INFINITY, f64::min);
+                format!("{d} {:.1}%", 100.0 * load)
+            })
+            .collect();
 
         println!();
-        println!("{mode} mode (listening to an empty channel: {:.0}% CPU)", 100.0 * idle.load);
+        println!("{mode} mode, detector {detector} (listening to an empty channel, CPU: {})", idle.join(", "));
         println!("  level        burst | clean: delay   CPU | worst case: delay   CPU | verdict");
         let mut max_ok = None;
         for level in 0..LEVELS.len() as u8 {

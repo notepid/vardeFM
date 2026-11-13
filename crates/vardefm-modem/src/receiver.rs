@@ -156,12 +156,11 @@ impl Receiver {
             return Some(true);
         }
 
-        let l = m.ofdm.p.symbol_len();
         match m.ofdm.detect(&self.buf, self.search) {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
                     // Come back when the header has arrived; re-detect from just before it.
-                    self.search = b.saturating_sub(3 * l);
+                    self.search = b.saturating_sub(m.ofdm.detect_lookback());
                     return Some(false);
                 }
                 let header =
@@ -192,8 +191,7 @@ impl Receiver {
             }
             None => {
                 // Nothing found. Keep enough history to catch a preamble that is still arriving.
-                let keep = 3 * l + 2 * m.ofdm.p.nfft;
-                self.search = self.search.max(self.buf.len().saturating_sub(keep));
+                self.search = self.search.max(self.buf.len().saturating_sub(m.ofdm.detect_history()));
                 Some(false)
             }
         }
