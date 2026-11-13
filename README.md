@@ -15,6 +15,8 @@ warnings from mountaintop to mountaintop.
   document for the differences from VARA.
 - **Not on-air compatible with VARA:** both stations need VardeFM.
 
+Video explaining how the software works [VardeFM under the hood](https://www.youtube.com/watch?v=TU3rt4h6phA)
+
 ## Download and use
 
 Get the archive for your system from the [releases page](https://github.com/notepid/vardeFM/releases):
