@@ -65,7 +65,7 @@ pub(crate) fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
 
 /// The header of the burst whose preamble B starts at `b`, if it decodes.
 pub(crate) fn header_at(m: &Modem, rx: &[f32], b: usize) -> Option<Header> {
-    m.ofdm.demodulate(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f))
+    m.ofdm.demodulate_header(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f))
 }
 
 /// Whether the burst at `b`, whose header `h` has decoded, is the one sent: header

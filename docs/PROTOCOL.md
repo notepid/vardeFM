@@ -76,8 +76,10 @@ The reference receiver:
 2. Confirms the frame by cross-correlating with preamble B.
 3. Places the FFT window mid cyclic prefix, which absorbs clock drift of ±ncp/2 samples
    over the frame.
-4. Estimates the channel from preamble B, smoothed across frequency, and decodes the
-   header with it. Once the header has decoded, it demodulates the frame again with the
+4. Estimates the channel from preamble B and the pilots of the header symbols, as a
+   low-order polynomial fit across carriers after removing the timing slope (found by a
+   coherent search over all of them), and decodes the header with it. Once the header
+   has decoded, it demodulates the frame again with the
    header symbols (now known) averaged into the channel estimate, each weighted by the
    inverse of its noise: the header decodes through a click on one of its symbols, and
    that symbol must not corrupt the estimate.
@@ -122,18 +124,18 @@ known burst position with the header taken as known, is recorded in
 is the reference; roughly, it runs from 3 dB (level 0) to 16 dB (level 6) in narrow
 mode and from 5 dB to 24 dB in wide mode. Error-free decoding begins about half a dB
 higher at the low levels and about 1 dB higher at levels 5 and 6. These are payload
-figures. The header, decoded from preamble B alone, is recorded separately in the same
-file, once per drive level, since a burst goes out at its level's TX RMS (§1.1), header
+figures. The header, decoded before anything else is known (§1.5), is recorded
+separately in the same file, once per drive level, since a burst goes out at its level's TX RMS (§1.1), header
 included. The header's fields vary from burst to burst, and with them how much of it is
 clipped, so its points are averaged over random field values. That one point per drive
 covers every level and burst length at that drive is an estimate, not a measured header
 error rate: on the noiseless transmitted header, the useful level less the clipping
 distortion, counted as noise at a 3 dB reference SNR, agrees within 0.1 dB
 (`header_level_depends_only_on_drive`). At level 0's drive the header reaches 10 %
-header errors at about 3.7 dB (narrow) and 5.9 dB (wide), above level 0's point, and its
-error rate falls much more slowly than the payload's, so at the low levels the header
-limits a burst. At the lower drives of the high levels it needs up to about 0.5 dB
-(narrow) and 1.4 dB (wide) more, still far below those levels' own points. Detection is
+header errors at about 2.0 dB (narrow) and 4.1 dB (wide), about 1 dB below level 0's
+point, so the payload, not the header, limits a burst; its error rate falls more slowly
+than the payload's, and near level 0's point a few in a thousand headers still fail. At the lower drives of the high levels it needs up to about 0.5 dB (narrow) and
+1.7 dB (wide) more, still far below those levels' own points. Detection is
 not part of either. Below about 8 dB (narrow) and 11 dB (wide) some level 1 bursts are
 not detected at all.
 
