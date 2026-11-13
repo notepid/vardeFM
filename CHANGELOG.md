@@ -15,6 +15,11 @@ run the same minor version.
   `crates/vardefm-fec/perf/ldpc.toml`. `level_sweep` and `fer_curve` with `WRITE=1`
   record them again. The figures in `docs/PROTOCOL.md` §2.2 and §2.4 now refer to these
   files.
+- **Incremental-redundancy study (issue 5).** `docs/IR_HARQ.md`: a design note and
+  measurements for IR-HARQ. `Ldpc::with_extension` builds an experimental
+  rate-compatible mother code that keeps today's codewords; the ignored tests
+  `ir_curve` (vardefm-fec) and `ir_sweep` (vardefm-modem) measure it on AWGN and
+  through the FM channel simulator. No protocol change.
 
 ### Changed
 - **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).

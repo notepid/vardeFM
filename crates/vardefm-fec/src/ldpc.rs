@@ -23,8 +23,13 @@ const HIGH_DEGREE: usize = 8;
 pub struct Ldpc {
     pub n: usize,
     pub k: usize,
-    /// For each check: the information-bit variables it contains.
+    /// Checks of the staircase code ([`Ldpc::new`]); `m()` for a code without extension.
+    base_m: usize,
+    /// For each check of the staircase code: the information-bit variables it contains.
     info_vars: Vec<Vec<u32>>,
+    /// For each extension check ([`Ldpc::with_extension`]): the variables of the
+    /// staircase codeword it contains. Its own parity bit is not listed.
+    ext_rows: Vec<Vec<u32>>,
     /// Flattened adjacency of every check (information and parity variables).
     check_ptr: Vec<usize>,
     check_vars: Vec<u32>,
@@ -62,7 +67,70 @@ impl Ldpc {
             }
             check_ptr.push(check_vars.len());
         }
-        Self { n, k, info_vars, check_ptr, check_vars }
+        Self { n, k, base_m: m, info_vars, ext_rows: Vec::new(), check_ptr, check_vars }
+    }
+
+    /// Experimental (issue 5, incremental redundancy; not part of the protocol): the
+    /// code of [`Ldpc::new`] extended by `ext` parity bits, a lower-rate mother code
+    /// whose first `n` bits are the staircase code's codeword unchanged.
+    ///
+    /// Each extension parity bit has its own check (degree 1 in the parity part, as in
+    /// a Raptor-like or 5G NR extension) holding `degree` variables of the staircase
+    /// codeword, information or parity. For each check in turn, each variable is drawn
+    /// with `Prng::new(seed)` from those of the lowest current degree that share no
+    /// check with a variable already in the row, so the extension has no 4-cycle and
+    /// goes first to the weakest bits: the degree-2 staircase parity and the low-degree
+    /// information bits. Extension bits that were never sent decode as LLR 0, and then
+    /// their checks pass nothing on: the decoder gives the staircase code's result.
+    pub fn with_extension(n: usize, k: usize, seed: u32, ext: usize, degree: usize, ext_seed: u32) -> Self {
+        let mut code = Self::new(n, k, seed);
+        let base_m = code.base_m;
+        let mut var_checks: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for c in 0..base_m {
+            for &v in &code.check_vars[code.check_ptr[c]..code.check_ptr[c + 1]] {
+                var_checks[v as usize].push(c as u32);
+            }
+        }
+        let mut rng = Prng::new(ext_seed);
+        // Checks touched by the variables already in the row, marked with the row's number.
+        let mut touched = vec![u32::MAX; base_m + ext];
+        let mut cand = Vec::new();
+        for e in 0..ext {
+            let c = base_m + e;
+            let mut row: Vec<u32> = Vec::with_capacity(degree);
+            for _ in 0..degree {
+                cand.clear();
+                let mut best = usize::MAX;
+                for (v, checks) in var_checks.iter().enumerate() {
+                    if row.contains(&(v as u32)) || checks.iter().any(|&x| touched[x as usize] == e as u32) {
+                        continue;
+                    }
+                    if checks.len() < best {
+                        best = checks.len();
+                        cand.clear();
+                    }
+                    if checks.len() == best {
+                        cand.push(v as u32);
+                    }
+                }
+                assert!(!cand.is_empty(), "extension row {e}: no variable left without a 4-cycle");
+                let v = cand[rng.next_u32() as usize % cand.len()];
+                for &x in &var_checks[v as usize] {
+                    touched[x as usize] = e as u32;
+                }
+                row.push(v);
+            }
+            row.sort_unstable();
+            for &v in &row {
+                var_checks[v as usize].push(c as u32);
+            }
+            code.check_vars.extend_from_slice(&row);
+            code.check_vars.push((n + e) as u32);
+            code.check_ptr.push(code.check_vars.len());
+            code.ext_rows.push(row);
+        }
+        code.n = n + ext;
+        code
     }
 
     pub fn m(&self) -> usize {
@@ -79,6 +147,10 @@ impl Ldpc {
             let s = iv.iter().fold(0u8, |acc, &v| acc ^ info[v as usize]);
             prev ^= s;
             cw.push(prev);
+        }
+        for row in &self.ext_rows {
+            let p = row.iter().fold(0u8, |acc, &v| acc ^ cw[v as usize]);
+            cw.push(p);
         }
         cw
     }
@@ -344,6 +416,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn extension_keeps_the_staircase_codeword() {
+        for k in [1200, 2000] {
+            let base = Ldpc::new(2400, k, 0x1d9c_0000 + k as u32);
+            let ext = Ldpc::with_extension(2400, k, 0x1d9c_0000 + k as u32, 2400, 3, 7);
+            assert_eq!((ext.n, ext.m()), (4800, 4800 - k));
+            let info = Prng::new(3).bits(k);
+            let cw = ext.encode(&info);
+            assert_eq!(cw[..2400], base.encode(&info)[..], "k {k}");
+            assert!(ext.check(&cw), "k {k}");
+        }
+    }
+
+    /// With the extension bits erased (LLR 0), the mother code decodes exactly as the
+    /// staircase code: the same frames succeed, with the same bits.
+    #[test]
+    fn erased_extension_decodes_as_the_staircase_code() {
+        let k = 1800;
+        let base = Ldpc::new(2400, k, 0x1d9c_0000 + k as u32);
+        let ext = Ldpc::with_extension(2400, k, 0x1d9c_0000 + k as u32, 1200, 3, 7);
+        let (mut ok, mut same) = (0, 0);
+        for t in 0..40 {
+            let info = Prng::new(50 + t).bits(k);
+            // Near this code's 1 % point, so that some frames fail.
+            let llr = awgn_bpsk(&base.encode(&info), 2.2 + 10.0 * 0.75f32.log10(), 90 + t);
+            let mut padded = llr.clone();
+            padded.resize(ext.n, 0.0);
+            let (a, b) = (base.decode(&llr, 50), ext.decode(&padded, 50));
+            ok += a.is_some() as u32;
+            same += (a == b) as u32;
+        }
+        assert_eq!(same, 40);
+        assert!((5..40).contains(&ok), "{ok} of 40 decoded: the test needs both outcomes");
+    }
+
+    /// No two variables of an extension row share another check.
+    #[test]
+    fn extension_has_no_4_cycles() {
+        let code = Ldpc::with_extension(2400, 1200, 0x1d9c_0000 + 1200, 2400, 3, 7);
+        let mut pairs = std::collections::HashSet::new();
+        for c in 0..code.m() {
+            let vars: Vec<u32> = code.check_vars[code.check_ptr[c]..code.check_ptr[c + 1]].to_vec();
+            for (i, &a) in vars.iter().enumerate() {
+                for &b in &vars[i + 1..] {
+                    assert!(pairs.insert((a.min(b), a.max(b))), "check {c}: {a} and {b} share two checks");
+                }
+            }
+        }
+    }
+
     /// The construction is part of the protocol: any change to it breaks
     /// interoperability, so pin a hash of every code the modem uses.
     #[test]
@@ -412,6 +534,88 @@ mod curve {
             workers.into_iter().map(|w| w.join().unwrap()).sum()
         });
         fails as f32 / trials as f32
+    }
+
+    /// Issue 5: Es/N0 (BPSK, AWGN) at which the staircase code plus `r` increments of
+    /// `INC` extension bits reaches 10 % FER, for several extension degrees. Every bit
+    /// sees the same Es/N0, as when the increments go out at the same level.
+    /// `cargo test --release -p vardefm-fec ir_curve -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn ir_curve() {
+        const INC: usize = 600;
+        const INCS: usize = 4;
+        let trials = env_or("TRIALS", 200);
+        let degrees: Vec<usize> = std::env::var("DEGREES")
+            .map_or(vec![2, 3, 4, 6], |s| s.split(',').map(|x| x.trim().parse().unwrap()).collect());
+        let jobs: Vec<_> = CODES[1..].iter().flat_map(|c| degrees.iter().map(move |&d| (*c, d))).collect();
+        let lines: Vec<String> = std::thread::scope(|s| {
+            let workers: Vec<_> = jobs
+                .iter()
+                .map(|&((name, n, k, seed), d)| {
+                    s.spawn(move || {
+                        let code = Ldpc::with_extension(n, k, seed, INC * INCS, d, 0x1d9c_2000 + k as u32);
+                        let mut line = format!("{name} degree {d}:");
+                        // Each increment's crossing lies below the last: scan up from 4 dB under it.
+                        let mut top = 6.0f32;
+                        for r in 0..=INCS {
+                            let sent = n + r * INC;
+                            let fer_at = |esn0: f32| {
+                                let sigma = (0.5 * 10f32.powf(-esn0 / 10.0)).sqrt();
+                                let fails: u32 = (0..trials)
+                                    .map(|t| {
+                                        let info = Prng::new(1 + t).bits(code.k);
+                                        let cw = code.encode(&info);
+                                        let mut rng = Prng::new(1000 + t);
+                                        let mut u = || (rng.next_u32() as f32 + 1.0) / (u32::MAX as f32 + 2.0);
+                                        let llr: Vec<f32> = cw
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, &b)| {
+                                                let n =
+                                                    (-2.0 * u().ln()).sqrt() * (2.0 * std::f32::consts::PI * u()).cos();
+                                                let y = if b == 0 { 1.0 } else { -1.0 } + sigma * n;
+                                                if i < sent {
+                                                    2.0 * y / (sigma * sigma)
+                                                } else {
+                                                    0.0
+                                                }
+                                            })
+                                            .collect();
+                                        (code.decode(&llr, 50).as_deref() != Some(&info[..])) as u32
+                                    })
+                                    .sum();
+                                fails as f32 / trials as f32
+                            };
+                            let (mut grid, mut rates) = (Vec::new(), Vec::new());
+                            let mut e = top - 4.0;
+                            // Start where FER is still at least 10 %.
+                            while fer_at(e) < 0.1 {
+                                e -= 2.0;
+                            }
+                            while e <= top + 0.01 {
+                                grid.push(e);
+                                rates.push(fer_at(e));
+                                if *rates.last().unwrap() < 0.02 {
+                                    break;
+                                }
+                                e += 0.25;
+                            }
+                            let x = crossing(&grid, &rates, 0.1);
+                            if let Some(x) = x {
+                                top = x;
+                            }
+                            line += &format!(" +{}:{}", r * INC, x.map_or("-".into(), |x| format!("{x:.2}")));
+                        }
+                        line
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+        for l in lines {
+            println!("{l}");
+        }
     }
 
     /// Frame error rate at which a code's point is recorded and gated.
