@@ -83,6 +83,8 @@ impl Ldpc {
     /// information bits. Extension bits that were never sent decode as LLR 0, and then
     /// their checks pass nothing on: the decoder gives the staircase code's result.
     pub fn with_extension(n: usize, k: usize, seed: u32, ext: usize, degree: usize, ext_seed: u32) -> Self {
+        // A row of degree 0 would hold only its own parity bit, always 0: no redundancy.
+        assert!(degree >= 1, "extension rows need at least one variable");
         let mut code = Self::new(n, k, seed);
         let base_m = code.base_m;
         let mut var_checks: Vec<Vec<u32>> = vec![Vec::new(); n];
@@ -437,25 +439,27 @@ mod tests {
     }
 
     /// With the extension bits erased (LLR 0), the mother code decodes exactly as the
-    /// staircase code: the same frames succeed, with the same bits.
+    /// staircase code: the same frames succeed, with the same bits. Frames near this
+    /// code's 1 % point (Eb/N0 2.6 dB) and far below it (0 dB, under the Shannon limit
+    /// of rate 3/4, so no decoder can succeed there), so that both outcomes are compared.
     #[test]
     fn erased_extension_decodes_as_the_staircase_code() {
         let k = 1800;
         let base = Ldpc::new(2400, k, 0x1d9c_0000 + k as u32);
         let ext = Ldpc::with_extension(2400, k, 0x1d9c_0000 + k as u32, 1200, 3, 7);
-        let (mut ok, mut same) = (0, 0);
-        for t in 0..40 {
-            let info = Prng::new(50 + t).bits(k);
-            // Near this code's 1 % point, so that some frames fail.
-            let llr = awgn_bpsk(&base.encode(&info), 2.2 + 10.0 * 0.75f32.log10(), 90 + t);
-            let mut padded = llr.clone();
-            padded.resize(ext.n, 0.0);
-            let (a, b) = (base.decode(&llr, 50), ext.decode(&padded, 50));
-            ok += a.is_some() as u32;
-            same += (a == b) as u32;
+        let mut fails = 0;
+        for (i, ebn0) in [2.2f32, 0.0].into_iter().enumerate() {
+            for t in 0..20 {
+                let info = Prng::new(50 + t).bits(k);
+                let llr = awgn_bpsk(&base.encode(&info), ebn0 + 10.0 * 0.75f32.log10(), 90 + t + 100 * i as u32);
+                let mut padded = llr.clone();
+                padded.resize(ext.n, 0.0);
+                let (a, b) = (base.decode(&llr, 50), ext.decode(&padded, 50));
+                assert_eq!(a, b, "Eb/N0 {ebn0} dB, frame {t}");
+                fails += a.is_none() as u32;
+            }
         }
-        assert_eq!(same, 40);
-        assert!((5..40).contains(&ok), "{ok} of 40 decoded: the test needs both outcomes");
+        assert!(fails >= 20, "below the Shannon limit every frame must fail; {fails} of 40 failed");
     }
 
     /// Weak but correct LLRs (below `OFFSET`) on the staircase codeword, extension
@@ -537,8 +541,14 @@ mod curve {
     /// it draws frames the recorded grid never saw.
     fn fer(code: &Ldpc, ebn0_db: f32, first: u32, trials: u32) -> f32 {
         let rate = code.k as f32 / code.n as f32;
-        let esn0 = ebn0_db + 10.0 * rate.log10();
-        let sigma = (0.5 * 10f32.powf(-esn0 / 10.0)).sqrt();
+        fer_sent(code, ebn0_db + 10.0 * rate.log10(), code.n, first, trials)
+    }
+
+    /// As [`fer`], at `esn0_db` per coded bit, with only the first `sent` bits of each
+    /// codeword received: the rest enter the decoder as LLR 0 (incremental redundancy
+    /// not yet sent).
+    fn fer_sent(code: &Ldpc, esn0_db: f32, sent: usize, first: u32, trials: u32) -> f32 {
+        let sigma = (0.5 * 10f32.powf(-esn0_db / 10.0)).sqrt();
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as u32;
         let fails: u32 = std::thread::scope(|s| {
             let workers: Vec<_> = (0..threads)
@@ -552,10 +562,15 @@ mod curve {
                             let mut u = || (rng.next_u32() as f32 + 1.0) / (u32::MAX as f32 + 2.0);
                             let llr: Vec<f32> = cw
                                 .iter()
-                                .map(|&b| {
+                                .enumerate()
+                                .map(|(i, &b)| {
                                     let n = (-2.0 * u().ln()).sqrt() * (2.0 * std::f32::consts::PI * u()).cos();
                                     let y = if b == 0 { 1.0 } else { -1.0 } + sigma * n;
-                                    2.0 * y / (sigma * sigma)
+                                    if i < sent {
+                                        2.0 * y / (sigma * sigma)
+                                    } else {
+                                        0.0
+                                    }
                                 })
                                 .collect();
                             if code.decode(&llr, 50).as_deref() != Some(&info[..]) {
@@ -581,77 +596,46 @@ mod curve {
         const INC: usize = 600;
         const INCS: usize = 4;
         let trials = env_or("TRIALS", 200);
-        let degrees: Vec<usize> = std::env::var("DEGREES")
-            .map_or(vec![4, 6, 8, 10], |s| s.split(',').map(|x| x.trim().parse().unwrap()).collect());
-        let jobs: Vec<_> = CODES[1..].iter().flat_map(|c| degrees.iter().map(move |&d| (*c, d))).collect();
-        let lines: Vec<String> = std::thread::scope(|s| {
-            let workers: Vec<_> = jobs
-                .iter()
-                .map(|&((name, n, k, seed), d)| {
-                    s.spawn(move || {
-                        let code = Ldpc::with_extension(n, k, seed, INC * INCS, d, 0x1d9c_2000 + k as u32);
-                        let mut line = format!("{name} degree {d}:");
-                        // Each increment's crossing should lie below the last: scan from 4 dB
-                        // under it to 1 dB over it, so that FER noise at few frames still
-                        // finds a crossing just above.
-                        let mut top = 6.0f32;
-                        for r in 0..=INCS {
-                            let sent = n + r * INC;
-                            let fer_at = |esn0: f32| {
-                                let sigma = (0.5 * 10f32.powf(-esn0 / 10.0)).sqrt();
-                                let fails: u32 = (0..trials)
-                                    .map(|t| {
-                                        let info = Prng::new(1 + t).bits(code.k);
-                                        let cw = code.encode(&info);
-                                        let mut rng = Prng::new(1000 + t);
-                                        let mut u = || (rng.next_u32() as f32 + 1.0) / (u32::MAX as f32 + 2.0);
-                                        let llr: Vec<f32> = cw
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, &b)| {
-                                                let n =
-                                                    (-2.0 * u().ln()).sqrt() * (2.0 * std::f32::consts::PI * u()).cos();
-                                                let y = if b == 0 { 1.0 } else { -1.0 } + sigma * n;
-                                                if i < sent {
-                                                    2.0 * y / (sigma * sigma)
-                                                } else {
-                                                    0.0
-                                                }
-                                            })
-                                            .collect();
-                                        (code.decode(&llr, 50).as_deref() != Some(&info[..])) as u32
-                                    })
-                                    .sum();
-                                fails as f32 / trials as f32
-                            };
-                            let (mut grid, mut rates) = (Vec::new(), Vec::new());
-                            let mut e = top - 4.0;
-                            // Start where FER is still at least 10 %.
-                            while fer_at(e) < 0.1 {
-                                e -= 2.0;
-                            }
-                            while e <= top + 1.01 {
-                                grid.push(e);
-                                rates.push(fer_at(e));
-                                if *rates.last().unwrap() < 0.02 {
-                                    break;
-                                }
-                                e += 0.25;
-                            }
-                            let x = crossing(&grid, &rates, 0.1);
-                            if let Some(x) = x {
-                                top = x;
-                            }
-                            line += &format!(" +{}:{}", r * INC, x.map_or("-".into(), |x| format!("{x:.2}")));
-                        }
-                        line
-                    })
-                })
-                .collect();
-            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        /// The scan gives up below this Es/N0, dB: every rate-k/4800 code fails there
+        /// (Shannon limit of rate 1/4 about −6.8 dB), so only a broken decoder gets here.
+        const MIN_ESN0_DB: f32 = -20.0;
+        let degrees: Vec<usize> = std::env::var("DEGREES").map_or(vec![4, 6, 8, 10], |s| {
+            s.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| panic!("DEGREES={s:?} does not parse"))).collect()
         });
-        for l in lines {
-            println!("{l}");
+        assert!(degrees.iter().all(|&d| d >= 1), "DEGREES must be at least 1");
+        for (name, n, k, seed) in &CODES[1..] {
+            for &d in &degrees {
+                let code = Ldpc::with_extension(*n, *k, *seed, INC * INCS, d, 0x1d9c_2000 + *k as u32);
+                let mut line = format!("{name} degree {d}:");
+                // Each increment's crossing should lie below the last: scan from 4 dB
+                // under it to 1 dB over it, so that FER noise at few frames still finds a
+                // crossing just above.
+                let mut top = 6.0f32;
+                for r in 0..=INCS {
+                    let fer_at = |esn0: f32| fer_sent(&code, esn0, n + r * INC, 0, trials);
+                    let (mut grid, mut rates) = (Vec::new(), Vec::new());
+                    let mut e = top - 4.0;
+                    // Start where FER is still at least 10 %.
+                    while fer_at(e) < 0.1 {
+                        e -= 2.0;
+                        assert!(e >= MIN_ESN0_DB, "{name} degree {d} +{}: FER below 10 % at {e} dB", r * INC);
+                    }
+                    while e <= top + 1.01 {
+                        grid.push(e);
+                        rates.push(fer_at(e));
+                        if *rates.last().unwrap() < 0.02 {
+                            break;
+                        }
+                        e += 0.25;
+                    }
+                    let x = crossing(&grid, &rates, 0.1);
+                    if let Some(x) = x {
+                        top = x;
+                    }
+                    line += &format!(" +{}:{}", r * INC, x.map_or("-".into(), |x| format!("{x:.2}")));
+                }
+                println!("{line}");
+            }
         }
     }
 

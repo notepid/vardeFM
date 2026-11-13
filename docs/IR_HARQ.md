@@ -87,8 +87,11 @@ position with the header as training, and keeps, per bit slot, the LLR signed by
 sent bit: positive when right. One codeword's values (interleaver undone) are the
 channel one transmission sees, clicks and all. Each scheme then sends a mother
 codeword through a sequence of these channels, one per transmission, each from a
-different burst. The interleaver spreads every codeword over its whole burst, so a
-codeword's channel can be reused for another codeword's bits.
+different burst. The decoder treats every codeword alike, so applying a burst's
+signed LLRs to another codeword changes only which bits share a QAM symbol. The
+test `sign_trick_matches_real_decoding` checks that, on narrow level 3 bursts around
+its point, a first transmission this way decodes exactly when the modem's own
+decoding of the codeword sent does.
 
 Schemes, each charged the coded bits it puts on the air:
 
@@ -103,9 +106,8 @@ efficiency × `Modem::net_rate(level)`. The envelope takes the best level at eac
 (a genie: the link picks by its SNR thresholds, with margin, and would sit somewhat
 lower under every scheme). Not modelled: header and detection losses (common to all
 schemes), signalling overhead, and the extra round trips (each increment waits one
-turn, as a resend does today). A burst that does not demodulate from the known
-position would count as one whose codewords carry nothing; the sweep prints how many,
-and in the run below there were none.
+turn, as a resend does today). Frame sync is out of scope: the burst position is
+known.
 
 ## 5. Results
 
@@ -139,9 +141,10 @@ Chosen: d = 4 for k ≤ 1600, d = 6 for k ≥ 1800. Dense rows help little and h
 low-rate end, where the extension must reach every bit: at d = 10 the rate-1/2 code
 gains almost nothing past the first increment. The first 600-bit increment (a
 quarter codeword) buys 0.7 to 1.5 dB; the whole extension 2.3 to 4.8 dB. The rate-1/4
-mother code sits about 2.7 dB from BPSK capacity (−6.8 dB Es/N0), part of it
-finite length: a jointly designed protograph would do better, but the point here is whether IR pays
-at all.
+mother code sits about 2.7 dB from the Shannon limit at rate 1/4 (−6.8 dB Es/N0;
+the BPSK-input limit is somewhat higher, so the gap to it a little smaller), part of
+it finite length: a jointly designed protograph would do better, but the point here
+is whether IR pays at all.
 
 ### 5.2 Goodput against CNR
 
@@ -209,9 +212,11 @@ there is if anything understated.
   a level's point, a resend at that level is nearly worthless, and today's best choice
   is the level below. So resends lose little where they are used; the loss is in the
   gaps of the ladder, where the next level up does not yet work at all.
-- **IR fills the gaps.** Within 2 to 3 dB below a level's point, that level with one
-  or two increments beats the level below by 10 to 40 %, and at the bottom (narrow
-  4 dB, wide 6 dB) by 54 to 88 %. Deeper in the wide gaps (narrow 9 to 10.5 dB, wide
+- **IR fills the gaps.** In the 2 to 3 dB below a level's point, that level with
+  increments gains 0 to 40 % over the level below, most at the half-dB points just
+  under the point (narrow 7.5 dB +23 %, 12.5 dB +24 %; wide 14.5 dB +30 %, all ir600)
+  and next to nothing where the level below has just reached full rate (narrow 4.5,
+  6.5 and 11 dB). At the bottom (narrow 4 dB, wide 6 dB) it gains 54 to 88 %. Deeper in the wide gaps (narrow 9 to 10.5 dB, wide
   16 to 18.5 dB) it gains nothing. Above a level's point all schemes coincide.
   Averaged over the CNR range the gain is +6 % (ir600) to +8–9 % (ir300), in both
   modes.
@@ -231,7 +236,8 @@ there is if anything understated.
 ## 6. Recommendation
 
 IR-HARQ pays, but modestly on average: about +6 % goodput over the whole CNR range
-(ir600), +10 to 40 % in the gaps between levels, nothing above a level's point. It
+(ir600), up to 20 to 30 % just under a level's point and next to nothing elsewhere
+in the gaps between levels or above a level's point. It
 needs a breaking protocol change (capability exchange, a header flag, new bitmap
 semantics, a normative extension construction) and LLR storage and bookkeeping in
 the receiver.
