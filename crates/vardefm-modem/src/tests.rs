@@ -89,6 +89,36 @@ fn decodes_through_noisy_radio() {
     }
 }
 
+#[test]
+fn receiver_decodes_64qam_with_150_ppm_clock_error() {
+    // The streaming receiver end to end, header decode included, at the top level with
+    // the sound card's clock 150 ppm off either way: the longest burst and the
+    // shortest (one codeword, where most symbols sit near an end of the frame), about
+    // 5 dB above the level's 10 % point. It covers the receiver's path (header decoded
+    // under drift, then the frame again with the header as training); how much the
+    // drift removal gains near the 10 % point, `drift_eval` measures.
+    let level = 6;
+    for (mode, cnr) in [("narrow", 21.0), ("wide", 29.0)] {
+        let m = modem(mode);
+        for ncw in [m.max_ncw(level), 1] {
+            for ppm in [-150.0, 150.0] {
+                let b = burst(level, ncw, 11);
+                let cfg = FmChannelConfig {
+                    cnr_db: Some(cnr),
+                    clock_offset_ppm: ppm,
+                    seed: 5,
+                    ..FmChannelConfig::by_name(mode).unwrap()
+                };
+                let got = receive(&mut Receiver::new(m.clone()), &transmit(&cfg, &m.modulate(&b)));
+                assert_eq!(got.len(), 1, "{mode} {ncw} codewords {ppm} ppm: burst not received");
+                let ok = got[0].payload.iter().filter(|p| p.is_some()).count();
+                println!("{mode} {ncw} codewords {ppm} ppm: {ok} decoded, SNR {:.1}", got[0].snr_db);
+                assert_eq!(ok, ncw, "{mode} {ncw} codewords {ppm} ppm");
+            }
+        }
+    }
+}
+
 /// Prints, per level, the codeword success rate and estimated SNR across CNR.
 /// Used to set the rate-adaptation thresholds in vardefm-link.
 /// `cargo test --release -p vardefm-modem level_table -- --ignored --nocapture`

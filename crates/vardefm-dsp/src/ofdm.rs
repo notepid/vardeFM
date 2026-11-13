@@ -503,9 +503,14 @@ fn remove_slope(raw: &[Complex32]) -> (f32, Vec<Complex32>) {
 }
 
 /// [`drift_rate`] weighted by the noise, as the pilot averaging is, so that a symbol
-/// hit by a click or a pilot at a weak band edge does not steer the estimate. One pass
-/// of the noise model is enough for the weights; the drift biases its deviations only
-/// over the end symbols.
+/// hit by a click or a pilot at a weak band edge does not steer the estimate.
+///
+/// The weights come from the deviations of each pilot from its box average, which
+/// over the end symbols still include the lag of the average behind the drift: those
+/// symbols and the top pilots count a little less than they should. Measuring the
+/// weights again once the drift is off and estimating a second time moved no codeword
+/// error rate in `drift_eval` (64QAM, full and one-codeword bursts, 0 and ±150 ppm)
+/// by more than its noise, so one pass it is.
 fn estimate_drift(cs: &[Vec<Complex32>], omega: &[f32], max: f32) -> f32 {
     let (_, dev) = track_pilots(cs, &vec![1.0; cs.len()]);
     let (scale, pilot_var) = noise_model(&dev);
@@ -761,6 +766,7 @@ mod tests {
         // codewords in narrow mode, 24 in wide), with the sound card's clock 150 ppm
         // off. The box average of the pilots is one-sided over the last symbols and
         // lags the drift there; with the drift removed they are as clean as the rest.
+        // (The box average alone fails the edge check: about -19 dB against -35 dB.)
         let m = Modulation::Qam64;
         for (p, nsym) in [(OfdmParams::narrow(), 170), (OfdmParams::wide(), 200)] {
             let edge = TRACK_HALF_WINDOW;
@@ -799,7 +805,8 @@ mod tests {
     #[test]
     fn drift_estimate_ignores_a_click() {
         // Pilot ratios of a 170-symbol narrow frame drifting at 150 ppm, with noise
-        // at about 20 dB SNR, and one symbol hit by a click 20 dB above that.
+        // at about 20 dB SNR, and one symbol hit by a click 40 dB above the noise
+        // (17 dB above the pilots).
         let ofdm = Ofdm::new(OfdmParams::narrow());
         let n = ofdm.p.nfft as f32;
         let omega: Vec<f32> =
@@ -826,6 +833,60 @@ mod tests {
         // The click is kept out: the estimate hardly moves. (Unweighted it moves by
         // about 0.6 %, which over the frame turns the top pilot by 0.07 rad.)
         assert!((weighted - clean).abs() < 0.002 * rate, "estimate with a click {weighted}, without {clean}");
+        // ... which the test can only show if the click does move an unweighted one.
+        assert!((unweighted - clean).abs() > 0.004 * rate, "the click hardly moves even {unweighted}");
+    }
+
+    /// Pilot ratios of `nsym` symbols drifting at `rate` samples per symbol, no noise.
+    fn drifting_pilots(ofdm: &Ofdm, nsym: usize, rate: f32) -> (Vec<Vec<Complex32>>, Vec<f32>) {
+        let n = ofdm.p.nfft as f32;
+        let omega: Vec<f32> =
+            ofdm.pilot_idx.iter().map(|&k| 2.0 * std::f32::consts::PI * (ofdm.p.first_bin + k) as f32 / n).collect();
+        let cs = (0..nsym)
+            .map(|i| omega.iter().map(|&w| Complex32::from_polar(1.0, -w * rate * i as f32)).collect())
+            .collect();
+        (cs, omega)
+    }
+
+    #[test]
+    fn drift_estimate_at_0_ppm_and_beyond_the_range() {
+        let ofdm = Ofdm::new(OfdmParams::narrow());
+        let l = ofdm.p.symbol_len() as f32;
+        let max = DRIFT_MAX_PPM * 1e-6 * l;
+        let (cs, omega) = drifting_pilots(&ofdm, 170, 0.0);
+        let r = estimate_drift(&cs, &omega, max);
+        assert!(r.abs() < 1e-3 * max, "0 ppm estimated as {r}");
+        // 400 ppm, beyond the search: the estimate stays inside it.
+        for ppm in [-400.0, 400.0] {
+            let (cs, omega) = drifting_pilots(&ofdm, 170, ppm * 1e-6 * l);
+            let r = estimate_drift(&cs, &omega, max);
+            assert!(r.abs() <= max, "{ppm} ppm estimated as {r}, beyond {max}");
+        }
+    }
+
+    #[test]
+    fn header_frames_are_not_searched_for_drift() {
+        // A header alone (10 symbols in narrow mode) keeps the box average: the result
+        // is the same with drift removal on and off. One symbol more than the
+        // threshold and it differs.
+        let p = OfdmParams::narrow();
+        let m = Modulation::Bpsk;
+        let mut ofdm = Ofdm::new(p);
+        let nsym = DRIFT_MIN_SYMBOLS + 4;
+        let data = random_frame(&ofdm, m, nsym, 4);
+        let mut tx = vec![0.0; 900];
+        tx.extend(ofdm.modulate_with_leader_rms(&data, 0.0, 0.05));
+        tx.extend(vec![0.0; 2000]);
+        let rx = crate::filter::resample_cubic(&tx, 1.0 + 150e-6);
+        let b = ofdm.detect(&rx, 0).expect("frame not detected");
+        let mut symbols = |remove_drift, n| {
+            ofdm.remove_drift = remove_drift;
+            ofdm.demodulate(&rx, b, n).expect("demod failed").symbols
+        };
+        for n in [10, DRIFT_MIN_SYMBOLS - 1] {
+            assert_eq!(symbols(true, n), symbols(false, n), "{n} symbols");
+        }
+        assert_ne!(symbols(true, DRIFT_MIN_SYMBOLS), symbols(false, DRIFT_MIN_SYMBOLS));
     }
 
     #[test]
