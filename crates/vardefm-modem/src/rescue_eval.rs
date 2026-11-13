@@ -1,7 +1,7 @@
 //! How many failed codewords a second decoding pass rescues (issue #2).
 //!
-//! `Modem::decode_payload_passes` with `rescue` decodes the failed codewords of a
-//! burst again with the coded bits of the decoded ones known: at 16QAM and 64QAM an
+//! `Modem::decode_payload_passes` with more than one pass decodes the failed
+//! codewords of a burst again with the coded bits of the decoded ones known: at 16QAM and 64QAM an
 //! axis of a point carries bits of several codewords, so knowing some of them leaves
 //! fewer possible points for the rest. This probe measures, per mode and level 3 to
 //! 6, around the CNR at which the level's codeword error rate crosses 10 %
@@ -18,7 +18,8 @@
 //!
 //! Environment: `MODES` (narrow,wide), `LEVELS` (3,4,5,6), `TRIALS` (bursts per point,
 //! 200), `NCW` (codewords per burst; default the level's longest burst), `OFFSETS`
-//! (dB from the recorded point, -1,-0.5,-0.25,0,0.25,0.5).
+//! (dB from the recorded point, -1,-0.5,-0.25,0,0.25,0.5), `PASSES` (most passes,
+//! `MAX_PASSES`).
 
 use super::*;
 use crate::detect_eval::{
@@ -55,7 +56,8 @@ struct Tally {
     mixed: u32,
     first_s: f64,
     extra_s: f64,
-    /// Rescued codewords whose data differs from what was sent (should stay 0).
+    /// Codewords that failed the first pass and decoded in a later one with data
+    /// that differs from what was sent (should stay 0).
     wrong: u32,
     /// Bursts that needed more than two passes.
     over2: u32,
@@ -105,10 +107,11 @@ fn trial(m: &Modem, mode: &str, level: u8, ncw: usize, truth: usize, cnr: f32, t
     out.extra_s = ((t2 - t1).as_secs_f64() - out.first_s).max(0.0);
     let ok1 = once.data.iter().zip(&sent.payload).filter(|(g, w)| g.as_ref() == Some(*w)).count() as u32;
     let ok2 = twice.data.iter().zip(&sent.payload).filter(|(g, w)| g.as_ref() == Some(*w)).count() as u32;
-    let decoded2 = twice.data.iter().filter(|g| g.is_some()).count() as u32;
     out.fail1 = ncw as u32 - ok1;
     out.rescued = twice.rescued as u32;
-    out.wrong = decoded2 - ok2;
+    let rescued_wrong =
+        |j: usize| once.data[j].is_none() && twice.data[j].as_ref().is_some_and(|d| *d != sent.payload[j]);
+    out.wrong = (0..ncw).filter(|&j| rescued_wrong(j)).count() as u32;
     out.bad_bursts = u32::from(ok1 < ncw as u32);
     out.saved = u32::from(ok1 < ncw as u32 && ok2 == ncw as u32);
     out.mixed = u32::from(ok1 > 0 && ok1 < ncw as u32);
@@ -163,18 +166,23 @@ fn rescue_probe() {
     }
 }
 
+/// Bursts `second_pass_rescues_a_codeword` tries at most.
+const TEST_BURSTS: u32 = 20;
+
 /// Near level 3's threshold, the later passes decode a codeword the first pass
 /// lost, with the data that was sent, and leave alone what the first pass decoded.
+/// The CNR is fixed rather than read from `perf/levels.toml`, so that recording the
+/// baseline again cannot move it; at 6.25 dB about 8 % of narrow level 3's
+/// codewords fail the first pass and half of those are rescued.
 #[test]
 fn second_pass_rescues_a_codeword() {
-    let (mode, level) = ("narrow", 3u8);
+    let (mode, level, cnr) = ("narrow", 3u8, 6.25);
     let m = modem(mode);
     let ncw = m.max_ncw(level);
     let truth = true_position(&m, mode, level, ncw);
-    let cnr = level_point(mode, level);
     let training = |b: &Burst| m.header_carriers(&b.header);
     let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(level);
-    let rescued = (0..40u32).find_map(|t| {
+    let rescued = (0..TEST_BURSTS).find_map(|t| {
         let sent = burst(level, ncw, payload_seed(t));
         let rx = through_channel(&m, mode, cnr, &sent, t);
         let frame = m.ofdm.demodulate_known(&rx, truth, nsym, &training(&sent))?;
@@ -190,6 +198,6 @@ fn second_pass_rescues_a_codeword() {
         }
         (twice.rescued > 0).then_some((t, twice.rescued))
     });
-    let (t, n) = rescued.expect("no codeword rescued in 40 bursts at level 3's 10 % CER point");
+    let (t, n) = rescued.unwrap_or_else(|| panic!("no codeword rescued in {TEST_BURSTS} bursts at {cnr} dB"));
     println!("trial {t}: {n} codewords rescued");
 }

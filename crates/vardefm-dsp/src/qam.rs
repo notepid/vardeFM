@@ -91,23 +91,22 @@ impl Modulation {
     /// Max-log LLRs (positive means bit 0) for one received symbol.
     /// `noise_var` is the complex noise variance (both axes together).
     pub fn demap_llr(self, y: Complex32, noise_var: f32, out: &mut Vec<f32>) {
-        self.demap_llr_known(y, noise_var, &[UNKNOWN_BIT; 6][..self.bits_per_symbol()], out);
+        let n_axes = if self == Self::Bpsk { 1 } else { 2 };
+        for &v in &[y.re, y.im][..n_axes] {
+            self.demap_axis(v, noise_var, 0, 0, out);
+        }
     }
 
     /// Max-log LLRs as [`Modulation::demap_llr`], given that some of the symbol's
     /// bits are already known: `known[i]` is 0 or 1 for a known bit and
     /// [`UNKNOWN_BIT`] otherwise. Only the points that agree with the known bits on
-    /// the same axis count. The LLR of a known bit itself is computed as if it were
-    /// unknown; callers do not use it.
+    /// the same axis count. A known bit's own LLR is constrained only on the axis's
+    /// other known bits; callers do not use it.
     pub fn demap_llr_known(self, y: Complex32, noise_var: f32, known: &[u8], out: &mut Vec<f32>) {
         debug_assert_eq!(known.len(), self.bits_per_symbol());
         let m = self.bits_per_axis();
-        let s = self.scale();
-        let axis_var = (noise_var / 2.0).max(1e-9);
-        let axes = [y.re, y.im];
         let n_axes = if self == Self::Bpsk { 1 } else { 2 };
-        let l = 1usize << m;
-        for (a, &v) in axes[..n_axes].iter().enumerate() {
+        for (a, &v) in [y.re, y.im][..n_axes].iter().enumerate() {
             // Known bits of this axis, as a mask and their values, MSB first.
             let (mut kmask, mut kval) = (0usize, 0usize);
             for (bit, &k) in known[a * m..(a + 1) * m].iter().enumerate() {
@@ -116,24 +115,37 @@ impl Modulation {
                     kval |= (k as usize & 1) << (m - 1 - bit);
                 }
             }
-            for bit in 0..m {
-                let mask = 1 << (m - 1 - bit);
-                // Constrain on the other known bits only, so the bit's own LLR stays
-                // finite.
-                let (cmask, cval) = (kmask & !mask, kval & !mask);
-                let mut d0 = f32::INFINITY;
-                let mut d1 = f32::INFINITY;
-                for word in (0..l).filter(|w| w & cmask == cval) {
-                    let d = v - Self::pam_level(word, m) * s;
-                    let d = d * d;
-                    if word & mask == 0 {
-                        d0 = d0.min(d);
-                    } else {
-                        d1 = d1.min(d);
-                    }
+            self.demap_axis(v, noise_var, kmask, kval, out);
+        }
+    }
+
+    /// Max-log LLRs of the bits of one axis, at value `v`, over the axis words that
+    /// agree with `kval` on the bits of `kmask` other than the bit itself.
+    fn demap_axis(self, v: f32, noise_var: f32, kmask: usize, kval: usize, out: &mut Vec<f32>) {
+        let m = self.bits_per_axis();
+        let s = self.scale();
+        let axis_var = (noise_var / 2.0).max(1e-9);
+        let l = 1usize << m;
+        for bit in 0..m {
+            let mask = 1 << (m - 1 - bit);
+            // Constrain on the other known bits only, so the bit's own LLR stays
+            // finite. With nothing known (`demap_llr`) every word counts.
+            let (cmask, cval) = (kmask & !mask, kval & !mask);
+            let mut d0 = f32::INFINITY;
+            let mut d1 = f32::INFINITY;
+            for word in 0..l {
+                if word & cmask != cval {
+                    continue;
                 }
-                out.push((d1 - d0) / (2.0 * axis_var));
+                let d = v - Self::pam_level(word, m) * s;
+                let d = d * d;
+                if word & mask == 0 {
+                    d0 = d0.min(d);
+                } else {
+                    d1 = d1.min(d);
+                }
             }
+            out.push((d1 - d0) / (2.0 * axis_var));
         }
     }
 

@@ -12,8 +12,9 @@
 //!   full iteration count and fails. A burst where a few codewords decode and the
 //!   rest fail costs more: the receiver decodes the failed ones again, up to
 //!   [`Modem::decode_passes`] times in all (at 16QAM and 64QAM). Such a burst
-//!   cannot be made from audio on demand, so the worst case reported is the
-//!   measured delay of the noise payload times that, an upper estimate.
+//!   cannot be made from audio on demand, so the worst case adds to the measured
+//!   delay of the noise payload its decoding time (that delay less the clean one)
+//!   once per later pass, an estimate.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -105,8 +106,8 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
         link.turnaround_s, link.response_timeout_s
     );
     println!(
-        "Worst case = a payload that fails to decode. At 16QAM and 64QAM its delay is the measured one \
-         times {MAX_PASSES}: when some codewords of a burst decode, the receiver decodes the failed ones again."
+        "Worst case = a payload that fails to decode. At 16QAM and 64QAM its decoding is counted {MAX_PASSES} \
+         times (an estimate): when some codewords of a burst decode, the receiver decodes the failed ones again."
     );
 
     for &mode in modes {
@@ -140,7 +141,13 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
             }
             let mut worst = run(&modem, &on_air(mode, &bad));
             // A mixed burst decodes its failed codewords up to decode_passes times.
-            worst.delay *= Modem::decode_passes(level) as f64;
+            // The failing decodes cost about the worst delay less the clean one (which
+            // holds demodulation and a few-iteration decode); the later passes repeat
+            // that part only.
+            let failing_s = (worst.delay - clean.delay).max(0.0);
+            let extra_s = (Modem::decode_passes(level) - 1) as f64 * failing_s;
+            worst.delay += extra_s;
+            worst.load += extra_s / modem.burst_seconds(level, b.payload.len()) as f64;
 
             let ncw = b.payload.len();
             let verdict = if clean.found == 0 || worst.found == 0 {

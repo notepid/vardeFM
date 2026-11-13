@@ -305,26 +305,25 @@ impl Modem {
         let ncw = h.ncw as usize;
         let total = ncw * CW_BITS;
         let perm = permutation(SEED_INTERLEAVE, total);
-        // The scrambled information bits of codeword `j` from its slot LLRs, if it
-        // decodes, with its data bytes if they pass the CRC.
-        let decode = |slots: &[f32], j: usize| -> Option<(Vec<u8>, Vec<u8>)> {
-            let llr: Vec<f32> = (0..CW_BITS).map(|i| slots[perm[j * CW_BITS + i]]).collect();
-            let info = code.decode(&llr, DECODE_ITERS)?;
-            let mut bits = info.clone();
-            for (b, s) in bits.iter_mut().zip(scramble_bits(SEED_SCRAMBLE + j as u32, code.k)) {
-                *b ^= s;
-            }
-            let bytes = vardefm_fec::bits_to_bytes(&bits);
-            let (data, tail) = bytes.split_at(bytes.len() - 4);
-            (crc::crc32(data).to_be_bytes() == tail).then(|| (info, data.to_vec()))
-        };
-        let slots = Self::llrs(m, f, self.hdr_syms);
-        let mut got: Vec<Option<(Vec<u8>, Vec<u8>)>> =
-            self.on_decode_threads(&(0..ncw).collect::<Vec<_>>(), |j| decode(&slots, j));
-        let first_ok = got.iter().filter(|g| g.is_some()).count();
-        let mut passes = 1;
         // Only an axis of two or more bits can share them: not BPSK or QPSK.
         let rescue = max_passes.min(Self::decode_passes(h.level)) > 1;
+        /// A codeword's scrambled information bits (kept with `rescue`) and data.
+        type Got = Option<(Option<Vec<u8>>, Vec<u8>)>;
+        // Codeword `j` from its slot LLRs, if it decodes and passes the CRC: its data
+        // bytes, and with `rescue` its scrambled information bits, to encode again.
+        let decode = |slots: &[f32], j: usize| -> Got {
+            let llr: Vec<f32> = (0..CW_BITS).map(|i| slots[perm[j * CW_BITS + i]]).collect();
+            let info = code.decode(&llr, DECODE_ITERS)?;
+            let scramble = scramble_bits(SEED_SCRAMBLE + j as u32, code.k);
+            let bits: Vec<u8> = info.iter().zip(scramble).map(|(b, s)| b ^ s).collect();
+            let bytes = vardefm_fec::bits_to_bytes(&bits);
+            let (data, tail) = bytes.split_at(bytes.len() - 4);
+            (crc::crc32(data).to_be_bytes() == tail).then(|| (rescue.then_some(info), data.to_vec()))
+        };
+        let slots = Self::llrs(m, f, self.hdr_syms);
+        let mut got: Vec<Got> = self.on_decode_threads(&(0..ncw).collect::<Vec<_>>(), |j| decode(&slots, j));
+        let first_ok = got.iter().filter(|g| g.is_some()).count();
+        let mut passes = 1;
         let mut known = vec![UNKNOWN_BIT; if rescue { total } else { 0 }];
         let mut new_ok: Vec<usize> = (0..ncw).filter(|&j| got[j].is_some()).collect();
         while rescue && passes < max_passes && !new_ok.is_empty() {
@@ -333,7 +332,8 @@ impl Modem {
                 break;
             }
             for &j in &new_ok {
-                let coded = code.encode(&got[j].as_ref().expect("decoded").0);
+                let info = got[j].as_mut().and_then(|g| g.0.take()).expect("decoded with rescue");
+                let coded = code.encode(&info);
                 for (i, b) in coded.into_iter().enumerate() {
                     known[perm[j * CW_BITS + i]] = b;
                 }
@@ -359,12 +359,14 @@ impl Modem {
     fn llrs_known(m: Modulation, f: &Frame, from: usize, known: &[u8]) -> Vec<f32> {
         let symbols = &f.symbols[from..];
         let bps = m.bits_per_symbol();
+        let carriers = symbols
+            .iter()
+            .zip(&f.symbol_noise_scale[from..])
+            .flat_map(|(sym, &scale)| sym.iter().zip(&f.noise_var).map(move |(y, &nv)| (*y, nv * scale)));
+        debug_assert_eq!(symbols.len() * f.noise_var.len() * bps, known.len(), "one known bit per slot");
         let mut out = Vec::with_capacity(known.len());
-        let mut k = known.chunks_exact(bps);
-        for (sym, &scale) in symbols.iter().zip(&f.symbol_noise_scale[from..]) {
-            for (y, &nv) in sym.iter().zip(&f.noise_var) {
-                m.demap_llr_known(*y, nv * scale, k.next().expect("one known bit per slot"), &mut out);
-            }
+        for ((y, nv), k) in carriers.zip(known.chunks_exact(bps)) {
+            m.demap_llr_known(y, nv, k, &mut out);
         }
         out
     }
