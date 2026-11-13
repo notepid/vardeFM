@@ -29,6 +29,8 @@
 //!
 //! Not modelled: header and detection failures (the same for every scheme), the
 //! turns increments wait for (one per round, as for a resend today), signalling.
+//! A burst that does not demodulate from the known position counts as one whose
+//! codewords carry nothing; the sweep prints how many.
 //!
 //! `cargo test --release -p vardefm-modem ir_sweep -- --ignored --nocapture`
 //!
@@ -79,27 +81,43 @@ fn level_point(mode: &str, level: u8) -> f32 {
     }
 }
 
-/// Reliabilities of the codewords of trial burst `t`, in codeword bit order.
-fn reliabilities(m: &Modem, mode: &str, level: u8, ncw: usize, truth: usize, cnr: f32, t: u32) -> Vec<Vec<f32>> {
+/// Reliabilities of the codewords of trial burst `t`, in codeword bit order; `None`
+/// when the burst does not demodulate.
+fn reliabilities(
+    m: &Modem,
+    mode: &str,
+    level: u8,
+    ncw: usize,
+    truth: usize,
+    cnr: f32,
+    t: u32,
+) -> Option<Vec<Vec<f32>>> {
     let sent = burst(level, ncw, payload_seed(t));
     let rx = through_channel(m, mode, cnr, &sent, t);
     let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(level);
-    let Some(frame) = m.ofdm.demodulate_known(&rx, truth, nsym, &m.header_carriers(&sent.header)) else {
-        return vec![vec![0.0; CW_BITS]; ncw];
-    };
+    let frame = m.ofdm.demodulate_known(&rx, truth, nsym, &m.header_carriers(&sent.header))?;
     let slots = Modem::llrs(LEVELS[level as usize].modulation, &frame, m.header_symbols());
     let bits = m.payload_bits(level, &sent.payload);
     let perm = permutation(SEED_INTERLEAVE, ncw * CW_BITS);
-    (0..ncw)
-        .map(|j| {
-            (0..CW_BITS)
-                .map(|i| {
-                    let s = perm[j * CW_BITS + i];
-                    slots[s] * (1.0 - 2.0 * bits[s] as f32)
-                })
-                .collect()
-        })
-        .collect()
+    let reliability = |j: usize| -> Vec<f32> {
+        (0..CW_BITS)
+            .map(|i| {
+                let s = perm[j * CW_BITS + i];
+                slots[s] * (1.0 - 2.0 * bits[s] as f32)
+            })
+            .collect()
+    };
+    Some((0..ncw).map(reliability).collect())
+}
+
+/// Most transmissions a scheme can make for one codeword: a whole codeword, then
+/// the smallest increments up to `MAX_BITS`.
+const MAX_TRANSMISSIONS: usize = 1 + (MAX_BITS - CW_BITS).div_ceil(INCREMENTS[0]);
+
+/// Whether a pool of `bursts` bursts gives every transmission of a codeword its own
+/// burst ([`outcomes`] steps 7 bursts per transmission).
+fn pool_is_large_enough(bursts: usize) -> bool {
+    (1..MAX_TRANSMISSIONS).all(|a| (7 * a) % bursts != 0)
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -198,7 +216,10 @@ fn outcomes(
 }
 
 /// Efficiency of each scheme at one point: information delivered over bits spent,
-/// in codewords per 2400 bits.
+/// in codewords per 2400 bits; and the bursts that did not demodulate. Such a burst
+/// gives its codewords LLRs of 0, a transmission that carries nothing: a loss of
+/// demodulation (frame sync), common to every scheme, that this study does not
+/// otherwise model.
 fn efficiencies(
     m: &Modem,
     mode: &str,
@@ -207,19 +228,30 @@ fn efficiencies(
     bursts: u32,
     schemes: &[Scheme],
     mother: &Ldpc,
-) -> Vec<f32> {
+) -> (Vec<f32>, usize) {
     let ncw = m.max_ncw(level).min(CODEWORDS);
     let truth = true_position(m, mode, level, ncw);
+    let got = on_every_core(bursts, |t| reliabilities(m, mode, level, ncw, truth, cnr, t));
+    let lost = got.iter().filter(|r| r.is_none()).count();
     let pool: Vec<Vec<f32>> =
-        on_every_core(bursts, |t| reliabilities(m, mode, level, ncw, truth, cnr, t)).into_iter().flatten().collect();
+        got.into_iter().flat_map(|r| r.unwrap_or_else(|| vec![vec![0.0; CW_BITS]; ncw])).collect();
     let base = &m.codes[level as usize];
     let per_cw = on_every_core(pool.len() as u32, |i| outcomes(schemes, base, mother, &pool, ncw, i as usize));
-    (0..schemes.len())
+    let eff = (0..schemes.len())
         .map(|s| {
             let (spent, got) = per_cw.iter().fold((0usize, 0usize), |(sp, g), o| (sp + o[s].0, g + o[s].1 as usize));
             (got * CW_BITS) as f32 / spent as f32
         })
-        .collect()
+        .collect();
+    (eff, lost)
+}
+
+#[test]
+fn pool_sizes() {
+    assert_eq!(MAX_TRANSMISSIONS, 41);
+    assert!(!pool_is_large_enough(32), "32 bursts wrap within 41 transmissions");
+    assert!(!pool_is_large_enough(42), "a multiple of 7 repeats a burst");
+    assert!(pool_is_large_enough(48));
 }
 
 /// Goodput against CNR per level and scheme, and the envelope over levels.
@@ -229,6 +261,11 @@ fn ir_sweep() {
     let modes = env_modes("narrow,wide");
     let levels: Vec<u8> = env_list("LEVELS", "0,1,2,3,4,5,6");
     let bursts: u32 = env_or("TRIALS", 48);
+    assert!(
+        pool_is_large_enough(bursts as usize),
+        "TRIALS={bursts}: a codeword's {MAX_TRANSMISSIONS} transmissions would reuse a burst; use more than \
+         {MAX_TRANSMISSIONS} bursts, not a multiple of 7"
+    );
     let degree: usize = env_or("DEGREE", 0);
     let step: f32 = env_or("STEP", 0.5);
     let mut schemes = vec![Scheme::Resend, Scheme::Chase];
@@ -270,8 +307,11 @@ fn ir_sweep() {
                 } else if cnr > point + ABOVE_DB {
                     vec![1.0; schemes.len()]
                 } else {
-                    let e = efficiencies(&m, mode, level, cnr, bursts, &schemes, &mother);
-                    let line: String = e.iter().map(|x| format!(" {x:.3}")).collect();
+                    let (e, lost) = efficiencies(&m, mode, level, cnr, bursts, &schemes, &mother);
+                    let mut line: String = e.iter().map(|x| format!(" {x:.3}")).collect();
+                    if lost > 0 {
+                        line += &format!("  ({lost} bursts did not demodulate)");
+                    }
                     println!("  {cnr:5.1} dB:{line}");
                     first[li] = first[li].min(ci);
                     e

@@ -202,6 +202,13 @@ impl Ldpc {
             for (h, t) in hard.iter_mut().zip(&total) {
                 *h = (*t < 0.0) as u8;
             }
+            // Extension parity bits follow from the rest: an erased one gets no
+            // message once a variable of its row is weak, and would fail its check
+            // although the staircase checks hold. So stop on the staircase checks
+            // alone: they fix the information bits, and so the mother codeword.
+            for (e, row) in self.ext_rows.iter().enumerate() {
+                hard[self.n - self.ext_rows.len() + e] = row.iter().fold(0u8, |acc, &v| acc ^ hard[v as usize]);
+            }
             if self.check(&hard) {
                 return Some(hard[..self.k].to_vec());
             }
@@ -451,6 +458,34 @@ mod tests {
         assert!((5..40).contains(&ok), "{ok} of 40 decoded: the test needs both outcomes");
     }
 
+    /// Weak but correct LLRs (below `OFFSET`) on the staircase codeword, extension
+    /// erased: every staircase check holds at once, while no extension row passes a
+    /// message. The mother code must stop as the staircase code does.
+    #[test]
+    fn erased_extension_with_weak_rows_decodes_as_the_staircase_code() {
+        let k = 1200;
+        let base = Ldpc::new(2400, k, 0x1d9c_0000 + k as u32);
+        let ext = Ldpc::with_extension(2400, k, 0x1d9c_0000 + k as u32, 600, 4, 7);
+        let info = Prng::new(11).bits(k);
+        let cw = ext.encode(&info);
+        assert!(cw[2400..].contains(&1), "the test needs an extension bit of 1");
+        let llr: Vec<f32> = cw
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| {
+                if i >= 2400 {
+                    0.0
+                } else if b == 0 {
+                    0.4
+                } else {
+                    -0.4
+                }
+            })
+            .collect();
+        assert_eq!(base.decode(&llr[..2400], 5).as_deref(), Some(&info[..]));
+        assert_eq!(ext.decode(&llr, 5).as_deref(), Some(&info[..]));
+    }
+
     /// No two variables of an extension row share another check.
     #[test]
     fn extension_has_no_4_cycles() {
@@ -547,7 +582,7 @@ mod curve {
         const INCS: usize = 4;
         let trials = env_or("TRIALS", 200);
         let degrees: Vec<usize> = std::env::var("DEGREES")
-            .map_or(vec![2, 3, 4, 6], |s| s.split(',').map(|x| x.trim().parse().unwrap()).collect());
+            .map_or(vec![4, 6, 8, 10], |s| s.split(',').map(|x| x.trim().parse().unwrap()).collect());
         let jobs: Vec<_> = CODES[1..].iter().flat_map(|c| degrees.iter().map(move |&d| (*c, d))).collect();
         let lines: Vec<String> = std::thread::scope(|s| {
             let workers: Vec<_> = jobs
@@ -556,7 +591,9 @@ mod curve {
                     s.spawn(move || {
                         let code = Ldpc::with_extension(n, k, seed, INC * INCS, d, 0x1d9c_2000 + k as u32);
                         let mut line = format!("{name} degree {d}:");
-                        // Each increment's crossing lies below the last: scan up from 4 dB under it.
+                        // Each increment's crossing should lie below the last: scan from 4 dB
+                        // under it to 1 dB over it, so that FER noise at few frames still
+                        // finds a crossing just above.
                         let mut top = 6.0f32;
                         for r in 0..=INCS {
                             let sent = n + r * INC;
@@ -593,7 +630,7 @@ mod curve {
                             while fer_at(e) < 0.1 {
                                 e -= 2.0;
                             }
-                            while e <= top + 0.01 {
+                            while e <= top + 1.01 {
                                 grid.push(e);
                                 rates.push(fer_at(e));
                                 if *rates.last().unwrap() < 0.02 {
