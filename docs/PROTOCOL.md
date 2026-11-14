@@ -125,9 +125,9 @@ Net rate = data bytes of a full burst ÷ its airtime (leader, preambles and head
 included), before link-layer overhead. For each mode and level, the carrier-to-noise
 ratio in the FM channel simulator at which 10 % of codewords fail, decoded from the
 known burst position with the header taken as known, is recorded in
-`crates/vardefm-modem/perf/levels.toml` and checked by the `level_gate` test, which
-decodes as the receiver does, later passes (section 1.5) included; the points recorded
-so far predate those passes. That file
+`crates/vardefm-modem/perf/levels.toml` and checked by the `level_gate` test, both
+with the first decoding pass only: the receiver's later passes (section 1.5, step 7)
+lower the error rate further near these points. That file
 is the reference; roughly, it runs from 3 dB (level 0) to 16 dB (level 6) in narrow
 mode and from 5 dB to 24 dB in wide mode. Error-free decoding begins about half a dB
 higher at the low levels and about 1 dB higher at levels 5 and 6. These are payload

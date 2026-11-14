@@ -30,12 +30,11 @@
 //! its curve is far shallower than any level's: at level 1's point a few per cent of
 //! headers still fail.
 //!
-//! The codewords decode as `Receiver::step` decodes them, with the later passes of
-//! `Modem::decode_payload_passes` at 16QAM and 64QAM (issue #2). Points recorded
-//! before them (eb35213 and earlier) are single-pass; recording again may move levels
-//! 3 to 6 down. That has not been measured: the gate's bursts hold only `CODEWORDS`
-//! codewords, so a failed one shares points with fewer decoded ones than in a full
-//! burst, and the shift may stay within the margin.
+//! The codewords decode in the first pass only, without the later passes of
+//! `Modem::decode_payload_passes` that the receiver runs at 16QAM and 64QAM
+//! (issue #2). The points measure the demapper and decoder themselves, so a loss
+//! there cannot hide behind what the later passes win back; `rescue_probe` measures
+//! those passes.
 //!
 //! What the gate does not cover:
 //! - The receiver's SNR estimate, which the link's rate thresholds
@@ -317,7 +316,8 @@ impl<'a> Case<'a> {
         let Some(frame) = m.ofdm.demodulate_known(&rx, self.truth, nsym, &training) else {
             return ncw as u32;
         };
-        let got = m.decode_payload(&sent.header, &frame);
+        // The first pass only: the recorded points are single-pass (see the module doc).
+        let got = m.decode_payload_passes(&sent.header, &frame, 1).data;
         got.iter().zip(&sent.payload).filter(|(g, w)| g.as_ref() != Some(*w)).count() as u32
     }
 

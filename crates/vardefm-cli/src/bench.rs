@@ -142,7 +142,8 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
             for x in &mut bad[hdr_end..] {
                 *x = noise(&mut rng, 0.3);
             }
-            let mut worst = run(&modem, &on_air(mode, &bad));
+            let bad_air = on_air(mode, &bad);
+            let mut worst = run(&modem, &bad_air);
             // A mixed burst decodes its failed codewords up to decode_passes times.
             // The failing decodes cost about the worst delay less the clean one (which
             // holds demodulation and a few-iteration decode); the later passes repeat
@@ -152,7 +153,8 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
             let failing_s = (worst.delay - clean.delay).max(0.0);
             let extra_s = (Modem::decode_passes(level) - 1) as f64 * failing_s;
             worst.delay += extra_s;
-            worst.load += extra_s / modem.burst_seconds(level, ncw) as f64;
+            // Over the same audio as `run`'s load.
+            worst.load += extra_s / (bad_air.len() as f64 / modem.fs() as f64);
 
             let verdict = if clean.found == 0 || worst.found == 0 {
                 "burst not found!"

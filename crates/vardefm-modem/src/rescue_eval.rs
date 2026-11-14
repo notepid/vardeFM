@@ -6,11 +6,8 @@
 //! fewer possible points for the rest. This probe measures, per mode and level 3 to
 //! 6, around the CNR at which the level's codeword error rate crosses 10 %
 //! (`perf/levels.toml`), from the known burst position with the sent header as
-//! training, as `level_eval` does. `level_eval` decodes as the receiver does, with
-//! the later passes, so once the baseline has been recorded with them its points may
-//! lie lower than the single-pass ones this probe was first run around (recorded at
-//! eb35213): the probe prints the first pass's CER at each point, so read the
-//! offsets against that rather than against the point. It reports:
+//! training, as `level_eval` does. Those points are single-pass, as is `level_gate`,
+//! so the first pass's CER this probe prints is about 10 % at offset 0. It reports:
 //! - `fail1`: codewords that fail the first pass, of all sent;
 //! - `rescued`: of those, the ones a later pass decodes correctly; and how many of the bursts
 //!   whose codewords all decoded only thanks to it (`saved`) of those that had a
