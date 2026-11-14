@@ -90,6 +90,23 @@ fn decodes_through_noisy_radio() {
 }
 
 #[test]
+fn drift_removal_skips_headers_and_covers_every_payload_frame() {
+    // The receiver searches for clock drift only on frames of DRIFT_MIN_SYMBOLS or
+    // more: a header decoded on its own must stay under that, and every frame with a
+    // payload, however short, must reach it.
+    use vardefm_dsp::ofdm::DRIFT_MIN_SYMBOLS;
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let hs = m.header_symbols();
+        assert!(hs < DRIFT_MIN_SYMBOLS, "{mode}: header of {hs} symbols");
+        for level in 0..LEVELS.len() as u8 {
+            let n = hs + m.symbols_per_codeword(level);
+            assert!(n >= DRIFT_MIN_SYMBOLS, "{mode} level {level}: one-codeword frame of {n} symbols");
+        }
+    }
+}
+
+#[test]
 fn receiver_decodes_64qam_with_150_ppm_clock_error() {
     // The streaming receiver end to end, header decode included, at the top level with
     // the sound card's clock 150 ppm off either way: the longest burst and the

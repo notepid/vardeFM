@@ -138,7 +138,8 @@ fn drift_eval() {
         for &level in &levels {
             let cnr = level_point(&mode, level);
             let max = modem(&mode, false).max_ncw(level);
-            let ncw = if ncw_env == 0 { max } else { ncw_env.min(max) };
+            assert!(ncw_env <= max, "NCW={ncw_env}, but a {mode} level {level} burst holds at most {max}");
+            let ncw = if ncw_env == 0 { max } else { ncw_env };
             println!(
                 "{mode} level {level} ({}), {ncw} codewords; EVM without noise, CER at {cnr:.2} dB",
                 LEVELS[level as usize].name

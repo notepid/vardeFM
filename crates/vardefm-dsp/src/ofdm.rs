@@ -23,8 +23,9 @@ const TRACK_HALF_WINDOW: usize = 4;
 const MIN_PREAMBLE_CORR: f32 = 0.3;
 /// Frames shorter than this are not searched for clock drift: a header alone (8 or 10
 /// symbols) drifts little, and at its low SNR the estimate would be too noisy. The
-/// shortest payload frame, one 64QAM codeword in wide mode, has 16.
-const DRIFT_MIN_SYMBOLS: usize = 12;
+/// shortest payload frame, one 64QAM codeword in wide mode, has 16. The modem's tests
+/// check that every header is shorter and every frame with payload is not.
+pub const DRIFT_MIN_SYMBOLS: usize = 12;
 /// Largest clock error searched for, ppm.
 const DRIFT_MAX_PPM: f32 = 300.0;
 /// Ternary-search steps after the grid (each keeps 2/3 of the interval).
@@ -132,6 +133,12 @@ impl Ofdm {
 
     pub fn data_carriers(&self) -> usize {
         self.data_idx.len()
+    }
+
+    /// Phase each pilot turns per sample of timing shift, rad.
+    fn pilot_omega(&self) -> Vec<f32> {
+        let n = self.p.nfft as f32;
+        self.pilot_idx.iter().map(|&k| 2.0 * std::f32::consts::PI * (self.p.first_bin + k) as f32 / n).collect()
     }
 
     /// Length in samples of a frame with `nsym` data symbols.
@@ -419,11 +426,7 @@ impl Ofdm {
         // pilot m turns by omega[m] * rate per symbol. Take that ramp off before
         // averaging: a box average that runs into the end of the frame is one-sided
         // and would lag the ramp there. It is put back on the averages below.
-        let omega: Vec<f32> = self
-            .pilot_idx
-            .iter()
-            .map(|&k| 2.0 * std::f32::consts::PI * (self.p.first_bin + k) as f32 / n as f32)
-            .collect();
+        let omega = self.pilot_omega();
         let rate = if self.remove_drift && nsym >= DRIFT_MIN_SYMBOLS {
             estimate_drift(&cs, &omega, DRIFT_MAX_PPM * 1e-6 * l as f32)
         } else {
@@ -806,11 +809,9 @@ mod tests {
     fn drift_estimate_ignores_a_click() {
         // Pilot ratios of a 170-symbol narrow frame drifting at 150 ppm, with noise
         // at about 20 dB SNR, and one symbol hit by a click 40 dB above the noise
-        // (17 dB above the pilots).
+        // (20 dB above the pilots).
         let ofdm = Ofdm::new(OfdmParams::narrow());
-        let n = ofdm.p.nfft as f32;
-        let omega: Vec<f32> =
-            ofdm.pilot_idx.iter().map(|&k| 2.0 * std::f32::consts::PI * (ofdm.p.first_bin + k) as f32 / n).collect();
+        let omega = ofdm.pilot_omega();
         let max = DRIFT_MAX_PPM * 1e-6 * ofdm.p.symbol_len() as f32;
         let rate = 150e-6 * ofdm.p.symbol_len() as f32;
         let nsym = 170;
@@ -839,9 +840,7 @@ mod tests {
 
     /// Pilot ratios of `nsym` symbols drifting at `rate` samples per symbol, no noise.
     fn drifting_pilots(ofdm: &Ofdm, nsym: usize, rate: f32) -> (Vec<Vec<Complex32>>, Vec<f32>) {
-        let n = ofdm.p.nfft as f32;
-        let omega: Vec<f32> =
-            ofdm.pilot_idx.iter().map(|&k| 2.0 * std::f32::consts::PI * (ofdm.p.first_bin + k) as f32 / n).collect();
+        let omega = ofdm.pilot_omega();
         let cs = (0..nsym)
             .map(|i| omega.iter().map(|&w| Complex32::from_polar(1.0, -w * rate * i as f32)).collect())
             .collect();
@@ -856,11 +855,11 @@ mod tests {
         let (cs, omega) = drifting_pilots(&ofdm, 170, 0.0);
         let r = estimate_drift(&cs, &omega, max);
         assert!(r.abs() < 1e-3 * max, "0 ppm estimated as {r}");
-        // 400 ppm, beyond the search: the estimate stays inside it.
-        for ppm in [-400.0, 400.0] {
+        // 400 ppm, beyond the search: the estimate goes to the near edge of it.
+        for ppm in [-400.0f32, 400.0] {
             let (cs, omega) = drifting_pilots(&ofdm, 170, ppm * 1e-6 * l);
             let r = estimate_drift(&cs, &omega, max);
-            assert!(r.abs() <= max, "{ppm} ppm estimated as {r}, beyond {max}");
+            assert!(r.signum() == ppm.signum() && r.abs() > 0.9 * max, "{ppm} ppm estimated as {r} (range {max})");
         }
     }
 
