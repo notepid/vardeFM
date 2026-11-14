@@ -17,6 +17,17 @@ run the same minor version.
   files.
 
 ### Changed
+- **The receiver decodes failed 16QAM and 64QAM codewords again** with the bits of the
+  codewords of the same burst that did decode: they share points with them, which leaves
+  fewer possible points for the failed ones' bits. At most two passes follow the first.
+  In the channel simulator, at each level's single-pass 10 % codeword error rate on full
+  bursts, this rescues 14 to 90 % of the failed codewords (most at code rates 1/2 and
+  2/3, and in wide mode), and 6 to 80 % of the bursts that would have needed a resend
+  need none. It costs decode time only when some codewords of a burst fail;
+  `vardefm bench` counts its worst case. Receive-only: on-air compatible, and peers
+  without it interoperate. `level_gate` and the recorded points stay single-pass, so a
+  loss in the first pass cannot hide behind the rescue; `rescue_probe` (ignored, by
+  hand) measures the gain on full bursts. (#2)
 - **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).
   A CTCSS tone, mains hum, a DC step or hiss above the band no longer reads as a busy
   channel, and no longer hides a signal inside the band. A keyed carrier with only a CTCSS

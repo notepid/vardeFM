@@ -30,6 +30,12 @@
 //! its curve is far shallower than any level's: at level 1's point a few per cent of
 //! headers still fail.
 //!
+//! The codewords decode in the first pass only, without the later passes of
+//! `Modem::decode_payload_passes` that the receiver runs at 16QAM and 64QAM
+//! (issue #2). The points measure the demapper and decoder themselves, so a loss
+//! there cannot hide behind what the later passes win back; `rescue_probe` measures
+//! those passes.
+//!
 //! What the gate does not cover:
 //! - The receiver's SNR estimate, which the link's rate thresholds
 //!   (`SNR_THRESHOLDS_DB`) are compared against. `level_table` reports it.
@@ -128,7 +134,7 @@ const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Baseline {
+pub(crate) struct Baseline {
     source: Source,
     /// One header point per mode and drive.
     header: Vec<Point>,
@@ -155,7 +161,7 @@ struct Source {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Point {
+pub(crate) struct Point {
     mode: String,
     /// The level; for the header, the lowest level sent at its drive.
     level: u8,
@@ -163,7 +169,7 @@ struct Point {
     /// The level's drive, `Modem::tx_rms`.
     drive: f32,
     /// CNR at which the error rate crosses `TARGET_RATE`, dB.
-    cnr_db: f32,
+    pub(crate) cnr_db: f32,
     /// The fine grid the crossing comes from, for review in diffs.
     grid_db: Vec<f32>,
     rate: Vec<f32>,
@@ -200,7 +206,7 @@ fn drive_levels(m: &Modem) -> Vec<u8> {
 /// What a point measures: the header at the drive of a level, or the codewords of
 /// a level.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Target {
+pub(crate) enum Target {
     Header(u8),
     Level(u8),
 }
@@ -253,13 +259,13 @@ impl Target {
     }
 }
 
-fn load() -> Baseline {
+pub(crate) fn load() -> Baseline {
     let text = std::fs::read_to_string(BASELINE).unwrap_or_else(|e| panic!("{BASELINE}: {e}"));
     toml::from_str(&text).unwrap_or_else(|e| panic!("{BASELINE}: {e}"))
 }
 
 impl Baseline {
-    fn point(&self, mode: &str, target: Target) -> &Point {
+    pub(crate) fn point(&self, mode: &str, target: Target) -> &Point {
         let list = match target {
             Target::Header(_) => &self.header,
             Target::Level(_) => &self.level,
@@ -310,7 +316,8 @@ impl<'a> Case<'a> {
         let Some(frame) = m.ofdm.demodulate_known(&rx, self.truth, nsym, &training) else {
             return ncw as u32;
         };
-        let got = m.decode_payload(&sent.header, &frame);
+        // The first pass only: the recorded points are single-pass (see the module doc).
+        let got = m.decode_payload_passes(&sent.header, &frame, 1).data;
         got.iter().zip(&sent.payload).filter(|(g, w)| g.as_ref() != Some(*w)).count() as u32
     }
 
