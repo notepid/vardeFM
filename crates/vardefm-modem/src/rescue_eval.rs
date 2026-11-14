@@ -1,4 +1,4 @@
-//! How many failed codewords a second decoding pass rescues (issue #2).
+//! How many failed codewords the later decoding passes rescue (issue #2).
 //!
 //! `Modem::decode_payload_passes` with more than one pass decodes the failed
 //! codewords of a burst again with the coded bits of the decoded ones known: at 16QAM and 64QAM an
@@ -7,7 +7,7 @@
 //! 6, around the CNR at which the level's codeword error rate crosses 10 %
 //! (`perf/levels.toml`), from the known burst position with the sent header as
 //! training, as `level_eval` does. `level_eval` decodes as the receiver does, with
-//! the later passes, so once the baseline has been recorded with them its points
+//! the later passes, so once the baseline has been recorded with them its points may
 //! lie lower than the single-pass ones this probe was first run around (recorded at
 //! eb35213): the probe prints the first pass's CER at each point, so read the
 //! offsets against that rather than against the point. It reports:
@@ -21,30 +21,16 @@
 //! `cargo test --release -p vardefm-modem rescue_probe -- --ignored --nocapture`
 //!
 //! Environment: `MODES` (narrow,wide), `LEVELS` (3,4,5,6), `TRIALS` (bursts per point,
-//! 200), `NCW` (codewords per burst; default the level's longest burst), `OFFSETS`
-//! (dB from the recorded point, -1,-0.5,-0.25,0,0.25,0.5), `PASSES` (most passes,
-//! `MAX_PASSES`).
+//! 200), `NCW` (codewords per burst, at most the level's longest burst; default that),
+//! `OFFSETS` (dB from the recorded point, -1,-0.5,-0.25,0,0.25,0.5), `PASSES` (most
+//! passes, `MAX_PASSES`).
 
 use super::*;
 use crate::detect_eval::{
     burst, env_list, env_modes, env_or, modem, on_every_core, payload_seed, through_channel, true_position,
 };
+use crate::level_eval::{load, Target};
 use std::time::Instant;
-
-const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
-
-/// The recorded CNR (dB) at which the codeword error rate of `level` in `mode`
-/// crosses 10 %.
-fn level_point(mode: &str, level: u8) -> f32 {
-    let text = std::fs::read_to_string(BASELINE).unwrap_or_else(|e| panic!("{BASELINE}: {e}"));
-    let base: toml::Value = toml::from_str(&text).unwrap();
-    let points = base["level"].as_array().expect("level points");
-    let p = points
-        .iter()
-        .find(|p| p["mode"].as_str() == Some(mode) && p["level"].as_integer() == Some(level as i64))
-        .unwrap_or_else(|| panic!("{BASELINE} has no {mode} level {level}"));
-    p["cnr_db"].as_float().expect("cnr_db") as f32
-}
 
 /// One trial's outcome.
 #[derive(Default, Clone, Copy)]
@@ -61,7 +47,9 @@ struct Tally {
     first_s: f64,
     extra_s: f64,
     /// Codewords that failed the first pass and decoded in a later one with data
-    /// that differs from what was sent (should stay 0).
+    /// that differs from what was sent. A rescued codeword passed its CRC, so this
+    /// counts CRC-32 false passes (about 2^-32 per decode): a zero here says nothing
+    /// about the rescue itself, only that nothing is badly broken.
     wrong: u32,
     /// Bursts that needed more than two passes.
     over2: u32,
@@ -88,9 +76,10 @@ impl std::ops::Add for Tally {
     }
 }
 
-/// Decodes trial `t` of a `level` burst of `ncw` codewords at `cnr` dB, with and
-/// without the later passes.
-fn trial(m: &Modem, mode: &str, level: u8, ncw: usize, truth: usize, cnr: f32, t: u32) -> Tally {
+/// Decodes trial `t` of a `level` burst of `ncw` codewords at `cnr` dB, with one
+/// pass and with up to `passes`.
+#[allow(clippy::too_many_arguments)]
+fn trial(m: &Modem, mode: &str, level: u8, ncw: usize, truth: usize, cnr: f32, passes: usize, t: u32) -> Tally {
     let sent = burst(level, ncw, payload_seed(t));
     let rx = through_channel(m, mode, cnr, &sent, t);
     let training = m.header_carriers(&sent.header);
@@ -104,7 +93,7 @@ fn trial(m: &Modem, mode: &str, level: u8, ncw: usize, truth: usize, cnr: f32, t
     let t0 = Instant::now();
     let once = m.decode_payload_passes(&sent.header, &frame, 1);
     let t1 = Instant::now();
-    let twice = m.decode_payload_passes(&sent.header, &frame, env_or("PASSES", MAX_PASSES));
+    let twice = m.decode_payload_passes(&sent.header, &frame, passes);
     let t2 = Instant::now();
     out.first_s = (t1 - t0).as_secs_f64();
     // The rescuing call repeats the first pass: count only what it adds.
@@ -131,22 +120,31 @@ fn trial(m: &Modem, mode: &str, level: u8, ncw: usize, truth: usize, cnr: f32, t
 fn rescue_probe() {
     let modes = env_modes("narrow,wide");
     let levels: Vec<u8> = env_list("LEVELS", "3,4,5,6");
+    for &level in &levels {
+        assert!((3..LEVELS.len() as u8).contains(&level), "LEVELS: {level}: levels 3 to 6 share bits on an axis");
+    }
     let trials = env_or("TRIALS", 200u32);
+    assert!(trials > 0, "TRIALS must be at least 1");
+    let passes = env_or("PASSES", MAX_PASSES);
+    assert!(passes > 0, "PASSES must be at least 1");
     let offsets: Vec<f32> = env_list("OFFSETS", "-1,-0.5,-0.25,0,0.25,0.5");
+    let ncw_env: Option<usize> = std::env::var("NCW").is_ok().then(|| env_or("NCW", 0));
+    let base = load();
     for mode in &modes {
         let m = modem(mode);
         for &level in &levels {
-            assert!((3..LEVELS.len() as u8).contains(&level), "levels 3 to 6 share bits on an axis");
-            let ncw = env_or("NCW", m.max_ncw(level)).min(m.max_ncw(level));
+            let max = m.max_ncw(level);
+            let ncw = ncw_env.unwrap_or(max);
+            assert!((1..=max).contains(&ncw), "NCW={ncw}: {mode} level {level} takes 1 to {max} codewords");
             let truth = true_position(&m, mode, level, ncw);
-            let point = level_point(mode, level);
+            let point = base.point(mode, Target::Level(level)).cnr_db;
             println!(
                 "{mode} L{level} {} ({ncw} codewords per burst), 10 % CER at {point:.2} dB:",
                 LEVELS[level as usize].name
             );
             for &off in &offsets {
                 let cnr = point + off;
-                let r = on_every_core(trials, |t| trial(&m, mode, level, ncw, truth, cnr, t))
+                let r = on_every_core(trials, |t| trial(&m, mode, level, ncw, truth, cnr, passes, t))
                     .into_iter()
                     .fold(Tally::default(), |a, b| a + b);
                 let pct = |a: u32, b: u32| if b == 0 { 0.0 } else { 100.0 * a as f32 / b as f32 };
@@ -172,38 +170,51 @@ fn rescue_probe() {
     }
 }
 
-/// Bursts `second_pass_rescues_a_codeword` tries at most.
-const TEST_BURSTS: u32 = 20;
+/// Bursts each case of `receiver_decoding_rescues_codewords` decodes.
+const TEST_BURSTS: u32 = 120;
 
-/// Near level 3's threshold, the later passes decode a codeword the first pass
-/// lost, with the data that was sent, and leave alone what the first pass decoded.
-/// The CNR is fixed rather than read from `perf/levels.toml`, so that recording the
-/// baseline again cannot move it. It lies near narrow level 3's single-pass 10 %
-/// point, where `rescue_probe` finds rescues in a good share of bursts.
-#[test]
-fn second_pass_rescues_a_codeword() {
-    let (mode, level, cnr) = ("narrow", 3u8, 6.25);
+/// Decodes `TEST_BURSTS` full bursts of `level` at `cnr` dB with one pass and as the
+/// receiver does (`Modem::decode_payload`), and checks that the receiver rescues at
+/// least `min_share` of the codewords the first pass lost, with the data that was sent.
+fn check_rescue(mode: &str, level: u8, cnr: f32, min_share: f32) {
     let m = modem(mode);
     let ncw = m.max_ncw(level);
     let truth = true_position(&m, mode, level, ncw);
-    let training = |b: &Burst| m.header_carriers(&b.header);
     let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(level);
-    let rescued = (0..TEST_BURSTS).find_map(|t| {
+    let (fail1, rescued) = on_every_core(TEST_BURSTS, |t| {
         let sent = burst(level, ncw, payload_seed(t));
         let rx = through_channel(&m, mode, cnr, &sent, t);
-        let frame = m.ofdm.demodulate_known(&rx, truth, nsym, &training(&sent))?;
-        let once = m.decode_payload_passes(&sent.header, &frame, 1);
-        let twice = m.decode_payload_passes(&sent.header, &frame, MAX_PASSES);
-        for (j, (a, b)) in once.data.iter().zip(&twice.data).enumerate() {
-            if a.is_some() {
-                assert_eq!(a, b, "trial {t}: codeword {j} changed in a later pass");
-            }
-            if b.is_some() {
-                assert_eq!(b.as_ref(), Some(&sent.payload[j]), "trial {t}: codeword {j} decoded wrong");
+        let Some(frame) = m.ofdm.demodulate_known(&rx, truth, nsym, &m.header_carriers(&sent.header)) else {
+            return (0, 0);
+        };
+        let once = m.decode_payload_passes(&sent.header, &frame, 1).data;
+        let rx_data = m.decode_payload(&sent.header, &frame);
+        for (j, got) in rx_data.iter().enumerate() {
+            if let Some(d) = got {
+                assert_eq!(d, &sent.payload[j], "trial {t}: codeword {j} decoded wrong");
             }
         }
-        (twice.rescued > 0).then_some((t, twice.rescued))
-    });
-    let (t, n) = rescued.unwrap_or_else(|| panic!("no codeword rescued in {TEST_BURSTS} bursts at {cnr} dB"));
-    println!("trial {t}: {n} codewords rescued");
+        let ok = |d: &[Option<Vec<u8>>]| d.iter().filter(|g| g.is_some()).count();
+        (ncw - ok(&once), ok(&rx_data) - ok(&once))
+    })
+    .into_iter()
+    .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    println!("{mode} L{level} at {cnr} dB: {rescued} of {fail1} failed codewords rescued");
+    assert!(fail1 > 0, "{mode} L{level} at {cnr} dB: no codeword failed the first pass, nothing to rescue");
+    assert!(
+        rescued as f32 >= min_share * fail1 as f32,
+        "{mode} L{level} at {cnr} dB: {rescued} of {fail1} failed codewords rescued, want at least {:.0} %",
+        100.0 * min_share
+    );
+}
+
+/// Near the single-pass 10 % points of narrow levels 3 (16QAM) and 5 (64QAM), the
+/// receiver rescues a good share of the codewords the first pass lost: 45 and 39 %
+/// of them on these bursts when written, and the bounds leave room below that. The CNRs are
+/// fixed rather than read from `perf/levels.toml`, so that recording the baseline
+/// again cannot move them.
+#[test]
+fn receiver_decoding_rescues_codewords() {
+    check_rescue("narrow", 3, 6.25, 0.25);
+    check_rescue("narrow", 5, 12.75, 0.2);
 }

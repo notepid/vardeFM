@@ -13,9 +13,11 @@
 //!   rest fail costs more: the receiver decodes the failed ones again, up to
 //!   [`Modem::decode_passes`] times in all (at 16QAM and 64QAM). Such a burst
 //!   cannot be made from audio on demand, so the worst case adds to the measured
-//!   delay of the noise payload its decoding time (that delay less the clean one)
-//!   once per later pass, for all codewords but one: an upper bound, since a later
-//!   pass decodes only the codewords still failing.
+//!   delay of the noise payload its failing decodes (that delay less the clean one)
+//!   once per later pass. That is an estimate: a later pass decodes only the
+//!   codewords still failing, at least one fewer, but on several threads one fewer
+//!   often takes as many rounds; and it demaps the payload again, which costs little
+//!   next to failing decodes and is not counted.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -108,7 +110,7 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
     );
     println!(
         "Worst case = a payload that fails to decode. At 16QAM and 64QAM its decoding is counted up to \
-         {MAX_PASSES} times (an upper bound): when some codewords of a burst decode, the receiver decodes the failed ones again."
+         {MAX_PASSES} times (an estimate): when some codewords of a burst decode, the receiver decodes the failed ones again."
     );
 
     for &mode in modes {
@@ -144,11 +146,10 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
             // A mixed burst decodes its failed codewords up to decode_passes times.
             // The failing decodes cost about the worst delay less the clean one (which
             // holds demodulation and a few-iteration decode); the later passes repeat
-            // that part only.
-            // A later pass runs only when a codeword has decoded, so it decodes at
-            // most ncw - 1 of them.
+            // that part. A later pass decodes at least one codeword fewer, but the
+            // threads take codewords in rounds, so it is not counted as cheaper.
             let ncw = b.payload.len();
-            let failing_s = (worst.delay - clean.delay).max(0.0) * (ncw - 1) as f64 / ncw as f64;
+            let failing_s = (worst.delay - clean.delay).max(0.0);
             let extra_s = (Modem::decode_passes(level) - 1) as f64 * failing_s;
             worst.delay += extra_s;
             worst.load += extra_s / modem.burst_seconds(level, ncw) as f64;

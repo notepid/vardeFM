@@ -14,7 +14,6 @@ pub use header::{Header, Kind, FLAG_POLL};
 pub use receiver::{AudioLevel, Receiver, RxBurst};
 pub use vardefm_dsp::OfdmParams;
 
-use vardefm_dsp::qam::UNKNOWN_BIT;
 use vardefm_dsp::{Complex32, Frame, Modulation, Ofdm};
 use vardefm_fec::{bytes_to_bits, crc, permutation, scramble_bits, Ldpc};
 
@@ -149,7 +148,7 @@ impl Modem {
     /// Most decoding passes over a payload at `level`: [`MAX_PASSES`] at 16QAM and
     /// 64QAM, 1 at BPSK and QPSK, whose axes carry one bit each and share none.
     pub fn decode_passes(level: u8) -> usize {
-        if LEVELS[level as usize].modulation.bits_per_symbol() >= 4 {
+        if LEVELS[level as usize].modulation.bits_per_axis() >= 2 {
             MAX_PASSES
         } else {
             1
@@ -259,15 +258,22 @@ impl Modem {
         self.header_bits(h).chunks(nd).map(|c| c.iter().map(|&b| bpsk.map(&[b])).collect()).collect()
     }
 
-    /// LLRs for every bit slot of symbols `from..` of `f`. The noise variance of
-    /// symbol `i`, carrier `j` is `f.noise_var[j] * f.symbol_noise_scale[i]`.
+    /// Every received point of symbols `from..` of `f`, in slot order (symbol by
+    /// symbol, carrier by carrier), with its noise variance:
+    /// `f.noise_var[j] * f.symbol_noise_scale[i]` for symbol `i`, carrier `j`.
+    /// [`Modem::llrs`] and [`Modem::llrs_known`] both lay out their slots by it.
+    fn points(f: &Frame, from: usize) -> impl Iterator<Item = (Complex32, f32)> + '_ {
+        f.symbols[from..]
+            .iter()
+            .zip(&f.symbol_noise_scale[from..])
+            .flat_map(|(sym, &scale)| sym.iter().zip(&f.noise_var).map(move |(y, &nv)| (*y, nv * scale)))
+    }
+
+    /// LLRs for every bit slot of symbols `from..` of `f`.
     fn llrs(m: Modulation, f: &Frame, from: usize) -> Vec<f32> {
-        let symbols = &f.symbols[from..];
-        let mut out = Vec::with_capacity(symbols.len() * f.noise_var.len() * m.bits_per_symbol());
-        for (sym, &scale) in symbols.iter().zip(&f.symbol_noise_scale[from..]) {
-            for (y, &nv) in sym.iter().zip(&f.noise_var) {
-                m.demap_llr(*y, nv * scale, &mut out);
-            }
+        let mut out = Vec::with_capacity((f.symbols.len() - from) * f.noise_var.len() * m.bits_per_symbol());
+        for (y, nv) in Self::points(f, from) {
+            m.demap_llr(y, nv, &mut out);
         }
         out
     }
@@ -322,9 +328,8 @@ impl Modem {
         };
         let slots = Self::llrs(m, f, self.hdr_syms);
         let mut got: Vec<Got> = self.on_decode_threads(&(0..ncw).collect::<Vec<_>>(), |j| decode(&slots, j));
-        let first_ok = got.iter().filter(|g| g.is_some()).count();
         let mut passes = 1;
-        let mut known = vec![UNKNOWN_BIT; if rescue { total } else { 0 }];
+        let mut known = vec![None; if rescue { total } else { 0 }];
         let mut new_ok: Vec<usize> = (0..ncw).filter(|&j| got[j].is_some()).collect();
         while rescue && passes < max_passes && !new_ok.is_empty() {
             let failed: Vec<usize> = (0..ncw).filter(|&j| got[j].is_none()).collect();
@@ -335,7 +340,7 @@ impl Modem {
                 let info = got[j].as_mut().and_then(|g| g.0.take()).expect("decoded with rescue");
                 let coded = code.encode(&info);
                 for (i, b) in coded.into_iter().enumerate() {
-                    known[perm[j * CW_BITS + i]] = b;
+                    known[perm[j * CW_BITS + i]] = Some(b == 1);
                 }
             }
             let slots = Self::llrs_known(m, f, self.hdr_syms, &known);
@@ -350,24 +355,18 @@ impl Modem {
             }
         }
         let data: Vec<Option<Vec<u8>>> = got.into_iter().map(|g| g.map(|(_, d)| d)).collect();
-        let rescued = data.iter().filter(|d| d.is_some()).count() - first_ok;
-        Decoded { data, rescued, passes }
+        Decoded { data, passes }
     }
 
     /// LLRs as [`Modem::llrs`], with the bits `known` (one per slot of the payload,
-    /// [`UNKNOWN_BIT`] where not known) taken as given. Points whose bits are all
-    /// known are not demapped: their LLRs are 0.
-    fn llrs_known(m: Modulation, f: &Frame, from: usize, known: &[u8]) -> Vec<f32> {
-        let symbols = &f.symbols[from..];
+    /// `None` where not known) taken as given. Points whose bits are all known are not
+    /// demapped: their LLRs are 0.
+    fn llrs_known(m: Modulation, f: &Frame, from: usize, known: &[Option<bool>]) -> Vec<f32> {
         let bps = m.bits_per_symbol();
-        let carriers = symbols
-            .iter()
-            .zip(&f.symbol_noise_scale[from..])
-            .flat_map(|(sym, &scale)| sym.iter().zip(&f.noise_var).map(move |(y, &nv)| (*y, nv * scale)));
-        debug_assert_eq!(symbols.len() * f.noise_var.len() * bps, known.len(), "one known bit per slot");
+        debug_assert_eq!((f.symbols.len() - from) * f.noise_var.len() * bps, known.len(), "one known bit per slot");
         let mut out = Vec::with_capacity(known.len());
-        for ((y, nv), k) in carriers.zip(known.chunks_exact(bps)) {
-            if k.contains(&UNKNOWN_BIT) {
+        for ((y, nv), k) in Self::points(f, from).zip(known.chunks_exact(bps)) {
+            if k.contains(&None) {
                 m.demap_llr_known(y, nv, k, &mut out);
             } else {
                 // Every bit of this point belongs to a decoded codeword: no failed
@@ -409,9 +408,6 @@ impl Modem {
 struct Decoded {
     /// The data of each codeword that decoded.
     data: Vec<Option<Vec<u8>>>,
-    /// Codewords that failed the first pass and decoded in a later one.
-    #[cfg_attr(not(test), allow(dead_code))]
-    rescued: usize,
     /// Passes made, the first included.
     #[cfg_attr(not(test), allow(dead_code))]
     passes: usize,

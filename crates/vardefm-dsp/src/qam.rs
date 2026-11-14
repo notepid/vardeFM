@@ -1,8 +1,5 @@
 use num_complex::Complex32;
 
-/// A bit of [`Modulation::demap_llr_known`] that is not known.
-pub const UNKNOWN_BIT: u8 = 2;
-
 /// Constellations with Gray mapping and unit average power.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Modulation {
@@ -38,7 +35,7 @@ impl Modulation {
     }
 
     /// Bits carried on each axis (I and Q). BPSK uses only I.
-    fn bits_per_axis(self) -> usize {
+    pub fn bits_per_axis(self) -> usize {
         match self {
             Self::Bpsk => 1,
             _ => self.bits_per_symbol() / 2,
@@ -98,11 +95,11 @@ impl Modulation {
     }
 
     /// Max-log LLRs as [`Modulation::demap_llr`], given that some of the symbol's
-    /// bits are already known: `known[i]` is 0 or 1 for a known bit and
-    /// [`UNKNOWN_BIT`] otherwise. Only the points that agree with the known bits on
-    /// the same axis count. A known bit's own LLR is constrained only on the axis's
-    /// other known bits; callers do not use it.
-    pub fn demap_llr_known(self, y: Complex32, noise_var: f32, known: &[u8], out: &mut Vec<f32>) {
+    /// bits are already known: `known[i]` is `Some(bit == 1)` for a known bit and
+    /// `None` otherwise. Only the points that agree with the known bits on the same
+    /// axis count. A known bit's own LLR is constrained only on the axis's other known
+    /// bits; callers do not use it.
+    pub fn demap_llr_known(self, y: Complex32, noise_var: f32, known: &[Option<bool>], out: &mut Vec<f32>) {
         debug_assert_eq!(known.len(), self.bits_per_symbol());
         let m = self.bits_per_axis();
         let n_axes = if self == Self::Bpsk { 1 } else { 2 };
@@ -110,9 +107,9 @@ impl Modulation {
             // Known bits of this axis, as a mask and their values, MSB first.
             let (mut kmask, mut kval) = (0usize, 0usize);
             for (bit, &k) in known[a * m..(a + 1) * m].iter().enumerate() {
-                if k != UNKNOWN_BIT {
+                if let Some(one) = k {
                     kmask |= 1 << (m - 1 - bit);
-                    kval |= (k as usize & 1) << (m - 1 - bit);
+                    kval |= usize::from(one) << (m - 1 - bit);
                 }
             }
             self.demap_axis(v, noise_var, kmask, kval, out);
@@ -187,7 +184,7 @@ mod tests {
         let y = Complex32::new(0.1 * s, 0.0);
         let (mut free, mut given) = (Vec::new(), Vec::new());
         m.demap_llr(y, 0.5, &mut free);
-        m.demap_llr_known(y, 0.5, &[UNKNOWN_BIT, 0, UNKNOWN_BIT, UNKNOWN_BIT], &mut given);
+        m.demap_llr_known(y, 0.5, &[None, Some(false), None, None], &mut given);
         assert!(free[0] < 0.0 && given[0] < 0.0, "y > 0 means bit 1: {free:?} {given:?}");
         assert!((given[0] / free[0] - 3.0).abs() < 1e-3, "{free:?} {given:?}");
         // The other axis and the known bit's own LLR are left as they are.
@@ -197,19 +194,19 @@ mod tests {
             let y = Complex32::new(0.3, -0.7);
             let (mut a, mut b) = (Vec::new(), Vec::new());
             m.demap_llr(y, 0.2, &mut a);
-            m.demap_llr_known(y, 0.2, &vec![UNKNOWN_BIT; m.bits_per_symbol()], &mut b);
+            m.demap_llr_known(y, 0.2, &vec![None; m.bits_per_symbol()], &mut b);
             assert_eq!(a, b, "{m:?}");
         }
     }
 
     /// Max-log LLR of bit `b` of `m` at `y`, by brute force over every point whose
     /// bits agree with `known` (except bit `b` itself).
-    fn brute_llr(m: Modulation, y: Complex32, noise_var: f32, known: &[u8], b: usize) -> f32 {
+    fn brute_llr(m: Modulation, y: Complex32, noise_var: f32, known: &[Option<bool>], b: usize) -> f32 {
         let n = m.bits_per_symbol();
         let (mut d0, mut d1) = (f32::INFINITY, f32::INFINITY);
         for word in 0..1usize << n {
             let bits: Vec<u8> = (0..n).map(|i| (word >> (n - 1 - i)) as u8 & 1).collect();
-            let agrees = (0..n).all(|i| i == b || known[i] == UNKNOWN_BIT || known[i] == bits[i]);
+            let agrees = (0..n).all(|i| i == b || known[i].is_none_or(|one| u8::from(one) == bits[i]));
             if !agrees {
                 continue;
             }
@@ -242,7 +239,7 @@ mod tests {
             let noise = |r: &mut Prng| (r.next_u32() as f32 / u32::MAX as f32 - 0.5) * 0.4;
             let y = m.map(&sent) + Complex32::new(noise(&mut rng), noise(&mut rng));
             let pat = &patterns[t % patterns.len()];
-            let known: Vec<u8> = (0..6).map(|i| if pat[i] { sent[i] } else { UNKNOWN_BIT }).collect();
+            let known: Vec<Option<bool>> = (0..6).map(|i| pat[i].then_some(sent[i] == 1)).collect();
             let mut got = Vec::new();
             m.demap_llr_known(y, 0.05, &known, &mut got);
             for b in (0..6).filter(|&b| !pat[b]) {
