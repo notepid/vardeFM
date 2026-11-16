@@ -15,6 +15,12 @@ run the same minor version.
   `crates/vardefm-fec/perf/ldpc.toml`. `level_sweep` and `fer_curve` with `WRITE=1`
   record them again. The figures in `docs/PROTOCOL.md` §2.2 and §2.4 now refer to these
   files.
+- **Matched-filter burst detector**, chosen with `--detector mf` on the receiving
+  commands, `sim-pair` and `bench`. It cross-correlates the audio with the known
+  preambles. Near the sensitivity edge it decodes what decoding from the known position
+  decodes, where Schmidl-Cox loses up to a third of the bursts, and in wide mode it keeps
+  working under a CTCSS tone. Schmidl-Cox stays the default, and nothing on the air
+  changes. (#11)
 
 ### Changed
 - **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).
