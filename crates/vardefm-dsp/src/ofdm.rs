@@ -87,10 +87,11 @@ impl std::str::FromStr for Detector {
 pub struct Detection {
     /// Where the body of preamble B starts, if a frame was found.
     pub at: Option<usize>,
-    /// Every frame starting before this has been considered, so a caller searches on
-    /// from here: after a found frame whose header fails, or once more audio has
-    /// arrived. `from <= resume <= rx.len()` (`resume == from` when `from` is at or
-    /// past the end), and `resume > from` when a frame was found.
+    /// Where a caller searches on from: after a found frame whose header fails, or
+    /// once more audio has arrived. The matched filter has computed every window
+    /// before it. Schmidl-Cox resumes at its detection, which can lie past the end of
+    /// the plateau it scanned. `from <= resume <= rx.len()` (`resume == from` when
+    /// `from` is at or past the end), and `resume > from` when a frame was found.
     pub resume: usize,
 }
 

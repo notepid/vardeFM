@@ -173,7 +173,8 @@ impl Receiver {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
                     // Come back when the header has arrived. The same search then finds
-                    // the same frame: it starts at the same place.
+                    // the same frame, as it starts at the same place (the matched filter
+                    // up to float rounding in its last FFT block).
                     return Some(false);
                 }
                 let header =
