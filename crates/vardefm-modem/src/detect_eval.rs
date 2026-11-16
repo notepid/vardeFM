@@ -36,7 +36,8 @@
 //! the radio audio response (matched, tx-pre-only or rx-de-only, see [`CHANNELS`]),
 //! `TX_TILT`, dB/octave the sender tilts its audio by beyond what the receiver
 //! expects (0), and `CTCSS`, the deviation in Hz of a CTCSS tone the sending radio
-//! adds (0 = none; wide mode only, as the narrow audio path filters sub-tones out).
+//! adds at its modulator, after the deviation limiter (0 = none; wide mode only, as
+//! the narrow receive audio path filters sub-tones out).
 
 use super::*;
 use crate::busy_eval::CTCSS_HZ;
@@ -46,7 +47,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use vardefm_dsp::ofdm::MF_THRESHOLD;
 use vardefm_dsp::prng::Prng;
-use vardefm_sim::{transmit, FmChannelConfig};
+use vardefm_sim::{transmit, Ctcss, FmChannelConfig};
 
 /// The detector every other one is compared with in the paired test. Every detector
 /// in [`Detector::ALL`] is evaluated.
@@ -92,50 +93,44 @@ fn channel(mode: &str, channel: &str) -> FmChannelConfig {
 /// What a trial sends through and receives with: the receiving modem, whose detectors
 /// are evaluated, the sending modem, which may tilt its audio differently, the
 /// channel between them, without noise, and the deviation of a CTCSS tone the sending
-/// radio adds (0 for none).
+/// radio adds at its modulator, after the deviation limiter (0 for none).
 struct Link {
     rx: Arc<Modem>,
     /// The receiving modem once per detector of [`Detector::ALL`], in that order.
     receivers: Vec<Arc<Modem>>,
     tx: Arc<Modem>,
     chan: FmChannelConfig,
-    ctcss_hz: f32,
+    ctcss_deviation_hz: f32,
 }
 
 impl Link {
     fn new(mode: &str, chan: &str, tx_tilt: f32) -> Self {
         let tx = eval_modem(mode, tx_tilt, Detector::default());
         let receivers = Detector::ALL.iter().map(|&d| eval_modem(mode, 0.0, d)).collect();
-        Self { rx: modem(mode), receivers, tx, chan: channel(mode, chan), ctcss_hz: 0.0 }
+        Self { rx: modem(mode), receivers, tx, chan: channel(mode, chan), ctcss_deviation_hz: 0.0 }
     }
 
     fn matched(mode: &str) -> Self {
         Self::new(mode, "matched", 0.0)
     }
 
-    /// The link with a CTCSS tone of `deviation_hz`. Only where the TX audio path
-    /// passes sub-tones, as busy_eval models it: wide mode.
+    /// The link with a CTCSS tone of `deviation_hz`. Only where the receive audio
+    /// path passes sub-tones, as busy_eval models it: wide mode.
     fn with_ctcss(self, deviation_hz: f32) -> Self {
-        let passes = self.chan.tx_band.0 < CTCSS_HZ[0];
-        assert!(deviation_hz == 0.0 || passes, "CTCSS: the {} TX audio path filters it out", self.rx.ofdm.p.name);
-        Self { ctcss_hz: deviation_hz, ..self }
+        let passes = self.chan.rx_band.0 < CTCSS_HZ[0];
+        assert!(deviation_hz == 0.0 || passes, "CTCSS: the {} receive audio path filters it out", self.rx.ofdm.p.name);
+        Self { ctcss_deviation_hz: deviation_hz, ..self }
     }
 
-    /// What the sending radio puts on the air for burst audio `tx` in trial `t`: the
-    /// audio plus the trial's CTCSS tone, the standard tones in turn, each trial with
-    /// its own phase.
-    fn on_air(&self, tx: Vec<f32>, t: u32) -> Vec<f32> {
-        if self.ctcss_hz == 0.0 {
-            return tx;
-        }
-        let f = CTCSS_HZ[t as usize % CTCSS_HZ.len()] as f64;
-        let a = self.ctcss_hz / self.chan.deviation_hz;
-        let fs = self.chan.fs as f64;
-        let phase = t as f64 * 0.618;
-        tx.iter()
-            .enumerate()
-            .map(|(i, &v)| v + a * (2.0 * std::f64::consts::PI * (f * i as f64 / fs + phase)).sin() as f32)
-            .collect()
+    /// The channel of trial `t` at `cnr` dB: its own noise, and the trial's CTCSS
+    /// tone if the link has one, the standard tones in turn, each with its own phase.
+    fn trial_channel(&self, cnr: f32, t: u32) -> FmChannelConfig {
+        let ctcss = (self.ctcss_deviation_hz > 0.0).then(|| Ctcss {
+            hz: CTCSS_HZ[t as usize % CTCSS_HZ.len()],
+            deviation_hz: self.ctcss_deviation_hz,
+            phase: (2.0 * std::f64::consts::PI * (t as f64 * 0.618).fract()) as f32,
+        });
+        FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ctcss, ..self.chan.clone() }
     }
 }
 
@@ -214,8 +209,7 @@ pub(crate) fn through_channel(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: 
 fn trial(link: &Link, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> Trial {
     let m = &*link.rx;
     let sent = burst(level, ncw, payload_seed(t));
-    let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..link.chan.clone() };
-    let rx = transmit(&cfg, &link.on_air(link.tx.modulate(&sent), t));
+    let rx = transmit(&link.trial_channel(cnr, t), &link.tx.modulate(&sent));
     let tol = m.ofdm.p.ncp / 4;
     let det = Detector::ALL
         .iter()
