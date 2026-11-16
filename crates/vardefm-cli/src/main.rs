@@ -177,6 +177,12 @@ enum Cmd {
         levels: bool,
         #[command(flatten)]
         det: DetectorArg,
+        /// Act as a digipeater for this call sign (repeat --digi or separate with commas); works with no host connected
+        #[arg(long, value_delimiter = ',')]
+        digi: Vec<String>,
+        /// Extra seconds to wait per digipeater hop on our own CONNECT ... VIA sessions (digipeater decoding time, VOX)
+        #[arg(long, default_value_t = 0.5)]
+        hop_margin: f64,
     },
     /// Measure whether this computer decodes fast enough for each mode and speed level
     ///
@@ -275,6 +281,13 @@ enum Cmd {
         record: Option<String>,
         #[command(flatten)]
         det: DetectorArg,
+        /// Put a digipeater with this call sign between A and B (repeat for up to 2, in order from A);
+        /// each station then hears only its neighbours
+        #[arg(long, value_delimiter = ',')]
+        digi: Vec<String>,
+        /// Extra seconds A and B wait per digipeater hop
+        #[arg(long, default_value_t = 0.5)]
+        hop_margin: f64,
     },
 }
 
@@ -407,8 +420,11 @@ fn main() {
             quiet,
             levels,
             det,
+            digi,
+            hop_margin,
         } => {
             let ptt = ptt.parse().unwrap_or_else(|m: String| die(&m));
+            let digi_calls = digi_calls(digi, usize::MAX);
             let cfg = vardefm_tnc::radio::RadioConfig {
                 mode,
                 host,
@@ -426,6 +442,8 @@ fn main() {
                 detector: det.detector,
                 verbose: !quiet,
                 show_levels: levels,
+                digi_calls,
+                hop_margin_s: hop_margin,
             };
             let stop = radio_cmds::stop_flag();
             if let Err(err) = vardefm_tnc::radio::run(cfg, stop) {
@@ -450,10 +468,26 @@ fn main() {
             radio_cmds::monitor(audio_in.as_deref(), in_channel, &mode, det.detector).unwrap_or_else(|m| die(&m))
         }
         Cmd::Decode { mode, input, det } => radio_cmds::decode(&input, &mode, det.detector).unwrap_or_else(|m| die(&m)),
-        Cmd::SimPair { mode, cnr, ppm, keyup, txdelay, seed, speed, host, a_port, b_port, record, det } => {
+        Cmd::SimPair {
+            mode,
+            cnr,
+            ppm,
+            keyup,
+            txdelay,
+            seed,
+            speed,
+            host,
+            a_port,
+            b_port,
+            record,
+            digi,
+            hop_margin,
+            det,
+        } => {
             if keyup >= txdelay {
                 die("--txdelay must be longer than --keyup");
             }
+            let digis = digi_calls(digi, vardefm_modem::MAX_DIGIS);
             let cfg = SimPairConfig {
                 mode,
                 cnr_db: cnr,
@@ -468,6 +502,8 @@ fn main() {
                 record: record.map(Into::into),
                 detector: det.detector,
                 verbose: true,
+                digis,
+                hop_margin_s: hop_margin,
             };
             let sp = SimPair::start(cfg.clone()).unwrap_or_else(|e| die(&e.to_string()));
             println!(
@@ -481,6 +517,13 @@ fn main() {
             );
             for (name, (c, d)) in ["A", "B"].iter().zip(sp.addrs) {
                 println!("  station {name}: command {c}, data {d}");
+            }
+            if !cfg.digis.is_empty() {
+                println!(
+                    "  chain: A - {} - B (A and B hear only their neighbours; connect with CONNECT <A> <B> VIA {})",
+                    cfg.digis.join(" - "),
+                    cfg.digis.join(" ")
+                );
             }
             println!("Ctrl-C to stop.");
             sp.wait();
@@ -505,6 +548,19 @@ fn main() {
             println!("{} frames decoded", frames.len());
         }
     }
+}
+
+/// Upper-cased digipeater call signs from `--digi`; exits on an invalid call or too many.
+fn digi_calls(calls: Vec<String>, max: usize) -> Vec<String> {
+    if calls.len() > max {
+        die(&format!("at most {max} --digi call signs"));
+    }
+    for c in &calls {
+        if !vardefm_tnc::host::valid_call(c) {
+            die(&format!("--digi {c}: not a valid call sign (3-7 letters/digits, optional -1..-15)"));
+        }
+    }
+    calls.iter().map(|c| c.to_ascii_uppercase()).collect()
 }
 
 /// Parses a count that must be at least 1.

@@ -7,6 +7,17 @@ run the same minor version.
 ## [Unreleased]
 
 ### Added
+- **Digipeating.** `CONNECT <mycall> <target> VIA <d1> [<d2>]` connects through up to
+  two VardeFM digipeaters, as in VARA FM. `vardefm modem --digi <call>` makes a
+  station repeat the sessions routed through that call, with or without a host
+  connected. Each digipeater repeats every burst; acknowledgements and retries stay end
+  to end, and a codeword a digipeater could not decode is passed on as void so the
+  sender resends it. The end stations wait longer before retrying, by the repeats' airtime
+  plus `--hop-margin` (default 0.5 s) per digipeater. `sim-pair --digi <call>` puts
+  digipeaters between A and B, which then hear only their neighbours. On air, every burst
+  of a routed session is marked in new header flag bits, and its connect bursts carry a
+  `VFM2` payload; direct sessions are unchanged and still work with older builds, and
+  digipeaters never repeat them. See docs/PROTOCOL.md §3.4.
 - **Performance gates.** `level_gate` and `fer_gate` are ignored tests, run by hand in
   release mode, that fail when decoding performance moves. Per mode and level, the CNR
   at which 10 % of codewords fail, and per mode and drive level the CNR at which 10 % of

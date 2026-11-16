@@ -15,6 +15,8 @@ warnings from mountaintop to mountaintop.
   document for the differences from VARA.
 - **Not on-air compatible with VARA:** both stations need VardeFM.
 
+Video explaining how the software works [VardeFM under the hood](https://www.youtube.com/watch?v=TU3rt4h6phA)
+
 ## Download and use
 
 Get the archive for your system from the [releases page](https://github.com/notepid/vardeFM/releases):
@@ -90,6 +92,8 @@ vardefm sim-pair --cnr 18 --ppm -40 --record wavs
 | `--speed <x>` | run x times faster than real time (0 = as fast as possible) |
 | `--record <dir>` | save each transmission as `NNNN_<A\|B>_tx.wav` and `_rx.wav` |
 | `--seed <n>` | noise seed |
+| `--digi <call>` | put a digipeater between A and B (repeat for up to 2); A and B then hear only their neighbours |
+| `--hop-margin <s>` | extra wait per digipeater hop on A and B (default 0.5) |
 
 It prints one line per transmission and per reception:
 ```

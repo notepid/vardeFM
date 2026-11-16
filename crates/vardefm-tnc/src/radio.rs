@@ -48,6 +48,10 @@ pub struct RadioConfig {
     pub verbose: bool,
     /// Print the receive level every [`LEVEL_WINDOW_S`] seconds while idle.
     pub show_levels: bool,
+    /// Act as a digipeater for these call signs (empty: off).
+    pub digi_calls: Vec<String>,
+    /// Extra wait per digipeater hop on our own routed sessions.
+    pub hop_margin_s: f64,
 }
 
 /// Seconds per line of `--levels` output.
@@ -74,6 +78,8 @@ impl Default for RadioConfig {
             detector: Detector::default(),
             verbose: true,
             show_levels: false,
+            digi_calls: Vec::new(),
+            hop_margin_s: LinkConfig::default().hop_margin_s,
         }
     }
 }
@@ -237,7 +243,8 @@ impl<S: AudioSink> RadioEngine<S> {
             if let Some(t) = self.station.poll_tx(now) {
                 let h = t.header;
                 self.log.push(format!(
-                    "{now:8.2}s tx {:<10} {:<9} cw {:>2} {:>5} B (resent {:>4}) retry {} air {:.2} s",
+                    "{now:8.2}s {} {:<10} {:<9} cw {:>2} {:>5} B (resent {:>4}) retry {} air {:.2} s",
+                    if t.repeat { "rpt" } else { "tx " },
                     format!("{:?}", h.kind),
                     if h.ncw > 0 { LEVELS[h.level as usize].name } else { "-" },
                     h.ncw,
@@ -275,7 +282,12 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     let params = OfdmParams::by_name(&cfg.mode).ok_or_else(|| io::Error::other("mode must be narrow or wide"))?;
     let modem = Arc::new(Modem::new(params, cfg.txdelay_s).with_detector(cfg.detector));
     let ptt = vardefm_ptt::open(&cfg.ptt)?;
-    let link = LinkConfig { max_level: cfg.max_level, start_level: cfg.max_level.min(1), ..LinkConfig::default() };
+    let link = LinkConfig {
+        max_level: cfg.max_level,
+        start_level: cfg.max_level.min(1),
+        hop_margin_s: cfg.hop_margin_s,
+        ..LinkConfig::default()
+    };
     let input = open_input(cfg.audio_in.as_deref(), cfg.in_channel)?;
     let output = open_output(cfg.audio_out.as_deref(), cfg.out_channel)?;
     let port = HostPort::bind(&cfg.host, cfg.port, cfg.port + 1)?;
@@ -291,15 +303,19 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
         println!("  max level: {} ({})", cfg.max_level, LEVELS[cfg.max_level as usize].name);
     }
     println!("  host     : command {}, data {}", port.cmd_addr, port.data_addr);
+    if !cfg.digi_calls.is_empty() {
+        println!("  digi     : repeating for {}", cfg.digi_calls.join(", "));
+    }
 
     if cfg.show_levels {
         println!("  levels   : every {LEVEL_WINDOW_S} s while idle; set the radio volume so bursts peak near -6 dBFS");
     }
 
-    let mut engine = RadioEngine::new(modem, link, ptt, output, cfg.txtail_s, std::process::id());
+    let mut engine = RadioEngine::new(modem, link, ptt, output, cfg.txtail_s, link_seed());
     engine.tx_gain = cfg.tx_gain;
     engine.show_levels = cfg.show_levels;
     engine.record = cfg.record.clone();
+    engine.station.set_digi(&cfg.digi_calls);
     while !stop.load(Ordering::Relaxed) {
         let chunk = input.rx.recv_timeout(Duration::from_millis(50)).ok();
         let host_in: Vec<HostIn> = port.inbox.try_iter().collect();
@@ -321,6 +337,20 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     engine.unkey();
     println!("Stopped; PTT released.");
     Ok(())
+}
+
+/// Seed for the link's session ids and retry delays. Two stations with the same seed draw
+/// the same ids, and the process id alone repeats between stations started from one image.
+fn link_seed() -> u32 {
+    use std::hash::{BuildHasher, Hasher};
+    // RandomState is keyed from the operating system's randomness.
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u32(std::process::id());
+    if let Ok(t) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        h.write_u128(t.as_nanos());
+    }
+    let x = h.finish();
+    (x ^ (x >> 32)) as u32
 }
 
 fn resample_note(rate: u32) -> &'static str {
