@@ -29,7 +29,9 @@ struct ModemArgs {
     /// Data symbols per frame
     #[arg(long, default_value_t = 40, value_parser = at_least_one)]
     symbols: usize,
-    /// TX spectral tilt in dB/octave (negative tilts down the high carriers)
+    /// TX spectral tilt in dB/octave (negative tilts down the high carriers). With
+    /// --detector mf it also shapes what the receiver looks for: audio sent with
+    /// another tilt loses weak frames
     #[arg(long)]
     tilt: Option<f32>,
     /// TX RMS level, 0..1
