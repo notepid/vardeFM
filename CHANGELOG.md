@@ -6,6 +6,14 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Added
+- **Matched-filter burst detector**, chosen with `--detector mf` on the receiving
+  commands, `sim-pair` and `bench`. It cross-correlates the audio with the known
+  preambles. Near the sensitivity edge it decodes what decoding from the known position
+  decodes, where Schmidl-Cox loses up to a third of the bursts, and in wide mode it keeps
+  working under a CTCSS tone. Schmidl-Cox stays the default, and nothing on the air
+  changes. (#11)
+
 ## [0.3.2] - 2026-11-16
 
 On-air compatible with 0.3.0 and 0.3.1 for direct sessions. Digipeating is new and

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use vardefm_audio::{open_input, open_output, AudioOut, Channel, RATE};
 use vardefm_link::{valid_hop_margin, LinkConfig, MAX_HOP_MARGIN_S};
-use vardefm_modem::{AudioLevel, Modem, OfdmParams, LEVELS};
+use vardefm_modem::{AudioLevel, Detector, Modem, OfdmParams, LEVELS};
 use vardefm_ptt::{Ptt, PttSpec};
 
 #[derive(Clone, Debug)]
@@ -44,6 +44,8 @@ pub struct RadioConfig {
     pub record: Option<PathBuf>,
     /// Highest speed level to send or request (limits the decoding load on slow computers).
     pub max_level: u8,
+    /// How the receiver finds bursts.
+    pub detector: Detector,
     pub verbose: bool,
     /// Print the receive level every [`LEVEL_WINDOW_S`] seconds while idle.
     pub show_levels: bool,
@@ -97,6 +99,7 @@ impl Default for RadioConfig {
             tx_gain: 1.0,
             record: None,
             max_level: LEVELS.len() as u8 - 1,
+            detector: Detector::default(),
             verbose: true,
             show_levels: false,
             digi_calls: Vec::new(),
@@ -321,7 +324,7 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     // Before any device is opened.
     cfg.check()?;
     let params = OfdmParams::by_name(&cfg.mode).ok_or_else(|| io::Error::other("mode must be narrow or wide"))?;
-    let modem = Arc::new(Modem::new(params, cfg.txdelay_s));
+    let modem = Arc::new(Modem::new(params, cfg.txdelay_s).with_detector(cfg.detector));
     let ptt = vardefm_ptt::open(&cfg.ptt)?;
     let input = open_input(cfg.audio_in.as_deref(), cfg.in_channel)?;
     let output = open_output(cfg.audio_out.as_deref(), cfg.out_channel)?;
@@ -333,6 +336,7 @@ pub fn run(cfg: RadioConfig, stop: Arc<AtomicBool>) -> io::Result<()> {
     println!("  audio in : {} ({} Hz{})", input.name, input.device_rate, resample_note(input.device_rate));
     println!("  audio out: {} ({} Hz{})", output.name, output.device_rate, resample_note(output.device_rate));
     println!("  PTT      : {}", ptt.describe());
+    println!("  detector : {}", cfg.detector);
     if (cfg.max_level as usize) < LEVELS.len() - 1 {
         println!("  max level: {} ({})", cfg.max_level, LEVELS[cfg.max_level as usize].name);
     }
