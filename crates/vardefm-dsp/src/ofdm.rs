@@ -1027,6 +1027,11 @@ mod tests {
             // search resumes where the window opened.
             let cut = Detection { at: None, resume: first };
             assert_eq!(ofdm.detect_mf(&rx[..first + tpl.len() + 10], 0), cut, "{name}: buffer cut in the window");
+            // The window is complete once its last start, `first + l`, fits: one
+            // sample short of that finds nothing, and with it the frame is found.
+            let edge = first + tpl.len() + l;
+            assert_eq!(ofdm.detect_mf(&rx[..edge - 1], 0), cut, "{name}: buffer one sample short of the window");
+            assert_eq!(ofdm.detect_mf(&rx[..edge], 0), want, "{name}: buffer just holding the window");
         }
     }
 

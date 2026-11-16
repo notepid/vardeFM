@@ -173,8 +173,9 @@ impl Receiver {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
                     // Come back when the header has arrived. The same search then finds
-                    // the same frame, as it starts at the same place and Schmidl-Cox
-                    // scans no further than its fine timing needs.
+                    // the same frame, as it starts at the same place: Schmidl-Cox scans
+                    // no further than its fine timing needs, and the matched filter
+                    // gives the same frame up to float rounding in its last FFT block.
                     return Some(false);
                 }
                 let header =
