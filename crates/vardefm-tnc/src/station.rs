@@ -5,7 +5,7 @@
 
 use crate::host::{parse, Command};
 use std::sync::Arc;
-use vardefm_link::{Link, LinkConfig, LinkEvent, TxInfo};
+use vardefm_link::{Digipeater, Link, LinkConfig, LinkEvent, TxInfo};
 use vardefm_modem::{Header, Modem, Receiver, RxBurst};
 
 /// Output for the host application.
@@ -23,6 +23,8 @@ pub struct TxStart {
     pub header: Header,
     pub info: TxInfo,
     pub seconds: f32,
+    /// A digipeater repeat of another station's burst.
+    pub repeat: bool,
 }
 
 const IAMALIVE_S: f64 = 60.0;
@@ -31,6 +33,9 @@ pub struct Station {
     pub name: String,
     modem: Arc<Modem>,
     pub link: Link,
+    digi: Option<Digipeater>,
+    /// The burst on the air is a digipeater repeat.
+    repeating: bool,
     rx: Receiver,
     out: Vec<HostOut>,
     transmitting: bool,
@@ -44,6 +49,8 @@ impl Station {
         let bandwidth = if modem.ofdm.p.name == "wide" { "WIDE" } else { "NARROW" };
         Self {
             name: name.to_string(),
+            digi: None,
+            repeating: false,
             link: Link::new(modem.clone(), cfg, seed),
             rx: Receiver::new(modem.clone()),
             modem,
@@ -57,6 +64,16 @@ impl Station {
 
     pub fn modem(&self) -> &Arc<Modem> {
         &self.modem
+    }
+
+    /// Repeat the bursts of sessions routed through any of `calls` (none: off).
+    /// Works without a host and alongside our own sessions.
+    pub fn set_digi(&mut self, calls: &[String]) {
+        self.digi = (!calls.is_empty()).then(|| Digipeater::new(calls, self.link.config().turnaround_s));
+    }
+
+    pub fn digi(&self) -> Option<&Digipeater> {
+        self.digi.as_ref()
     }
 
     fn line(&mut self, s: impl Into<String>) {
@@ -78,7 +95,7 @@ impl Station {
                 self.link.set_listen(on);
                 self.line("OK");
             }
-            Command::Connect { source, target } => match self.link.connect(now, &source, &target) {
+            Command::Connect { source, target, via } => match self.link.connect(now, &source, &target, &via) {
                 Ok(()) => self.line("OK"),
                 Err(()) => self.line("WRONG"),
             },
@@ -120,16 +137,31 @@ impl Station {
     /// Call only while not transmitting.
     pub fn poll_tx(&mut self, now: f64) -> Option<TxStart> {
         debug_assert!(!self.transmitting);
-        let burst = self.link.poll(now, self.rx.busy())?;
+        // Repeats answer a burst just heard, so they go first.
+        let (burst, repeat) = match self.digi.as_mut().and_then(|d| d.poll(now)) {
+            Some(b) => (b, true),
+            None => (self.link.poll(now, self.rx.busy())?, false),
+        };
         let audio = self.modem.modulate(&burst);
         self.transmitting = true;
+        self.repeating = repeat;
         self.rx.reset();
         self.line("PTT ON");
         Some(TxStart {
             seconds: audio.len() as f32 / self.modem.fs(),
             audio,
+            info: if repeat {
+                TxInfo {
+                    kind: burst.header.kind,
+                    level: burst.header.level,
+                    ncw: burst.payload.len(),
+                    ..TxInfo::default()
+                }
+            } else {
+                self.link.last_tx().clone()
+            },
             header: burst.header,
-            info: self.link.last_tx().clone(),
+            repeat,
         })
     }
 
@@ -137,7 +169,9 @@ impl Station {
     pub fn tx_done(&mut self, now: f64) {
         self.transmitting = false;
         self.line("PTT OFF");
-        self.link.tx_done(now);
+        if !std::mem::take(&mut self.repeating) {
+            self.link.tx_done(now);
+        }
     }
 
     pub fn transmitting(&self) -> bool {
@@ -152,6 +186,9 @@ impl Station {
         let bursts = self.rx.push(samples);
         for b in &bursts {
             self.link.on_burst(now, b);
+            if let Some(d) = &mut self.digi {
+                d.on_burst(now, b);
+            }
         }
         let busy = self.rx.busy();
         if busy != self.busy_reported {
