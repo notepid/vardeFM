@@ -8,10 +8,12 @@
 //!   card delivers it. Where a search starts can change what Schmidl-Cox finds, so an
 //!   offline search over the whole recording would not show what the receiver does;
 //! - `hit`: the detector's first detection in the whole recording, searched from its
-//!   start, lies within ±ncp/4 samples of the true position, which is where
-//!   Schmidl-Cox's preamble-B fine timing lands on a noiseless copy. A detector that
-//!   always picks another point inside the cyclic prefix can decode every burst and
-//!   still score few hits, so read `hit` as a diagnostic only.
+//!   start, lies within ±ncp/4 samples of the true position: the timing at which
+//!   noiseless copies of the burst demodulate their header cleanest, which no detector
+//!   defines (see `link_position`). A detector that always picks another point inside
+//!   the cyclic prefix can decode every burst and still score few hits, so read `hit`
+//!   as a diagnostic only. Where a detector's noiseless detection is that far off, the
+//!   run says so.
 //!
 //! `genie` decodes from the true position: a known-timing reference, not a strict
 //! bound. Another valid position inside the cyclic prefix puts the FFT windows on
@@ -222,39 +224,93 @@ fn trial(link: &Link, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> 
     Trial { det, genie }
 }
 
-/// Where preamble B of a `level` burst of `ncw` codewords lands after the channel.
-/// The channel's delays depend neither on its noise nor on the payload (the burst
-/// layout is fixed by level and size), so one noiseless copy gives it for every trial.
-/// The reference detector's fine timing on a noiseless copy without the CTCSS tone
-/// defines the position (the tone does not move the burst).
-/// `Err` when the reference detector misses it. A detector that does not find it
-/// within the hit tolerance gets a warning: its hits then measure agreement with the
-/// reference rather than finding the burst.
-fn link_position(link: &Link, level: u8, ncw: usize) -> Result<(usize, Vec<String>), String> {
-    let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
-    let rx = transmit(&clean, &link.tx.modulate(&burst(level, ncw, payload_seed(0))));
-    let ofdm = &link.rx.ofdm;
-    let Some(truth) = ofdm.detect_with(REFERENCE, &rx, 0).at else {
-        return Err(format!("{REFERENCE} misses the burst on a noiseless channel"));
-    };
-    let warnings = Detector::ALL
-        .into_iter()
-        .filter_map(|d| {
-            let at = ofdm.detect_with(d, &rx, 0).at;
-            let near = at.is_some_and(|b| b.abs_diff(truth) <= ofdm.p.ncp / 4);
-            (!near).then(|| format!("{d} finds the noiseless burst at {at:?}, {REFERENCE} at {truth}"))
-        })
-        .collect();
-    Ok((truth, warnings))
+/// Within this many dB of the best header SNR, a timing counts as among the best in
+/// [`best_timing`].
+const BEST_TIMING_MARGIN_DB: f32 = 0.5;
+
+/// Noiseless copies, each with its own payload, that [`best_timing`] averages over.
+/// Where the link clips, the error depends on the payload; the average smooths it.
+const BEST_TIMING_COPIES: u32 = 4;
+
+/// Squared error and energy of the header symbols `known` demodulated from `rx` at
+/// `b`, against the values sent. Unlike `Frame::snr_db` it needs no decisions, so it
+/// holds on a link that distorts the burst.
+fn header_error(m: &Modem, rx: &[f32], b: usize, known: &[Vec<Complex32>]) -> Option<(f32, f32)> {
+    let f = m.ofdm.demodulate(rx, b, known.len())?;
+    let pairs = || f.symbols.iter().flatten().zip(known.iter().flatten());
+    Some((pairs().map(|(y, x)| (y - x).norm_sqr()).sum(), pairs().map(|(_, x)| x.norm_sqr()).sum()))
 }
 
-/// [`link_position`] where every detector must find the burst, as in the CI tests.
+/// The timing at which `m` demodulates the header `h` of the bursts in `rxs` cleanest,
+/// over all of them, searched within a cyclic prefix either side of `nominal`: the
+/// middle of the timings within [`BEST_TIMING_MARGIN_DB`] of the best. `None` if
+/// none demodulates.
+fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Option<usize> {
+    let ncp = m.ofdm.p.ncp;
+    let known = m.header_carriers(h);
+    let snr: Vec<(usize, f32)> = (nominal.saturating_sub(ncp)..=nominal + ncp)
+        .filter_map(|b| {
+            let (err, sig) = rxs
+                .iter()
+                .map(|rx| header_error(m, rx, b, &known))
+                .collect::<Option<Vec<(f32, f32)>>>()?
+                .into_iter()
+                .fold((0.0, 0.0), |(e, s), (de, ds)| (e + de, s + ds));
+            Some((b, 10.0 * (sig / f32::max(err, f32::MIN_POSITIVE)).log10()))
+        })
+        .collect();
+    let best = snr.iter().map(|s| s.1).fold(f32::NEG_INFINITY, f32::max);
+    let near: Vec<usize> = snr.iter().filter(|s| s.1 >= best - BEST_TIMING_MARGIN_DB).map(|s| s.0).collect();
+    near.get(near.len() / 2).copied()
+}
+
+/// Where preamble B of a `level` burst of `ncw` codewords lands after the channel,
+/// and where each detector of [`Detector::ALL`] finds it on a noiseless copy. The
+/// channel's delays depend neither on its noise nor on the payload (the burst layout
+/// is fixed by level and size), so noiseless copies give it for every trial.
+///
+/// No detector defines the position, so neither `hit` nor `genie` favours one. It is
+/// the timing at which noiseless copies, without the CTCSS tone (the tone does not
+/// move the burst), demodulate their header cleanest ([`best_timing`]), searched
+/// around where preamble B starts in the sent audio. On a link whose response differs
+/// from the sender's that is the best point for decoding, whatever point a detector's
+/// fine timing prefers.
+/// `Err` when the noiseless copies do not demodulate there.
+fn link_position(link: &Link, level: u8, ncw: usize) -> Result<(usize, Vec<Option<usize>>), String> {
+    let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
+    let sent: Vec<Burst> = (0..BEST_TIMING_COPIES).map(|t| burst(level, ncw, payload_seed(t))).collect();
+    let rxs: Vec<Vec<f32>> = sent.iter().map(|b| transmit(&clean, &link.tx.modulate(b))).collect();
+    let m = &*link.rx;
+    let ofdm = &m.ofdm;
+    let lead = (clean.lead_silence_s * clean.fs) as usize;
+    let nominal = lead + (link.tx.leader_symbols() + 1) * ofdm.p.symbol_len() + ofdm.p.ncp;
+    let Some(truth) = best_timing(m, &rxs, nominal, &sent[0].header) else {
+        return Err("the noiseless burst does not demodulate near where it was sent".into());
+    };
+    let found = Detector::ALL.iter().map(|&d| ofdm.detect_with(d, &rxs[0], 0).at).collect();
+    Ok((truth, found))
+}
+
+/// What [`link_position`]'s detections say about each detector: a line for each one
+/// that finds the noiseless burst further than `tol` samples from `truth`, or not at
+/// all.
+fn far_detections(truth: usize, found: &[Option<usize>], tol: usize) -> Vec<String> {
+    Detector::ALL
+        .iter()
+        .zip(found)
+        .filter(|(_, at)| !at.is_some_and(|b| b.abs_diff(truth) <= tol))
+        .map(|(d, at)| format!("{d} finds the noiseless burst at {at:?}, the best timing is {truth}"))
+        .collect()
+}
+
+/// [`link_position`] where every detector must find the noiseless burst inside the
+/// part of the cyclic prefix that leaves room for the channel (within ncp/2 of the
+/// best timing), as in the CI tests.
 fn strict_link_position(link: &Link, level: u8, ncw: usize) -> usize {
-    match link_position(link, level, ncw) {
-        Ok((truth, warnings)) if warnings.is_empty() => truth,
-        Ok((_, warnings)) => panic!("{}", warnings.join("; ")),
-        Err(e) => panic!("{e}"),
-    }
+    let (truth, found) = link_position(link, level, ncw).unwrap_or_else(|e| panic!("{e}"));
+    let far = far_detections(truth, &found, link.rx.ofdm.p.ncp / 2);
+    assert!(far.is_empty(), "{}", far.join("; "));
+    truth
 }
 
 /// Where preamble B of a `level` burst of `ncw` codewords lands after the `mode`
@@ -523,6 +579,7 @@ fn detector_eval() {
          channel {chan}, TX tilt {tx_tilt:+} dB/octave, CTCSS {ctcss} Hz, noise seed {noise_seed}",
         LEVELS[level as usize].name
     );
+    let mut skipped = Vec::new();
     for &mode in &modes {
         let link = Link::new(mode, chan, tx_tilt).with_ctcss(ctcss);
         let m = &*link.rx;
@@ -533,12 +590,21 @@ fn detector_eval() {
         println!("\n{mode}: hits and decoded bursts out of {trials}; paired test against '{REFERENCE}'");
         // A link that loses the noiseless burst skips its bursts, not the whole run.
         let truth = match link_position(&link, level, ncw) {
-            Ok((truth, warnings)) => {
-                warnings.iter().for_each(|w| println!("  warning: {w}; its hits mean little"));
+            Ok((truth, found)) => {
+                for w in far_detections(truth, &found, m.ofdm.p.ncp / 4) {
+                    println!("  warning: {w}; its hits mean little");
+                }
                 Some(truth)
             }
             Err(e) => {
                 println!("  skipped: {e}");
+                // A row per point, so that a sweep over links shows the gap.
+                if let Some(f) = &mut csv {
+                    for cnr in cnr_list(mode) {
+                        writeln!(f, "{mode},{chan},{tx_tilt},{ctcss},{level},{ncw},{cnr},{trials},skipped,,").unwrap();
+                    }
+                }
+                skipped.push(mode);
                 None
             }
         };
@@ -592,6 +658,8 @@ fn detector_eval() {
         }
         println!("{line}");
     }
+    // The rest of the run is still worth having, but it must not pass unnoticed.
+    assert!(skipped.is_empty(), "no bursts measured in {skipped:?}: see 'skipped' above");
 }
 
 #[test]
@@ -620,13 +688,16 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
     for mode in OfdmParams::all().map(|p| p.name) {
         let link = Link::matched(mode);
         let m = &*link.rx;
-        // The true position must not depend on the payload, or one copy could not give it.
-        let truth = strict_link_position(&link, 1, 1);
+        // The channel's delays must not depend on the payload, or noiseless copies
+        // could not give the position for every trial.
+        strict_link_position(&link, 1, 1);
+        let (_, found) = link_position(&link, 1, 1).unwrap();
+        let reference = Detector::ALL.iter().position(|&d| d == REFERENCE).unwrap();
         let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
         for t in 1..4 {
             let tx = m.modulate(&burst(1, 1, payload_seed(t)));
             let at = m.ofdm.detect_with(REFERENCE, &transmit(&clean, &tx), 0).at;
-            assert_eq!(at, Some(truth), "{mode}: payload {t} moves the burst");
+            assert_eq!(at, found[reference], "{mode}: payload {t} moves the burst");
         }
         for r in run_trials(&link, 25.0, 1, 1, 4) {
             assert!(r.genie, "{mode}: genie failed on a strong signal");
@@ -654,6 +725,38 @@ fn mismatched_links_still_carry_strong_bursts() {
                 assert!(r.det.iter().all(|&(_, ok)| ok), "{mode} {chan} tilt {tilt}: a detector missed a strong burst");
             }
         }
+    }
+}
+
+/// The CTCSS path: the tone reaches the receiver at the deviation sent, and a
+/// wide-mode link with a tone still carries strong bursts to the genie and to every
+/// detector. A stronger tone costs Schmidl-Cox bursts at any CNR, so this keeps to
+/// 375 Hz.
+#[test]
+fn ctcss_tone_reaches_the_receiver_and_strong_bursts_get_through() {
+    let deviation_hz = 375.0;
+    let link = Link::matched("wide").with_ctcss(deviation_hz);
+    for t in 0..2 {
+        let cfg = link.trial_channel(25.0, t);
+        let tone = cfg.ctcss.clone().expect("the link adds a tone");
+        let tx = link.tx.modulate(&burst(1, 1, payload_seed(t)));
+        let rx = transmit(&cfg, &tx);
+        // While the squelch is open: from key-up to the end of the burst.
+        let (lead, keyup) = ((cfg.lead_silence_s * cfg.fs) as usize, (cfg.keyup_delay_s * cfg.fs) as usize);
+        let heard = &rx[lead + keyup..lead + tx.len()];
+        // The received amplitude at the tone's frequency.
+        let w = 2.0 * std::f64::consts::PI * tone.hz as f64 / cfg.fs as f64;
+        let (c, s) = heard.iter().enumerate().fold((0.0, 0.0), |(c, s), (i, &x)| {
+            let ph = w * i as f64;
+            (c + x as f64 * ph.cos(), s + x as f64 * ph.sin())
+        });
+        let amp = 2.0 * f64::hypot(c, s) / heard.len() as f64;
+        let want = (deviation_hz / cfg.deviation_hz) as f64;
+        assert!((amp / want - 1.0).abs() < 0.25, "{} Hz tone received at {amp:.3}, sent at {want:.3}", tone.hz);
+    }
+    for r in run_trials(&link, 25.0, 1, 1, 2) {
+        assert!(r.genie, "genie failed on a strong signal with CTCSS");
+        assert!(r.det.iter().all(|&(_, ok)| ok), "a detector missed a strong burst with CTCSS");
     }
 }
 
