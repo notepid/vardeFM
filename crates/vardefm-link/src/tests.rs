@@ -186,8 +186,8 @@ fn session(burst_loss: f64, cw_loss: f64, seed: u32) {
 
     net.nodes[0].link.disconnect(net.now);
     net.run_until(60.0, |n| n.nodes[0].link.is_idle() && n.nodes[1].link.is_idle());
-    for i in 0..2 {
-        assert_eq!(net.nodes[i].events.iter().filter(|e| **e == LinkEvent::Disconnected).count(), 1);
+    for node in &net.nodes[..2] {
+        assert_eq!(node.events.iter().filter(|e| **e == LinkEvent::Disconnected).count(), 1);
     }
     println!(
         "loss {burst_loss}/{cw_loss}: 20 kB in {t:.0} s, airtime {:.0} s, retries {}/{}, resent {}/{} bytes",
