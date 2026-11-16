@@ -47,6 +47,7 @@ use std::f32::consts::PI;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
+use vardefm_dsp::ofdm::MF_THRESHOLD;
 use vardefm_dsp::prng::Prng;
 use vardefm_sim::{transmit, Ctcss, FmChannelConfig};
 
@@ -646,6 +647,7 @@ fn detector_eval() {
                 let (n, h) = false_detections(m, d, &audio);
                 line += &format!(" | {d} {:7.2} / {:5.2}", n as f32 * per_min, h as f32 * per_min);
             }
+            line += &format!(" | mf peak {:.3} (threshold {MF_THRESHOLD})", m.ofdm.mf_peak(&audio));
             println!("{line}");
             if *case == LOAD_CASE {
                 load_audio = Some(audio);
@@ -683,6 +685,43 @@ fn on_every_core_keeps_trial_order() {
     assert!(on_every_core(0, |t| t).is_empty());
 }
 
+/// A CI guard on the matched filter's threshold, on noise the evaluation's noise cases
+/// do not use: FM channel noise with other seeds and a fresh white-noise sequence, in
+/// every mode, so a new mode must be calibrated. Setting `MF_MARGIN` prints the peaks.
+#[test]
+fn matched_filter_stays_below_threshold_on_unseen_noise() {
+    let seconds = 5.0;
+    for mode in OfdmParams::all().map(|p| p.name) {
+        let m = modem(mode);
+        let n = (seconds * m.fs()) as usize;
+        let base = FmChannelConfig {
+            keyup_delay_s: 0.0,
+            lead_silence_s: 0.0,
+            trail_silence_s: 0.0,
+            ..FmChannelConfig::by_name(mode).unwrap()
+        };
+        let mut rng = Prng::new(0x0dd_5eed);
+        let cases = [
+            (
+                "carrier at -10 dB",
+                transmit(&FmChannelConfig { cnr_db: Some(-10.0), seed: 4242, ..base.clone() }, &vec![0.0; n]),
+            ),
+            ("carrier at 5 dB", transmit(&FmChannelConfig { cnr_db: Some(5.0), seed: 4243, ..base }, &vec![0.0; n])),
+            ("white noise", (0..n).map(|_| 0.3 * rng.uniform()).collect()),
+        ];
+        for (name, audio) in cases {
+            let peak = m.ofdm.mf_peak(&audio);
+            if std::env::var_os("MF_MARGIN").is_some() {
+                println!("{mode} {name}: mf peak {peak:.3}");
+            }
+            assert!(peak < MF_THRESHOLD, "{mode} {name}: mf peak {peak} reaches the threshold");
+        }
+    }
+}
+
+/// The harness itself: on a strong signal every detector and the genie decode every
+/// burst, and no detector raises a false header on a carrier at -10 dB CNR. `hit` is
+/// a diagnostic, so it is not required here.
 #[test]
 fn harness_sees_strong_bursts_and_no_false_headers() {
     for mode in OfdmParams::all().map(|p| p.name) {
@@ -758,6 +797,43 @@ fn ctcss_tone_reaches_the_receiver_and_strong_bursts_get_through() {
         assert!(r.genie, "genie failed on a strong signal with CTCSS");
         assert!(r.det.iter().all(|&(_, ok)| ok), "a detector missed a strong burst with CTCSS");
     }
+}
+
+/// A wide-mode radio passes the CTCSS tone it adds to the data port audio. At 750 Hz
+/// deviation the genie and the matched filter decode every strong burst, whichever
+/// standard tone. Schmidl-Cox does not: the tone's correlation over its nfft/2 lag
+/// pulls the metric below its threshold. That is a defect of the existing detector,
+/// so it is not asserted here.
+#[test]
+fn ctcss_tone_leaves_strong_bursts_to_the_matched_filter() {
+    let link = Link::matched("wide").with_ctcss(750.0);
+    let mf = Detector::ALL.iter().position(|&d| d == Detector::MatchedFilter).unwrap();
+    for (t, r) in run_trials(&link, 25.0, 1, 1, CTCSS_HZ.len() as u32).iter().enumerate() {
+        assert!(r.genie, "genie failed on a strong signal with {} Hz CTCSS", CTCSS_HZ[t]);
+        assert!(r.det[mf].1, "the matched filter missed a strong burst with {} Hz CTCSS", CTCSS_HZ[t]);
+    }
+}
+
+/// The matched filter's reason to exist, guarded in CI. Where bursts start to decode
+/// and Schmidl-Cox lags behind the genie, the matched filter decodes all but at most
+/// one of what the genie decodes; on the mismatch where it loses its advantage (wide,
+/// de-emphasis only at the receiver) it decodes no fewer than the reference detector,
+/// less one. A better detector passes; a worse threshold or template fails.
+#[test]
+fn matched_filter_holds_its_sensitivity_where_bursts_start_to_decode() {
+    let mf = Detector::ALL.iter().position(|&d| d == Detector::MatchedFilter).unwrap();
+    let reference = Detector::ALL.iter().position(|&d| d == REFERENCE).unwrap();
+    let count = |res: &[Trial], i: usize| res.iter().filter(|r| r.det[i].1).count();
+    for (mode, cnr) in [("narrow", 5.0), ("wide", 7.0)] {
+        let res = run_trials(&Link::matched(mode), cnr, 1, 1, 40);
+        let genie = res.iter().filter(|r| r.genie).count();
+        assert!(genie >= 30, "{mode} {cnr} dB: genie decodes only {genie} of 40; pick another point");
+        let got = count(&res, mf);
+        assert!(got + 1 >= genie, "{mode} {cnr} dB: matched filter {got}, genie {genie}");
+    }
+    let res = run_trials(&Link::new("wide", "rx-de-only", 0.0), 7.0, 1, 1, 40);
+    let (got, sc) = (count(&res, mf), count(&res, reference));
+    assert!(got + 1 >= sc, "wide rx-de-only 7 dB: matched filter {got}, {REFERENCE} {sc}");
 }
 
 #[test]

@@ -424,7 +424,9 @@ fn modem_without_leader(mode: &str, detector: Detector) -> Arc<Modem> {
 }
 
 /// Preamble A of `b` on its own, as a burst cut off after it would leave it, then
-/// `gap` samples of silence. A detector may take it for a burst, and its header fails.
+/// `gap` samples of silence. Preamble A alone matches half the matched filter's
+/// template (about 0.7 normalized), so it opens a search window that ends about one
+/// symbol later, and its header fails.
 fn lone_preamble(m: &Modem, b: &Burst, gap: usize) -> Vec<f32> {
     assert_eq!(m.leader_symbols(), 0, "the burst must start with preamble A");
     let mut out = m.modulate(b)[..m.ofdm.p.symbol_len()].to_vec();
@@ -432,12 +434,38 @@ fn lone_preamble(m: &Modem, b: &Burst, gap: usize) -> Vec<f32> {
     out
 }
 
+/// A burst whose template starts within a cyclic prefix after the end of the search
+/// window that a lone preamble A opened. The header tried at the window's peak fails,
+/// and the search must go on from where the window ended, not from that header.
+#[test]
+fn a_false_crossing_just_before_a_burst_does_not_hide_it() {
+    for mode in ["narrow", "wide"] {
+        for detector in Detector::ALL {
+            let m = modem_without_leader(mode, detector);
+            let p = &m.ofdm.p;
+            let b = burst(1, 1, 5);
+            let peak = m.ofdm.mf_peak(&lone_preamble(&m, &b, 2 * p.symbol_len()));
+            assert!(peak > vardefm_dsp::ofdm::MF_THRESHOLD, "{mode}: lone preamble A peaks at {peak}");
+            for gap in [1, p.ncp / 2, p.ncp - 1] {
+                let mut audio = vec![0.0; 20_000];
+                audio.extend(lone_preamble(&m, &b, gap));
+                audio.extend(m.modulate(&b));
+                let got = receive(&mut Receiver::new(m.clone()), &audio);
+                assert_eq!(got.len(), 1, "{mode} {detector} gap {gap}");
+                assert_eq!(got[0].header, b.header, "{mode} {detector} gap {gap}");
+                assert!(got[0].payload.iter().all(|p| p.is_some()), "{mode} {detector} gap {gap}");
+            }
+        }
+    }
+}
+
 /// What a receiver finds must not depend on how its audio is chunked. A lone
 /// preamble A sits right after the first burst, so the search after that burst
-/// starts next to something that looks like a burst, just before the second one.
+/// starts next to a crossing that opens a window ending just before the second one.
 ///
-/// The bursts must match exactly; where they end may move by a few samples, as a
-/// detector may round differently depending on where each search starts.
+/// The bursts must match exactly; where they end may move by a few samples, since
+/// the matched filter's FFT blocks start where each search starts, and two near-equal
+/// correlation peaks can swap with the rounding.
 #[test]
 fn chunking_does_not_change_what_is_received() {
     for mode in ["narrow", "wide"] {

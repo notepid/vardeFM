@@ -2,7 +2,8 @@
 //!
 //! Frame layout: `[preamble A][preamble B][data symbol 0] ... [data symbol n-1]`
 //! - Preamble A uses only even FFT bins, so its time signal repeats every nfft/2
-//!   samples. The receiver finds it with a Schmidl-Cox autocorrelation.
+//!   samples. By default the receiver finds it with a Schmidl-Cox autocorrelation;
+//!   a matched filter for preambles A and B is the alternative ([`Detector`]).
 //! - Preamble B is a known BPSK symbol on every carrier. It gives exact timing
 //!   (cross-correlation) and the initial channel estimate.
 //! - Data symbols carry scattered pilots used to track gain, phase and timing drift
@@ -14,7 +15,7 @@ use crate::prng::Prng;
 use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::f32::consts::SQRT_2;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const PILOT_TABLE_LEN: usize = 32;
 const DETECT_THRESHOLD: f64 = 0.3;
@@ -25,6 +26,18 @@ const MIN_PREAMBLE_CORR: f32 = 0.3;
 /// noise scale. Normal symbols almost never get there (the per-symbol estimate averages
 /// 18-24 real noise samples).
 const SCALE_THRESHOLD: f32 = 2.0;
+/// Normalized correlation with preambles A and B that marks a burst for the matched
+/// filter. It was set from a first minute of the detector evaluation's noise cases
+/// (`detector_eval` in vardefm-modem), where the largest value was about 0.3; longer
+/// runs of those cases with other seeds, and a CI test on noise they do not use,
+/// check it ([`Ofdm::mf_peak`] gives the largest value). Bursts at a CNR where none
+/// decodes still cross it. The modem's own data symbols come closest: a crossing
+/// there costs one header decode that fails its CRC.
+///
+/// It holds for the template lengths of the modes in [`OfdmParams::all`]. A shorter
+/// template correlates more strongly with noise, so a new mode must be checked
+/// (`matched_filter_stays_below_threshold_on_unseen_noise` loops over every mode).
+pub const MF_THRESHOLD: f32 = 0.4;
 /// TX low-pass cutoff relative to the top carrier frequency.
 const TX_LOWPASS_FACTOR: f32 = 1.15;
 /// Clip-and-filter passes before the final clamp.
@@ -36,14 +49,17 @@ pub enum Detector {
     /// Schmidl-Cox autocorrelation of preamble A, confirmed by preamble B.
     #[default]
     SchmidlCox,
+    /// Normalized cross-correlation with the known waveform of preambles A and B.
+    MatchedFilter,
 }
 
 impl Detector {
-    pub const ALL: [Detector; 1] = [Self::SchmidlCox];
+    pub const ALL: [Detector; 2] = [Self::SchmidlCox, Self::MatchedFilter];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::SchmidlCox => "sc",
+            Self::MatchedFilter => "mf",
         }
     }
 }
@@ -72,11 +88,41 @@ pub struct Detection {
     /// Where the body of preamble B starts, if a frame was found.
     pub at: Option<usize>,
     /// Where a caller searches on from: after a found frame whose header fails, or
-    /// once more audio has arrived. Schmidl-Cox resumes at its detection, which can
-    /// lie past the end of the plateau it scanned. `from <= resume <= max(from,
-    /// rx.len())`, with `resume == from` when `from` is at or past the end, and
-    /// `resume > from` when a frame was found.
+    /// once more audio has arrived. The matched filter has computed every window
+    /// before it. Schmidl-Cox resumes at its detection, which can lie past the end of
+    /// the plateau it scanned. `from <= resume <= max(from, rx.len())`, with
+    /// `resume == from` when `from` is at or past the end, and `resume > from` when a
+    /// frame was found.
     pub resume: usize,
+}
+
+/// Matched filter for preambles A and B, evaluated by FFT (overlap-save).
+struct MatchedFilter {
+    /// Template length: preambles A and B with their cyclic prefixes.
+    len: usize,
+    /// Square root of the template energy.
+    norm: f32,
+    fft: Arc<dyn Fft<f32>>,
+    ifft: Arc<dyn Fft<f32>>,
+    /// Conjugate spectrum of the zero-padded template, scaled by 1/FFT size.
+    spec: Vec<Complex32>,
+}
+
+impl MatchedFilter {
+    fn new(tpl: Vec<f32>) -> Self {
+        let len = tpl.len();
+        // At least twice the template, so each block yields more outputs than it costs.
+        let n = (2 * len).next_power_of_two();
+        let mut planner = FftPlanner::new();
+        let fft = planner.plan_fft_forward(n);
+        let ifft = planner.plan_fft_inverse(n);
+        let norm = tpl.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let mut spec: Vec<Complex32> = tpl.into_iter().map(|v| Complex32::new(v, 0.0)).collect();
+        spec.resize(n, Complex32::new(0.0, 0.0));
+        fft.process(&mut spec);
+        spec.iter_mut().for_each(|c| *c = c.conj() / n as f32);
+        Self { len, norm, fft, ifft, spec }
+    }
 }
 
 /// One OFDM symbol (cyclic prefix + body) from carrier values, with the TX tilt `gains`.
@@ -102,6 +148,8 @@ pub struct Ofdm {
     pub p: OfdmParams,
     /// Burst detector used by [`Ofdm::detect`].
     detector: Detector,
+    /// Built on first use, so a modem detecting with Schmidl-Cox never plans its FFTs.
+    mf: OnceLock<MatchedFilter>,
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     /// Carrier indices (0..num_carriers) that hold pilots.
@@ -174,6 +222,7 @@ impl Ofdm {
         Self {
             p,
             detector: Detector::default(),
+            mf: OnceLock::new(),
             fft,
             ifft,
             pilot_idx,
@@ -195,6 +244,12 @@ impl Ofdm {
     /// The detector [`Ofdm::detect`] uses.
     pub fn detector(&self) -> Detector {
         self.detector
+    }
+
+    /// The matched filter for preambles A and B.
+    fn mf(&self) -> &MatchedFilter {
+        self.mf
+            .get_or_init(|| MatchedFilter::new([self.symbol_time(&self.pre_a), self.symbol_time(&self.pre_b)].concat()))
     }
 
     /// Leader symbols sent for a leader of at least `leader_s` seconds.
@@ -330,10 +385,116 @@ impl Ofdm {
                 let history = 3 * self.p.symbol_len() + 2 * self.p.nfft;
                 Detection { at, resume: at.unwrap_or(from.max(rx.len().saturating_sub(history))) }
             }
+            Detector::MatchedFilter => self.detect_mf(rx, from),
         };
         debug_assert!(found.resume >= from && found.resume <= rx.len(), "{detector}: {found:?} from {from}");
         debug_assert!(found.at.is_none() || found.resume > from, "{detector}: {found:?} from {from}");
         found
+    }
+
+    /// Matched-filter search: normalized cross-correlation of `rx` with the waveform of
+    /// preambles A and B. The FM audio channel has no frequency offset and a smooth
+    /// response, so the known waveform correlates coherently. Unlike the Schmidl-Cox
+    /// metric it multiplies noise by a clean template, never by more noise, so it
+    /// keeps working at a lower signal-to-noise ratio.
+    ///
+    /// The first position above `MF_THRESHOLD` opens a search window one symbol long
+    /// (preamble A repeats every nfft/2 samples, so a side peak can cross first); the
+    /// largest correlation in it is the frame, and the search resumes just past the
+    /// window. If the window does not fit in `rx`, nothing is found and the search
+    /// resumes where the window opened, so that a streaming caller tries again with
+    /// more audio.
+    ///
+    /// The correlation is computed in FFT blocks that start at `from`, so a later call
+    /// with another `from` rounds it differently. That can only matter for a value
+    /// within float rounding of `MF_THRESHOLD`, or for two peaks in the window within
+    /// float rounding of each other, where the other one may win.
+    ///
+    /// A finite sample so large that the f32 FFT overflows (beyond about 1e35, far
+    /// outside any sound card's range) blanks the block it falls in.
+    fn detect_mf(&self, rx: &[f32], from: usize) -> Detection {
+        let l = self.p.symbol_len();
+        let mut peak: Option<(usize, f32, usize)> = None;
+        let mut found = None;
+        // The first window start not yet computed.
+        let mut next = 0;
+        self.mf_scan(rx, from, |d, v| {
+            next = d + 1;
+            if let Some((first, best, at)) = &mut peak {
+                if v > *best {
+                    (*best, *at) = (v, d);
+                }
+                if d - *first >= l {
+                    // The template starts with preamble A's cyclic prefix.
+                    found = Some(from + *at + l + self.p.ncp);
+                    return false;
+                }
+            } else if v > MF_THRESHOLD {
+                peak = Some((d, v, d));
+            }
+            true
+        });
+        let resume = match (found, peak) {
+            (None, Some((first, _, _))) => first,
+            _ => next,
+        };
+        Detection { at: found, resume: from + resume }
+    }
+
+    /// The largest matched-filter correlation anywhere in `rx`, 0 to 1. On audio
+    /// without a burst, its distance below `MF_THRESHOLD` is the detector's margin
+    /// against false detections.
+    pub fn mf_peak(&self, rx: &[f32]) -> f32 {
+        let mut peak = 0f32;
+        self.mf_scan(rx, 0, |_, v| {
+            peak = peak.max(v);
+            true
+        });
+        peak
+    }
+
+    /// The normalized correlation of the preamble template with `rx` at every window
+    /// start `from + d`, in order, passed to `visit(d, value)` until it returns false.
+    fn mf_scan(&self, rx: &[f32], from: usize, mut visit: impl FnMut(usize, f32) -> bool) {
+        let mf = self.mf();
+        let t = mf.len;
+        let n = mf.spec.len();
+        let hop = n - t + 1;
+        // Correlation windows start at from + d for d in 0..count.
+        let Some(count) = rx.len().checked_sub(from).and_then(|r| (r + 1).checked_sub(t)) else {
+            return;
+        };
+        let x = &rx[from..];
+        // A NaN or infinity would spoil a whole FFT block and the running energy, so
+        // it counts as silence.
+        let at = |i: usize| x.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
+        let sq = |i: usize| (at(i) as f64).powi(2);
+        // Windows quieter than -90 dBFS RMS, exact silence among them, score 0 rather
+        // than whatever rounding leaves in the running energy.
+        let floor = 1e-9 * t as f64;
+        let mut buf = vec![Complex32::new(0.0, 0.0); n];
+        let mut start = 0;
+        while start < count {
+            for (i, c) in buf.iter_mut().enumerate() {
+                *c = Complex32::new(at(start + i), 0.0);
+            }
+            mf.fft.process(&mut buf);
+            buf.iter_mut().zip(&mf.spec).for_each(|(c, s)| *c *= s);
+            mf.ifft.process(&mut buf);
+            // Window energy, exact at each block start and then updated sample by sample.
+            let mut energy: f64 = (start..start + t).map(sq).sum();
+            for (j, c) in buf.iter().take(hop.min(count - start)).enumerate() {
+                let d = start + j;
+                if j > 0 {
+                    energy += sq(d + t - 1) - sq(d - 1);
+                }
+                let v = if energy > floor { c.re.abs() / (mf.norm * energy.sqrt() as f32) } else { 0.0 };
+                if !visit(d, v) {
+                    return;
+                }
+            }
+            start += hop;
+        }
     }
 
     /// Schmidl-Cox search, the original detector.
@@ -784,6 +945,20 @@ mod tests {
     }
 
     #[test]
+    fn schmidl_cox_does_not_build_the_matched_filter() {
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 4, 2);
+            let rx = ofdm.modulate_with_leader(&data, 0.1);
+            assert!(ofdm.detect(&rx, 0).at.is_some(), "{}: nothing found", ofdm.p.name);
+            assert!(ofdm.mf.get().is_none(), "{}: Schmidl-Cox built the matched filter", ofdm.p.name);
+            let ofdm = ofdm.with_detector(Detector::MatchedFilter);
+            assert!(ofdm.detect(&rx, 0).at.is_some(), "{}: nothing found", ofdm.p.name);
+            assert!(ofdm.mf.get().is_some(), "{}", ofdm.p.name);
+        }
+    }
+
+    #[test]
     fn every_detector_ignores_polarity() {
         // Some radios invert the audio. Exactly the same sample either way.
         for p in OfdmParams::all() {
@@ -817,11 +992,51 @@ mod tests {
     }
 
     #[test]
+    fn matched_filter_keeps_the_best_peak_in_its_window() {
+        // A weaker match that crosses the threshold first, half a symbol before the
+        // frame, must not win; and a buffer that ends before the window is complete
+        // must give no detection rather than the weaker match.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let (l, ncp) = (ofdm.p.symbol_len(), ofdm.p.ncp);
+            let tpl = [ofdm.symbol_time(&ofdm.pre_a), ofdm.symbol_time(&ofdm.pre_b)].concat();
+            let start = 4 * l;
+            let decoy = start - l / 2;
+            let mut rx = vec![0.0; start + tpl.len() + 4 * l];
+            let mut rng = Prng::new(21);
+            // The decoy: the template buried in noise, so it correlates well but not fully.
+            for (i, &v) in tpl.iter().enumerate() {
+                rx[decoy + i] += v + 1.0 * rng.uniform();
+            }
+            for (i, &v) in tpl.iter().enumerate() {
+                rx[start + i] += v;
+            }
+            let mut values = Vec::new();
+            ofdm.mf_scan(&rx, 0, |d, v| {
+                values.push(v);
+                d < start + l
+            });
+            let first = values.iter().position(|&v| v > MF_THRESHOLD).expect("nothing crosses");
+            let name = ofdm.p.name;
+            assert!(first < start - l / 4, "{name}: the decoy does not cross first ({first}, frame at {start})");
+            assert!(values[first] < values[start], "{name}: the decoy is not the weaker match");
+            // The search resumes just past the window the decoy opened.
+            let want = Detection { at: Some(start + l + ncp), resume: first + l + 1 };
+            assert_eq!(ofdm.detect_mf(&rx, 0), want, "{name}: full buffer");
+            // Enough audio for the decoy's correlation but not for the frame's: the
+            // search resumes where the window opened.
+            let cut = Detection { at: None, resume: first };
+            assert_eq!(ofdm.detect_mf(&rx[..first + tpl.len() + 10], 0), cut, "{name}: buffer cut in the window");
+        }
+    }
+
+    #[test]
     fn detector_list_is_complete() {
         // A variant missing from `ALL` could not be chosen, benchmarked or evaluated.
         // A new variant needs an arm here, and its index only fits if `ALL` grew.
         let index = |d: Detector| match d {
             Detector::SchmidlCox => 0,
+            Detector::MatchedFilter => 1,
         };
         for (i, d) in Detector::ALL.into_iter().enumerate() {
             assert_eq!(index(d), i, "{d}");
@@ -829,6 +1044,45 @@ mod tests {
         }
         let max = Detector::ALL.into_iter().map(index).max();
         assert_eq!(max, Some(Detector::ALL.len() - 1));
+    }
+
+    #[test]
+    fn matched_filter_recovers_from_bad_samples_silence_and_long_noise() {
+        for p in OfdmParams::all() {
+            let fs = p.fs as usize;
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 5);
+            // A weak burst, to check that loud audio before it leaves no trace.
+            let burst: Vec<f32> = ofdm.modulate_with_leader(&data, 0.1).iter().map(|v| 0.01 * v).collect();
+            let mut alone = vec![0.0; 1000];
+            alone.extend(&burst);
+            let at = ofdm.detect_mf(&alone, 0).at.expect("mf found nothing");
+
+            // Two minutes of full-scale noise with NaN and infinities in it, then a
+            // minute of exact silence, then the burst.
+            let mut rng = Prng::new(7);
+            let mut rx: Vec<f32> = (0..120 * fs).map(|_| rng.uniform()).collect();
+            for (i, v) in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN].into_iter().enumerate() {
+                rx[(i + 1) * 25 * fs] = v;
+            }
+            rx.extend(vec![0.0; 60 * fs]);
+            let offset = rx.len();
+            rx.extend(&alone);
+            let name = ofdm.p.name;
+            assert_eq!(ofdm.detect_mf(&rx, 0).at, Some(offset + at), "{name}: burst after noise and silence");
+            assert!(ofdm.detect_mf(&rx[..offset], 0).at.is_none(), "{name}: detection in the noise and silence");
+            assert!(ofdm.mf_peak(&rx[..offset]) < MF_THRESHOLD, "{name}: peak in the noise and silence");
+
+            // Bad samples count as silence, so those right around the preambles cost
+            // nothing. The first sample after the template is always in the FFT block
+            // that finds the burst.
+            let (l, ncp) = (ofdm.p.symbol_len(), ofdm.p.ncp);
+            let tpl_start = at - l - ncp;
+            let mut rx = alone.clone();
+            rx[tpl_start - 1] = f32::INFINITY;
+            rx[tpl_start + 2 * l] = f32::NAN;
+            assert_eq!(ofdm.detect_mf(&rx, 0).at, Some(at), "{name}: bad samples before the burst");
+        }
     }
 
     fn random_frame(ofdm: &Ofdm, m: Modulation, nsym: usize, seed: u32) -> Vec<Vec<Complex32>> {
