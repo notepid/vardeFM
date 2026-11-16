@@ -51,14 +51,23 @@ stored ones (Chase combining on top of IR). So a codeword never has to restart.
 
 ## 3. Protocol changes (sketch)
 
-- **Capability.** A connect-time flag (`"VFM2"` payload magic, or a bit after the call
-  signs). IR is used only when both ends set it.
-- **Header.** One spare flag bit: *IR*. When set, the burst's payload starts with
-  increments, one per codeword that the receiver's last burst marked failed and whose
-  sender still holds it, in that order; then new segments. No list is needed: the IR
-  burst's `ack_burst` names the receiver's burst whose bitmap the sender acts on, and
-  both ends know that bitmap and every codeword's redundancy version. A sender that
-  heard no bitmap sends no increments, and plain resends still work.
+- **Capability.** A capability byte right after the call signs of the `"VFM1"`
+  ConnectReq/ConnectAck payload, or after the path of a `"VFM2"` (digipeated) one;
+  bit 0 = IR. Today that byte is zero padding, which reads as "no IR", and stations
+  that predate it stop parsing after the calls or the path, so they ignore it. IR is
+  used only when both ends set it. (`"VFM2"` itself is taken: it marks a routed
+  connect, PROTOCOL.md §3.4.)
+- **Header.** No field is needed, and none is free: the 4 flag bits now hold POLL, UP
+  and the 2-bit route field (§2.3). Whether a burst carries increments follows from
+  state both ends share: on an IR session, a burst whose `ack_burst` names the
+  receiver's last burst starts with increments, one per codeword that burst's bitmap
+  marked failed and whose sender still holds it, in that order, then new segments.
+  The receiver sent that bitmap and knows every codeword's redundancy version, so it
+  knows how many increments to expect. A sender that heard no answer acknowledges an
+  older burst, sends no increments and resends plainly; the receiver then frees those
+  codewords' LLRs. If an explicit marker is wanted after all, the header's information
+  length must grow (say 96 to 104 bits, still coded into 400), a header change of its
+  own.
 - **Bitmap.** Bit *i* covers entry *i* of the burst: the increments first (whether the
   codeword they complete now decodes), then the new codewords.
 - **Burst layout.** Increments of E = 600 bits fill quarter-codeword slots: four make
@@ -71,6 +80,15 @@ stored ones (Chase combining on top of IR). So a codeword never has to restart.
 - **Giving up.** After a set budget (say 6 codeword-equivalents) the sender drops the
   codeword and resends its bytes as today; the receiver frees the slot when the
   codeword decodes, when it is overtaken by `ack_offset`, or on a new session.
+- **Digipeaters (PROTOCOL.md §3.4).** A digipeater decodes each codeword and repeats
+  it; one it cannot decode goes out as a void, which the far end counts as failed.
+  An increment is not a codeword: the digipeater can neither check it nor combine
+  it, as it keeps no LLRs. So IR is off on routed sessions, which resend as today.
+  Per-hop HARQ (each digipeater storing LLRs and combining increments) or forwarding
+  increments as unchecked hard bits are possible later; the first is a large change
+  to the digipeater, the second loses most of the gain. With *n* digipeaters on one
+  frequency throughput already falls to about 1/(*n* + 1), so routed sessions would
+  gain least from IR anyway.
 
 **Receiver memory.** Per pending codeword: 4800 LLRs. As i8 that is 4.7 KB; 24
 pending codewords take 113 KB. The decoder's working memory doubles with the
@@ -237,14 +255,16 @@ there is if anything understated.
 
 IR-HARQ pays, but modestly on average: about +6 % goodput over the whole CNR range
 (ir600), up to 20 to 30 % just under a level's point and next to nothing elsewhere
-in the gaps between levels or above a level's point. It
-needs a breaking protocol change (capability exchange, a header flag, new bitmap
-semantics, a normative extension construction) and LLR storage and bookkeeping in
-the receiver.
+in the gaps between levels or above a level's point.
 
-Suggested decision: **adopt in a future protocol version step, not on its own.**
-Bundle it with the next breaking change, as ir600 with the extension of §2, and
-before that build the link-layer prototype behind the capability flag and measure it
-in `sim-pair` against today's resends, with `SNR_MARGIN_DB` retuned for IR. If no
-breaking change is planned, close the issue with these numbers: the average gain
-alone does not carry the compatibility break.
+With the capability byte of §3 it need not break compatibility: stations that do not
+set it get today's protocol, and the new rules (increments first, bitmap over the
+increments, the normative extension of §2) apply only between two that do. No header
+field changes. What it costs is complexity: LLR storage and bookkeeping in the
+receiver, the implicit increment rule at both ends, and a mode that routed sessions
+do not use.
+
+Suggested decision: **build the link-layer prototype behind the capability bit**,
+as ir600 with the extension of §2, and measure it in `sim-pair` against today's
+resends, with `SNR_MARGIN_DB` retuned for IR. Adopt it if the end-to-end gain holds
+near the +6 % measured here; otherwise close the issue with these numbers.
