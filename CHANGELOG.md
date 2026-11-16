@@ -12,7 +12,7 @@ run the same minor version.
   preambles. Near the sensitivity edge it decodes what decoding from the known position
   decodes, where Schmidl-Cox loses up to a third of the bursts, and in wide mode it keeps
   working under a CTCSS tone. Schmidl-Cox stays the default, and nothing on the air
-  changes. (#11)
+  changes. (#36, #37, #38, #39, #40)
 
 ## [0.3.2] - 2026-11-16
 
