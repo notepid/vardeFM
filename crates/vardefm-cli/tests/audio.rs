@@ -135,7 +135,7 @@ fn no_frames_found_in_non_modem_audio() {
         let ofdm = modem(mode);
         for (name, audio) in &cases {
             for d in Detector::ALL {
-                assert!(ofdm.detect_with(d, audio, 0).is_none(), "{mode} {d}: false frame in {name}");
+                assert!(ofdm.detect_with(d, audio, 0).at.is_none(), "{mode} {d}: false frame in {name}");
             }
         }
     }
@@ -148,7 +148,7 @@ fn squelch_noise_is_not_a_frame() {
         let cfg = FmChannelConfig { cnr_db: Some(-10.0), keyup_delay_s: 0.0, ..channel(mode) };
         let rx = transmit(&cfg, &vec![0.0; FS as usize * 2]);
         for d in Detector::ALL {
-            assert!(modem(mode).detect_with(d, &rx, 0).is_none(), "{mode} {d}");
+            assert!(modem(mode).detect_with(d, &rx, 0).at.is_none(), "{mode} {d}");
         }
     }
 }

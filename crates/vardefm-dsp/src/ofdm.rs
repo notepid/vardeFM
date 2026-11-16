@@ -15,7 +15,7 @@ use crate::prng::Prng;
 use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::f32::consts::SQRT_2;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const PILOT_TABLE_LEN: usize = 32;
 const DETECT_THRESHOLD: f64 = 0.3;
@@ -82,6 +82,18 @@ impl std::str::FromStr for Detector {
     }
 }
 
+/// What a search from `from` found, and where the next one must start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Detection {
+    /// Where the body of preamble B starts, if a frame was found.
+    pub at: Option<usize>,
+    /// Every frame starting before this has been considered, so a caller searches on
+    /// from here: after a found frame whose header fails, or once more audio has
+    /// arrived. `from <= resume <= rx.len()` (`resume == from` when `from` is at or
+    /// past the end), and `resume > from` when a frame was found.
+    pub resume: usize,
+}
+
 /// Matched filter for preambles A and B, evaluated by FFT (overlap-save).
 struct MatchedFilter {
     /// Template length: preambles A and B with their cyclic prefixes.
@@ -133,8 +145,9 @@ fn symbol_time(p: &OfdmParams, gains: &[f32], ifft: &dyn Fft<f32>, carriers: &[C
 pub struct Ofdm {
     pub p: OfdmParams,
     /// Burst detector used by [`Ofdm::detect`].
-    pub detector: Detector,
-    mf: MatchedFilter,
+    detector: Detector,
+    /// Built on first use, so a modem detecting with Schmidl-Cox never plans its FFTs.
+    mf: OnceLock<MatchedFilter>,
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     /// Carrier indices (0..num_carriers) that hold pilots.
@@ -200,16 +213,14 @@ impl Ofdm {
         let mut rng = Prng::new(0x5eed_00b2);
         let pre_b: Vec<Complex32> = (0..nc).map(|_| Complex32::new(rng.bpsk(), 0.0)).collect();
 
-        let sym_a = symbol_time(&p, &gains, ifft.as_ref(), &pre_a);
         let sym_b = symbol_time(&p, &gains, ifft.as_ref(), &pre_b);
         let mut pre_b_body = sym_b[p.ncp..].to_vec();
         let e = pre_b_body.iter().map(|x| x * x).sum::<f32>().sqrt();
         pre_b_body.iter_mut().for_each(|x| *x /= e);
-        let mf = MatchedFilter::new([sym_a, sym_b].concat());
         Self {
             p,
             detector: Detector::default(),
-            mf,
+            mf: OnceLock::new(),
             fft,
             ifft,
             pilot_idx,
@@ -220,6 +231,23 @@ impl Ofdm {
             pre_b,
             pre_b_body,
         }
+    }
+
+    /// This modem with [`Ofdm::detect`] finding bursts with `detector`.
+    pub fn with_detector(mut self, detector: Detector) -> Self {
+        self.detector = detector;
+        self
+    }
+
+    /// The detector [`Ofdm::detect`] uses.
+    pub fn detector(&self) -> Detector {
+        self.detector
+    }
+
+    /// The matched filter for preambles A and B.
+    fn mf(&self) -> &MatchedFilter {
+        self.mf
+            .get_or_init(|| MatchedFilter::new([self.symbol_time(&self.pre_a), self.symbol_time(&self.pre_b)].concat()))
     }
 
     /// Leader symbols sent for a leader of at least `leader_s` seconds.
@@ -338,58 +366,28 @@ impl Ofdm {
         Some((0..self.p.num_carriers).map(|k| x[self.p.first_bin + k] * scale).collect())
     }
 
-    /// Search `rx` from `from` for a frame with [`Ofdm::detector`]. Returns the sample
-    /// index where the body of preamble B starts.
-    pub fn detect(&self, rx: &[f32], from: usize) -> Option<usize> {
+    /// Search `rx` from `from` for a frame with the modem's detector. See [`Detection`].
+    pub fn detect(&self, rx: &[f32], from: usize) -> Detection {
         self.detect_with(self.detector, rx, from)
     }
 
-    /// Like [`Ofdm::detect`], with the given detector. `None` when `from` is past the
-    /// end of `rx`.
-    pub fn detect_with(&self, detector: Detector, rx: &[f32], from: usize) -> Option<usize> {
-        if from > rx.len() {
-            return None;
+    /// Like [`Ofdm::detect`], with the given detector.
+    pub fn detect_with(&self, detector: Detector, rx: &[f32], from: usize) -> Detection {
+        if from >= rx.len() {
+            return Detection { at: None, resume: from };
         }
-        match detector {
-            Detector::SchmidlCox => self.detect_sc(rx, from),
+        let found = match detector {
+            Detector::SchmidlCox => {
+                let at = self.detect_sc(rx, from);
+                // Preambles A and B, and margin for the fine timing around them.
+                let history = 3 * self.p.symbol_len() + 2 * self.p.nfft;
+                Detection { at, resume: at.unwrap_or(from.max(rx.len().saturating_sub(history))) }
+            }
             Detector::MatchedFilter => self.detect_mf(rx, from),
-        }
-    }
-
-    /// How many samples before the end of `rx` a streaming caller must search again
-    /// from after [`Ofdm::detect`] returned `None`, so as not to lose a frame that has
-    /// only partly arrived.
-    pub fn detect_history(&self) -> usize {
-        self.detect_history_with(self.detector)
-    }
-
-    /// Like [`Ofdm::detect_history`], for the given detector.
-    pub fn detect_history_with(&self, detector: Detector) -> usize {
-        let l = self.p.symbol_len();
-        match detector {
-            // Preambles A and B, and margin for the fine timing around them.
-            Detector::SchmidlCox => 3 * l + 2 * self.p.nfft,
-            // The template, then the one-symbol search window after its first crossing.
-            Detector::MatchedFilter => self.mf.len + l,
-        }
-    }
-
-    /// How far before a detection `b` a caller must start searching to find the same
-    /// frame again, e.g. once more audio has arrived.
-    pub fn detect_lookback(&self) -> usize {
-        self.detect_lookback_with(self.detector)
-    }
-
-    /// Like [`Ofdm::detect_lookback`], for the given detector.
-    pub fn detect_lookback_with(&self, detector: Detector) -> usize {
-        let l = self.p.symbol_len();
-        match detector {
-            // Preamble A starts one symbol before B; one more for the plateau search.
-            Detector::SchmidlCox => 3 * l,
-            // The template starts a symbol and a cyclic prefix before `b`, and a side
-            // peak up to a symbol earlier can open the search window.
-            Detector::MatchedFilter => l + self.p.ncp + l,
-        }
+        };
+        debug_assert!(found.resume >= from && found.resume <= rx.len(), "{detector}: {found:?} from {from}");
+        debug_assert!(found.at.is_none() || found.resume > from, "{detector}: {found:?} from {from}");
+        found
     }
 
     /// Matched-filter search: normalized cross-correlation of `rx` with the waveform of
@@ -400,8 +398,10 @@ impl Ofdm {
     ///
     /// The first position above `MF_THRESHOLD` opens a search window one symbol long
     /// (preamble A repeats every nfft/2 samples, so a side peak can cross first); the
-    /// largest correlation in it is the frame. If the window does not fit in `rx`,
-    /// returns `None` so that a streaming caller searches again with more audio.
+    /// largest correlation in it is the frame, and the search resumes just past the
+    /// window. If the window does not fit in `rx`, nothing is found and the search
+    /// resumes where the window opened, so that a streaming caller tries again with
+    /// more audio.
     ///
     /// The correlation is computed in FFT blocks that start at `from`, so a later call
     /// with another `from` rounds it differently. That can only matter for a value
@@ -410,11 +410,14 @@ impl Ofdm {
     ///
     /// A finite sample so large that the f32 FFT overflows (beyond about 1e35, far
     /// outside any sound card's range) blanks the block it falls in.
-    fn detect_mf(&self, rx: &[f32], from: usize) -> Option<usize> {
+    fn detect_mf(&self, rx: &[f32], from: usize) -> Detection {
         let l = self.p.symbol_len();
         let mut peak: Option<(usize, f32, usize)> = None;
         let mut found = None;
+        // The first window start not yet computed.
+        let mut next = 0;
         self.mf_scan(rx, from, |d, v| {
+            next = d + 1;
             if let Some((first, best, at)) = &mut peak {
                 if v > *best {
                     (*best, *at) = (v, d);
@@ -429,7 +432,11 @@ impl Ofdm {
             }
             true
         });
-        found
+        let resume = match (found, peak) {
+            (None, Some((first, _, _))) => first,
+            _ => next,
+        };
+        Detection { at: found, resume: from + resume }
     }
 
     /// The largest matched-filter correlation anywhere in `rx`, 0 to 1. On audio
@@ -447,7 +454,7 @@ impl Ofdm {
     /// The normalized correlation of the preamble template with `rx` at every window
     /// start `from + d`, in order, passed to `visit(d, value)` until it returns false.
     fn mf_scan(&self, rx: &[f32], from: usize, mut visit: impl FnMut(usize, f32) -> bool) {
-        let mf = &self.mf;
+        let mf = self.mf();
         let t = mf.len;
         let n = mf.spec.len();
         let hop = n - t + 1;
@@ -811,7 +818,7 @@ mod tests {
         rx.extend(ofdm.modulate(&data));
         rx.extend(vec![0.0; 2000]);
 
-        let b = ofdm.detect(&rx, 0).expect("frame not detected");
+        let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
         let frame = ofdm.demodulate(&rx, b, nsym).expect("demod failed");
         let mut out = Vec::new();
         for s in frame.symbols.iter().flatten() {
@@ -844,7 +851,7 @@ mod tests {
         // Within a quarter of the cyclic prefix, as the detector evaluation counts a hit;
         // the TX low-pass delays the waveform by a few samples.
         for p in OfdmParams::all() {
-            let mut ofdm = Ofdm::new(p);
+            let ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 3);
             for (lead, sign) in [(0, 1.0), (777, 1.0), (4321, -1.0)] {
                 let mut rx = vec![0.0; lead];
@@ -852,8 +859,7 @@ mod tests {
                 rx.extend(vec![0.0; 2000]);
                 let want = known_start(&ofdm, lead, 0.1);
                 for d in Detector::ALL {
-                    ofdm.detector = d;
-                    let got = ofdm.detect(&rx, 0).unwrap_or_else(|| panic!("{d} found nothing"));
+                    let got = ofdm.detect_with(d, &rx, 0).at.unwrap_or_else(|| panic!("{d} found nothing"));
                     let name = ofdm.p.name;
                     assert!(got.abs_diff(want) <= ofdm.p.ncp / 4, "{name} {d}: lead {lead}: {got}, want {want}");
                 }
@@ -862,26 +868,23 @@ mod tests {
     }
 
     #[test]
-    fn every_detector_finds_the_burst_with_a_receivers_history() {
-        // A streaming receiver calls detect on a growing buffer. After `None` it keeps
-        // only `detect_history` samples to search again; a detection must still be the
-        // one the whole recording gives.
+    fn every_detector_finds_the_burst_resuming_as_told() {
+        // A streaming receiver calls detect on a growing buffer and, while nothing is
+        // found, searches again from `resume`. A detection must still be the one the
+        // whole recording gives.
         for p in OfdmParams::all() {
-            let mut ofdm = Ofdm::new(p);
+            let ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 4);
             let mut rx = vec![0.0; 1000];
             rx.extend(ofdm.modulate_with_leader(&data, 0.1));
             for d in Detector::ALL {
-                ofdm.detector = d;
-                let full = ofdm.detect(&rx, 0).unwrap_or_else(|| panic!("{d} found nothing"));
+                let full = ofdm.detect_with(d, &rx, 0).at.unwrap_or_else(|| panic!("{d} found nothing"));
                 for step in [1, 97, 480] {
                     let mut search = 0;
                     let got = (step..rx.len()).step_by(step).find_map(|end| {
-                        let b = ofdm.detect(&rx[..end], search);
-                        if b.is_none() {
-                            search = search.max(end.saturating_sub(ofdm.detect_history()));
-                        }
-                        b
+                        let found = ofdm.detect_with(d, &rx[..end], search);
+                        search = found.resume;
+                        found.at
                     });
                     assert_eq!(got, Some(full), "{} {d}: chunks of {step}", ofdm.p.name);
                 }
@@ -890,20 +893,66 @@ mod tests {
     }
 
     #[test]
-    fn every_detector_finds_a_frame_again_from_its_lookback() {
-        // A receiver that found a frame before its header arrived searches again from
-        // `b - detect_lookback()` once more audio is in.
+    fn every_detector_finds_a_burst_once_when_resuming() {
+        // Searching on from `resume` after each detection, as after a header that
+        // fails, must not find the same burst again.
         for p in OfdmParams::all() {
-            let mut ofdm = Ofdm::new(p);
+            let ofdm = Ofdm::new(p);
             let data = random_frame(&ofdm, Modulation::Qpsk, 20, 6);
             let mut rx = vec![0.0; 5000];
             rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            rx.extend(vec![0.0; 5000]);
             for d in Detector::ALL {
-                ofdm.detector = d;
-                let b = ofdm.detect(&rx, 0).unwrap_or_else(|| panic!("{d} found nothing"));
-                let again = ofdm.detect(&rx, b - ofdm.detect_lookback());
-                assert_eq!(again, Some(b), "{} {d}: lookback {}", ofdm.p.name, ofdm.detect_lookback());
+                let mut found = Vec::new();
+                let mut from = 0;
+                loop {
+                    let det = ofdm.detect_with(d, &rx, from);
+                    let Some(b) = det.at else { break };
+                    found.push(b);
+                    from = det.resume;
+                }
+                assert_eq!(found.len(), 1, "{} {d}: found {found:?}", ofdm.p.name);
             }
+        }
+    }
+
+    #[test]
+    fn every_detector_keeps_its_resume_contract() {
+        // `from <= resume <= len`, and a detection moves the search on, wherever the
+        // buffer ends and the search starts: in silence, in noise, in a burst.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let l = ofdm.p.symbol_len();
+            let data = random_frame(&ofdm, Modulation::Qpsk, 4, 8);
+            let mut rx = vec![0.0; 3 * l];
+            let mut rng = Prng::new(9);
+            rx.extend((0..5 * l).map(|_| 0.3 * rng.uniform()));
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            for d in Detector::ALL {
+                for end in (0..=rx.len()).step_by(l / 3 + 1) {
+                    for from in (0..=end + 1).step_by(l / 2 + 1) {
+                        let det = ofdm.detect_with(d, &rx[..end], from);
+                        let name = ofdm.p.name;
+                        assert!(det.resume >= from, "{name} {d}: {det:?} from {from} in {end}");
+                        assert!(from > end || det.resume <= end, "{name} {d}: {det:?} from {from} in {end}");
+                        assert!(det.at.is_none() || det.resume > from, "{name} {d}: {det:?} from {from} in {end}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn schmidl_cox_does_not_build_the_matched_filter() {
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 4, 2);
+            let rx = ofdm.modulate_with_leader(&data, 0.1);
+            assert!(ofdm.detect(&rx, 0).at.is_some(), "{}: nothing found", ofdm.p.name);
+            assert!(ofdm.mf.get().is_none(), "{}: Schmidl-Cox built the matched filter", ofdm.p.name);
+            let ofdm = ofdm.with_detector(Detector::MatchedFilter);
+            assert!(ofdm.detect(&rx, 0).at.is_some(), "{}: nothing found", ofdm.p.name);
+            assert!(ofdm.mf.get().is_some(), "{}", ofdm.p.name);
         }
     }
 
@@ -920,7 +969,7 @@ mod tests {
             let inverted: Vec<f32> = rx.iter().map(|v| -v).collect();
             for d in Detector::ALL {
                 let got = ofdm.detect_with(d, &rx, 0);
-                assert!(got.is_some(), "{} {d}: nothing found", ofdm.p.name);
+                assert!(got.at.is_some(), "{} {d}: nothing found", ofdm.p.name);
                 assert_eq!(ofdm.detect_with(d, &inverted, 0), got, "{} {d}", ofdm.p.name);
             }
         }
@@ -932,8 +981,10 @@ mod tests {
             let ofdm = Ofdm::new(p);
             let rx = vec![0.0; 1000];
             for d in Detector::ALL {
-                assert_eq!(ofdm.detect_with(d, &rx, rx.len() + 1), None, "{} {d}", ofdm.p.name);
-                assert_eq!(ofdm.detect_with(d, &rx, rx.len()), None, "{} {d}", ofdm.p.name);
+                for from in [rx.len(), rx.len() + 1] {
+                    let det = ofdm.detect_with(d, &rx, from);
+                    assert_eq!(det, Detection { at: None, resume: from }, "{} {d}", ofdm.p.name);
+                }
             }
         }
     }
@@ -967,10 +1018,13 @@ mod tests {
             let name = ofdm.p.name;
             assert!(first < start - l / 4, "{name}: the decoy does not cross first ({first}, frame at {start})");
             assert!(values[first] < values[start], "{name}: the decoy is not the weaker match");
-            let want = start + l + ncp;
-            assert_eq!(ofdm.detect_mf(&rx, 0), Some(want), "{name}: full buffer");
-            // Enough audio for the decoy's correlation but not for the frame's.
-            assert_eq!(ofdm.detect_mf(&rx[..first + tpl.len() + 10], 0), None, "{name}: buffer cut in the window");
+            // The search resumes just past the window the decoy opened.
+            let want = Detection { at: Some(start + l + ncp), resume: first + l + 1 };
+            assert_eq!(ofdm.detect_mf(&rx, 0), want, "{name}: full buffer");
+            // Enough audio for the decoy's correlation but not for the frame's: the
+            // search resumes where the window opened.
+            let cut = Detection { at: None, resume: first };
+            assert_eq!(ofdm.detect_mf(&rx[..first + tpl.len() + 10], 0), cut, "{name}: buffer cut in the window");
         }
     }
 
@@ -1000,7 +1054,7 @@ mod tests {
             let burst: Vec<f32> = ofdm.modulate_with_leader(&data, 0.1).iter().map(|v| 0.01 * v).collect();
             let mut alone = vec![0.0; 1000];
             alone.extend(&burst);
-            let at = ofdm.detect_mf(&alone, 0).expect("mf found nothing");
+            let at = ofdm.detect_mf(&alone, 0).at.expect("mf found nothing");
 
             // Two minutes of full-scale noise with NaN and infinities in it, then a
             // minute of exact silence, then the burst.
@@ -1013,8 +1067,8 @@ mod tests {
             let offset = rx.len();
             rx.extend(&alone);
             let name = ofdm.p.name;
-            assert_eq!(ofdm.detect_mf(&rx, 0), Some(offset + at), "{name}: burst after noise and silence");
-            assert!(ofdm.detect_mf(&rx[..offset], 0).is_none(), "{name}: detection in the noise and silence");
+            assert_eq!(ofdm.detect_mf(&rx, 0).at, Some(offset + at), "{name}: burst after noise and silence");
+            assert!(ofdm.detect_mf(&rx[..offset], 0).at.is_none(), "{name}: detection in the noise and silence");
             assert!(ofdm.mf_peak(&rx[..offset]) < MF_THRESHOLD, "{name}: peak in the noise and silence");
 
             // Bad samples count as silence, so those right around the preambles cost
@@ -1025,7 +1079,7 @@ mod tests {
             let mut rx = alone.clone();
             rx[tpl_start - 1] = f32::INFINITY;
             rx[tpl_start + 2 * l] = f32::NAN;
-            assert_eq!(ofdm.detect_mf(&rx, 0), Some(at), "{name}: bad samples before the burst");
+            assert_eq!(ofdm.detect_mf(&rx, 0).at, Some(at), "{name}: bad samples before the burst");
         }
     }
 
@@ -1112,7 +1166,7 @@ mod tests {
             let mut rx = vec![0.0; 777];
             rx.extend(ofdm.modulate_with_leader_rms(&data, 0.1, 0.5));
             rx.extend(vec![0.0; 2000]);
-            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
             let frame = ofdm.demodulate(&rx, b, data.len()).expect("demod failed");
             let mut out = Vec::new();
             for s in frame.symbols.iter().flatten() {

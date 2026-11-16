@@ -57,9 +57,8 @@ fn detector_parser() -> impl clap::builder::TypedValueParser<Value = Detector> {
 impl ModemArgs {
     /// Like [`ModemArgs::build`], with the receiver finding frames with `det`.
     fn build_rx(&self, det: &DetectorArg) -> (Ofdm, Modulation) {
-        let (mut ofdm, m) = self.build();
-        ofdm.detector = det.detector;
-        (ofdm, m)
+        let (ofdm, m) = self.build();
+        (ofdm.with_detector(det.detector), m)
     }
 
     fn build(&self) -> (Ofdm, Modulation) {
@@ -297,7 +296,7 @@ fn run_sim(ofdm: &Ofdm, m: Modulation, nsym: usize, txdelay: f32, cfg: &FmChanne
         let tx = make_frame(ofdm, m, &bits, txdelay);
         let rx = transmit(&FmChannelConfig { seed: f as u64 + 1, ..cfg.clone() }, &tx);
         st.bits += bits.len();
-        match ofdm.detect(&rx, 0).and_then(|b| ofdm.demodulate(&rx, b, nsym)) {
+        match ofdm.detect(&rx, 0).at.and_then(|b| ofdm.demodulate(&rx, b, nsym)) {
             Some(frame) => {
                 if std::env::var("VARDEFM_DUMP").is_ok() {
                     let nv: Vec<String> = frame.noise_var.iter().map(|v| format!("{:.0}", -10.0 * v.log10())).collect();

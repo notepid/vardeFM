@@ -106,9 +106,8 @@ impl Modem {
     }
 
     /// This modem with its receiver finding bursts with `detector`.
-    pub fn with_detector(mut self, detector: Detector) -> Self {
-        self.ofdm.detector = detector;
-        self
+    pub fn with_detector(self, detector: Detector) -> Self {
+        Self { ofdm: self.ofdm.with_detector(detector), ..self }
     }
 
     pub fn fs(&self) -> f32 {

@@ -4,14 +4,14 @@
 //! and can be tested with McNemar's exact test instead of comparing two noisy rates.
 //! For each CNR it reports, per detector:
 //! - `burst`, the measure that counts: the whole burst (header and every codeword)
-//!   decoded by an offline equivalent of `Receiver::step`. It tries the header at each
-//!   detection in turn, searches on after one that fails, and keeps the first header
-//!   that decodes. A test checks it against the streaming `Receiver`;
-//! - `hit`: the detector's first detection, whatever its header does, lies within
-//!   ±ncp/4 samples of the true position, which is where Schmidl-Cox's preamble-B fine
-//!   timing lands on a noiseless copy. A detector that always picks another point
-//!   inside the cyclic prefix can decode every burst and still score few hits, so read
-//!   `hit` as a diagnostic only.
+//!   decoded by the streaming `Receiver`, fed the recording in 10 ms chunks as a sound
+//!   card delivers it. Where a search starts can change what Schmidl-Cox finds, so an
+//!   offline search over the whole recording would not show what the receiver does;
+//! - `hit`: the detector's first detection in the whole recording, searched from its
+//!   start, lies within ±ncp/4 samples of the true position, which is where
+//!   Schmidl-Cox's preamble-B fine timing lands on a noiseless copy. A detector that
+//!   always picks another point inside the cyclic prefix can decode every burst and
+//!   still score few hits, so read `hit` as a diagnostic only.
 //!
 //! `genie` decodes from the true position: a known-timing reference, not a strict
 //! bound. Another valid position inside the cyclic prefix puts the FFT windows on
@@ -95,6 +95,8 @@ fn channel(mode: &str, channel: &str) -> FmChannelConfig {
 /// radio adds (0 for none).
 struct Link {
     rx: Arc<Modem>,
+    /// The receiving modem once per detector of [`Detector::ALL`], in that order.
+    receivers: Vec<Arc<Modem>>,
     tx: Arc<Modem>,
     chan: FmChannelConfig,
     ctcss_hz: f32,
@@ -103,7 +105,8 @@ struct Link {
 impl Link {
     fn new(mode: &str, chan: &str, tx_tilt: f32) -> Self {
         let tx = eval_modem(mode, tx_tilt, Detector::default());
-        Self { rx: modem(mode), tx, chan: channel(mode, chan), ctcss_hz: 0.0 }
+        let receivers = Detector::ALL.iter().map(|&d| eval_modem(mode, 0.0, d)).collect();
+        Self { rx: modem(mode), receivers, tx, chan: channel(mode, chan), ctcss_hz: 0.0 }
     }
 
     fn matched(mode: &str) -> Self {
@@ -167,34 +170,18 @@ fn burst_ok(m: &Modem, rx: &[f32], b: usize, h: &Header, sent: &Burst) -> bool {
     m.decode_payload(h, &frame).into_iter().zip(&sent.payload).all(|(got, want)| got.as_ref() == Some(want))
 }
 
-/// What the receiver makes of one recording with a given detector.
-struct Outcome {
-    /// Where the detector first pointed, header decoded or not.
-    first: Option<usize>,
-    /// Whether the burst came out as sent.
-    ok: bool,
-}
-
-/// Offline equivalent of `Receiver::step` with detector `d`: decode the header at
-/// each detection in turn, searching on from a detection whose header fails, and
-/// judge the burst of the first header that decodes. The test
-/// `offline_receive_matches_the_streaming_receiver` checks it against `Receiver`.
-fn receive(m: &Modem, d: Detector, rx: &[f32], sent: &Burst) -> Outcome {
-    let first = m.ofdm.detect_with(d, rx, 0);
-    let mut next = first;
-    while let Some(b) = next {
-        if let Some(h) = header_at(m, rx, b) {
-            return Outcome { first, ok: burst_ok(m, rx, b, &h, sent) };
-        }
-        // As `Receiver::step`: search on from the failed detection itself. That
-        // needs a detector that reports a position past the start of what it
-        // matched; one that returns `b` again would hang the evaluation, so stop.
-        next = m.ofdm.detect_with(d, rx, b);
-        if let Some(n) = next {
-            assert!(n > b, "detector returned {n} when searching from {b}: it would loop forever");
-        }
-    }
-    Outcome { first, ok: false }
+/// Whether the streaming `Receiver` on `m` makes `sent` of recording `rx`: its
+/// first burst has the header sent and every codeword decoded as sent. The audio
+/// comes in 10 ms chunks, as a sound card delivers it, then a second of silence so
+/// that a burst at the very end completes.
+fn received_ok(m: &Arc<Modem>, rx: &[f32], sent: &Burst) -> bool {
+    let mut receiver = Receiver::new(m.clone());
+    let chunk = (m.fs() / 100.0) as usize;
+    let mut got: Vec<RxBurst> = rx.chunks(chunk).flat_map(|c| receiver.push(c)).collect();
+    got.extend(receiver.push(&vec![0.0; m.fs() as usize]));
+    got.first().is_some_and(|g| {
+        g.header == sent.header && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
+    })
 }
 
 /// Outcome of one trial: (hit, burst) per detector of [`Detector::ALL`], then the
@@ -232,9 +219,10 @@ fn trial(link: &Link, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> 
     let tol = m.ofdm.p.ncp / 4;
     let det = Detector::ALL
         .iter()
-        .map(|&d| {
-            let o = receive(m, d, &rx, &sent);
-            (o.first.is_some_and(|b| b.abs_diff(truth) <= tol), o.ok)
+        .zip(&link.receivers)
+        .map(|(&d, r)| {
+            let first = m.ofdm.detect_with(d, &rx, 0).at;
+            (first.is_some_and(|b| b.abs_diff(truth) <= tol), received_ok(r, &rx, &sent))
         })
         .collect();
     let genie = header_at(m, &rx, truth).is_some_and(|h| burst_ok(m, &rx, truth, &h, &sent));
@@ -252,9 +240,9 @@ fn link_position(link: &Link, level: u8, ncw: usize) -> usize {
     let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
     let rx = transmit(&clean, &link.tx.modulate(&burst(level, ncw, payload_seed(0))));
     let ofdm = &link.rx.ofdm;
-    let truth = ofdm.detect_with(REFERENCE, &rx, 0).expect("burst not found on a clean channel");
+    let truth = ofdm.detect_with(REFERENCE, &rx, 0).at.expect("burst not found on a clean channel");
     for d in Detector::ALL {
-        let at = ofdm.detect_with(d, &rx, 0);
+        let at = ofdm.detect_with(d, &rx, 0).at;
         let near = at.is_some_and(|b| b.abs_diff(truth) <= ofdm.p.ncp / 4);
         assert!(near, "{d} finds the clean burst at {at:?}, {REFERENCE} at {truth}");
     }
@@ -266,7 +254,7 @@ fn link_position(link: &Link, level: u8, ncw: usize) -> usize {
 pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
     let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
     let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
-    m.ofdm.detect(&transmit(&clean, &tx), 0).expect("burst not found on a clean channel")
+    m.ofdm.detect(&transmit(&clean, &tx), 0).at.expect("burst not found on a clean channel")
 }
 
 /// `f(t)` for every trial `t` in `0..trials`, spread over every core, in trial
@@ -425,13 +413,13 @@ fn noise_case(mode: &str, case: usize, seconds: f32, fs: f32, seed: u64) -> Vec<
 /// Detections and decoded headers in `rx`, scanning on after each detection.
 fn false_detections(m: &Modem, d: Detector, rx: &[f32]) -> (u32, u32) {
     let (mut dets, mut headers) = (0, 0);
-    let mut pos = 0;
-    while let Some(b) = m.ofdm.detect_with(d, rx, pos) {
+    let mut found = m.ofdm.detect_with(d, rx, 0);
+    while let Some(b) = found.at {
         dets += 1;
         if header_at(m, rx, b).is_some() {
             headers += 1;
         }
-        pos = b + 1;
+        found = m.ofdm.detect_with(d, rx, found.resume);
     }
     (dets, headers)
 }
@@ -618,7 +606,7 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
         let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
         for t in 1..4 {
             let tx = m.modulate(&burst(1, 1, payload_seed(t)));
-            let at = m.ofdm.detect_with(REFERENCE, &transmit(&clean, &tx), 0);
+            let at = m.ofdm.detect_with(REFERENCE, &transmit(&clean, &tx), 0).at;
             assert_eq!(at, Some(truth), "{mode}: payload {t} moves the burst");
         }
         for r in run_trials(&link, 25.0, 1, 1, 4) {
@@ -698,58 +686,4 @@ fn mcnemar_matches_known_values() {
     // z = 4.26 with continuity correction; the exact value is about 2e-5.
     let p = mcnemar(1000, 1200);
     assert!(p > 1e-6 && p < 1e-4, "p {p}");
-}
-
-/// `receive` must judge each recording the way the streaming `Receiver` does when
-/// it is fed the same audio in 10 ms chunks, including the recordings where the
-/// detector or the header fails. It runs for every detector the receiver can use.
-///
-/// Each seed runs at three CNRs per mode. At the lowest even genie decodes nothing
-/// and at the highest every detector so far decodes almost everything, so both
-/// outcomes occur whatever the receiver's detector is, and `STREAM_SEEDS=1` works.
-/// 12 seeds per mode by default.
-#[test]
-fn offline_receive_matches_the_streaming_receiver() {
-    let seeds: u64 = env_or("STREAM_SEEDS", 12);
-    for mode in OfdmParams::all().map(|p| p.name) {
-        let cnrs = match mode {
-            "narrow" => [3.0, 5.0, 8.0],
-            "wide" => [5.0, 7.0, 10.0],
-            _ => panic!("no CNRs for mode {mode}: add three, from where genie decodes nothing to almost all"),
-        };
-        let sent = burst(1, 1, 7);
-        let tx = modem(mode).modulate(&sent);
-        for detector in Detector::ALL {
-            let m = eval_modem(mode, 0.0, detector);
-            let (mut total, mut ok) = (0, 0);
-            for seed in 0..seeds {
-                for cnr in cnrs {
-                    let cfg = FmChannelConfig {
-                        cnr_db: Some(cnr),
-                        seed: 1000 + seed,
-                        ..FmChannelConfig::by_name(mode).unwrap()
-                    };
-                    let mut rx = transmit(&cfg, &tx);
-                    rx.extend(vec![0.0; m.fs() as usize]);
-                    let mut receiver = Receiver::new(m.clone());
-                    // 10 ms chunks, as a sound card delivers them.
-                    let chunk = (m.fs() / 100.0) as usize;
-                    let got: Vec<RxBurst> = rx.chunks(chunk).flat_map(|c| receiver.push(c)).collect();
-                    let streamed = got.first().is_some_and(|g| {
-                        g.header == sent.header
-                            && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
-                    });
-                    let offline = receive(&m, detector, &rx, &sent).ok;
-                    assert_eq!(
-                        offline, streamed,
-                        "{mode} {detector} {cnr} dB seed {seed}: offline {offline}, streaming {streamed}"
-                    );
-                    total += 1;
-                    ok += streamed as u32;
-                }
-            }
-            // Both outcomes must occur, or the comparison proves little.
-            assert!(ok > 0 && ok < total, "{mode} {detector}: {ok} of {total} bursts decoded");
-        }
-    }
 }
