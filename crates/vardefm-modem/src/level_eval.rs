@@ -258,6 +258,12 @@ fn load() -> Baseline {
     toml::from_str(&text).unwrap_or_else(|e| panic!("{BASELINE}: {e}"))
 }
 
+/// The recorded 10 % CER point of every level of `mode`, dB, levels 0 up.
+pub(crate) fn level_points(mode: &str) -> Vec<f32> {
+    let base = load();
+    (0..LEVELS.len() as u8).map(|l| base.point(mode, Target::Level(l)).cnr_db).collect()
+}
+
 impl Baseline {
     fn point(&self, mode: &str, target: Target) -> &Point {
         let list = match target {
