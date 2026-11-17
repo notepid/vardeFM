@@ -11,12 +11,17 @@ const SNR_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vardefm-modem/pe
 /// Codeword error rate at which a level counts as decoding reliably: the thresholds
 /// were set where every burst in the `level_table` benchmark decoded.
 const THRESHOLD_CER: f32 = 0.01;
-/// How far the SNR at which the link switches to a level (its threshold plus
-/// `SNR_MARGIN_DB`) may lie above the median SNR at which the level reaches
-/// `THRESHOLD_CER`, in the mode where it lies nearest, dB. Recorded: 0.9 dB (level 2)
-/// to 1.4 dB (levels 4 and 5). This allows the most recorded plus the 0.5 dB a
-/// threshold is rounded up by, so a threshold may be re-rounded, but a recording whose
-/// SNR fell by more than about half a dB at the most cautious level fails.
+/// The slack of a level: how far the SNR at which the link switches to it (its
+/// threshold plus `SNR_MARGIN_DB`) lies above the median SNR at which the level
+/// reaches `THRESHOLD_CER`, in the mode and on the curve where it lies nearest, dB.
+/// Recorded: 0.9 dB (level 2) to 1.4 dB (levels 4 and 5).
+///
+/// At least this much, so a recording whose SNR rose would not pass while it eats
+/// most of the link's 1 dB margin: about 0.4 dB of rise at level 2 fails.
+const MIN_THRESHOLD_SLACK_DB: f32 = 0.5;
+/// At most this much: the most recorded plus the 0.5 dB a threshold is rounded up by,
+/// so a threshold may be re-rounded, but a recording whose SNR fell by more than
+/// about 0.6 dB at levels 4 and 5 fails.
 const MAX_THRESHOLD_SLACK_DB: f32 = 2.0;
 
 #[derive(serde::Deserialize)]
@@ -44,7 +49,16 @@ struct SnrPoint {
     cnr_db: f32,
     offset_db: f32,
     snr_db: f32,
+    predicted_db: f32,
 }
+
+/// One of the recorded SNR curves of a point.
+type Curve = fn(&SnrPoint) -> f32;
+
+/// The two recorded SNR curves: what the receiver reports on a level's own bursts,
+/// and what `Modem::predict_snr_db` gives for the level from a level-0 burst. The link
+/// decides on the first for a burst at the level and on a prediction for the others.
+const CURVES: [(&str, Curve); 2] = [("measured", |p| p.snr_db), ("predicted from L0", |p| p.predicted_db)];
 
 fn read<T: serde::de::DeserializeOwned>(path: &str) -> T {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -52,7 +66,8 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> T {
 }
 
 /// Where `rates` (falling with `grid`) cross `target`, interpolated in log10 of the
-/// rate, or linearly next to a 0, as `level_eval::crossing` in vardefm-modem.
+/// rate, or linearly next to a 0. A copy of `level_eval::crossing` in vardefm-modem,
+/// which is test code there and cannot be shared: change both together.
 fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
     let i = rates.windows(2).position(|w| w[0] >= target && w[1] < target)?;
     let (x0, x1, y0, y1) = (grid[i], grid[i + 1], rates[i], rates[i + 1]);
@@ -69,27 +84,28 @@ fn interpolate(points: &[(f32, f32)], x: f32) -> Option<f32> {
     Some(y0 + (x - x0) / (x1 - x0) * (y1 - y0))
 }
 
-/// The median SNR the receiver reports where `mode`'s `level` reaches `THRESHOLD_CER`.
-fn snr_at_threshold_cer(levels: &Levels, snr: &Snr, mode: &str, level: u8) -> f32 {
+/// The median SNR on `curve` where `mode`'s `level` reaches `THRESHOLD_CER`.
+fn snr_at_threshold_cer(levels: &Levels, snr: &Snr, mode: &str, level: u8, curve: Curve) -> f32 {
     let at = format!("{mode} L{level}");
     let lp = levels.level.iter().find(|p| p.mode == mode && p.level == level);
     let lp = lp.unwrap_or_else(|| panic!("{LEVELS_TOML} has no {at}"));
     let cnr = crossing(&lp.grid_db, &lp.rate, THRESHOLD_CER)
         .unwrap_or_else(|| panic!("{at}: the recorded grid does not cross {THRESHOLD_CER}"));
-    let mut curve: Vec<(f32, f32)> = snr
+    let mut points: Vec<(f32, f32)> = snr
         .point
         .iter()
         .filter(|p| p.mode == mode && p.level == level)
-        .map(|p| (p.cnr_db + p.offset_db, p.snr_db))
+        .map(|p| (p.cnr_db + p.offset_db, curve(p)))
         .collect();
-    curve.sort_by(|a, b| a.0.total_cmp(&b.0));
-    interpolate(&curve, cnr).unwrap_or_else(|| panic!("{at}: {SNR_TOML} does not span {cnr:.2} dB CNR: {curve:?}"))
+    points.sort_by(|a, b| a.0.total_cmp(&b.0));
+    interpolate(&points, cnr).unwrap_or_else(|| panic!("{at}: {SNR_TOML} does not span {cnr:.2} dB CNR: {points:?}"))
 }
 
-/// The SNR at which the link switches to each level, its threshold plus
-/// `SNR_MARGIN_DB`, lies at or above the median SNR at which that level reaches
-/// `THRESHOLD_CER` in every mode, and no more than `MAX_THRESHOLD_SLACK_DB` above it in
-/// the mode where it lies nearest. Level 0's threshold is never used.
+/// The slack of every level, on both recorded curves in both modes, lies between
+/// `MIN_THRESHOLD_SLACK_DB` and `MAX_THRESHOLD_SLACK_DB`: the SNR at which the link
+/// switches to the level, its threshold plus `SNR_MARGIN_DB`, lies at least the
+/// minimum above the median SNR at which that level reaches `THRESHOLD_CER`, and at
+/// most the maximum where it lies nearest. Level 0's threshold is never used.
 ///
 /// The bare thresholds sit near that SNR (narrow level 2's 0.1 dB below it): they
 /// were set at the highest SNR of any burst that still lost a codeword in a few
@@ -103,19 +119,22 @@ fn thresholds_lie_above_recorded_snr() {
         let switch = SNR_THRESHOLDS_DB[level as usize] + SNR_MARGIN_DB;
         let mut slack = f32::INFINITY;
         for mode in ["narrow", "wide"] {
-            let s = snr_at_threshold_cer(&levels, &snr, mode, level);
-            println!(
-                "{mode} L{level}: {:.0} % CER at {s:.2} dB SNR, link switches at {switch} dB",
-                100.0 * THRESHOLD_CER
-            );
-            if s > switch {
-                bad.push(format!("{mode} L{level}: link switches at {switch} dB, below {s:.2} dB"));
+            for (name, curve) in CURVES {
+                let s = snr_at_threshold_cer(&levels, &snr, mode, level, curve);
+                println!(
+                    "{mode} L{level} {name}: {:.0} % CER at {s:.2} dB SNR, link switches at {switch} dB",
+                    100.0 * THRESHOLD_CER
+                );
+                slack = slack.min(switch - s);
             }
-            slack = slack.min(switch - s);
         }
         println!("L{level}: slack {slack:.2} dB");
-        if slack > MAX_THRESHOLD_SLACK_DB {
-            bad.push(format!("L{level}: link switches at {switch} dB, {slack:.2} dB above the SNR in every mode"));
+        if !(MIN_THRESHOLD_SLACK_DB..=MAX_THRESHOLD_SLACK_DB).contains(&slack) {
+            bad.push(format!(
+                "L{level}: link switches at {switch} dB, {slack:.2} dB above the nearest SNR at {:.0} % CER, \
+                 outside {MIN_THRESHOLD_SLACK_DB} to {MAX_THRESHOLD_SLACK_DB} dB",
+                100.0 * THRESHOLD_CER
+            ));
         }
     }
     assert!(bad.is_empty(), "SNR_THRESHOLDS_DB and the recorded curves disagree:\n  {}", bad.join("\n  "));

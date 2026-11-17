@@ -11,8 +11,8 @@ run the same minor version.
   for a level from a level-0 burst, has moved by more than 0.25 dB around each level's
   10 % codeword error point (`crates/vardefm-modem/perf/snr.toml`, recorded by
   `snr_sweep`). A fast test in vardefm-link checks that each rate threshold plus its
-  1 dB margin lies at or above the recorded SNR at which its level reaches 1 % codeword
-  errors, and not more than 2 dB above it.
+  1 dB margin lies 0.5 to 2 dB above the recorded SNR, measured and predicted, at which
+  its level reaches 1 % codeword errors.
 
 ## [0.3.2] - 2026-11-16
 

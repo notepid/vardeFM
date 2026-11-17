@@ -245,7 +245,7 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   level, levels 0–6): −2, 1.5, 4.5, 7, 11, 15, 18 dB (level 0's is never used). The SNR
   the receiver reports around each level's 10 % codeword error point is recorded in
   `crates/vardefm-modem/perf/snr.toml` and checked by the `snr_gate` test; each threshold
-  plus 1 dB lies at or above the recorded SNR at which its level reaches 1 % codeword
+  plus 1 dB lies 0.5 to 2 dB above the recorded SNR at which its level reaches 1 % codeword
   errors. After a
   failed codeword the request drops at least one level below the burst's level. Each
   unanswered burst lowers our own level by one. The called station starts at the level

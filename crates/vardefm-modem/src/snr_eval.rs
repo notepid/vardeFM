@@ -13,7 +13,8 @@
 //!   `Receiver::step` does (`level_eval::Case::frame`);
 //! - `predicted_db`: the median of `Modem::predict_snr_db` from the SNR of a level-0
 //!   burst over the same channel to the level, which covers the per-level drive
-//!   normalisation. `snr_prediction_matches_measurement` holds it near `snr_db`.
+//!   normalisation from level 0. The link also predicts from other levels, which is
+//!   not measured. `snr_prediction_matches_measurement` holds it near `snr_db`.
 //!
 //! Medians, not means: at narrow level 0's point the mean over 312 bursts moved by
 //! 0.27 dB between two samples, 3.4 times its standard error, so the per-burst
@@ -32,9 +33,11 @@
 //! `perf/snr.toml` holds the points. `snr_gate` measures `snr_db` and `predicted_db`
 //! at `GATE_OFFSETS_DB` on fresh bursts and fails when either has moved from the
 //! recorded value by more than `SNR_GATE_MARGIN_DB`. Each point is recorded and gated
-//! over enough bursts that the noise of both medians stays inside that margin at 3
-//! sigma (`bursts_for`): several hundred at the low levels, where the per-burst
-//! estimate scatters by about a dB. The link's thresholds are checked
+//! over enough bursts that the noise of both medians would stay inside that margin at
+//! 3 sigma if the per-burst estimate were normal (`bursts_for`): several hundred at the
+//! low levels, where it scatters by about a dB. It is not normal there (see above), so
+//! that is an estimate, not a bound; on the recorded run the gate's largest move was
+//! 0.10 dB. The link's thresholds are checked
 //! against the recorded points by `thresholds_lie_above_recorded_snr` in vardefm-link.
 //!
 //! `cargo test --release -p vardefm-modem snr_gate -- --ignored --nocapture`
@@ -64,8 +67,10 @@ const GATE_OFFSETS_DB: [f32; 2] = [0.0, 0.5];
 const SNR_GATE_MARGIN_DB: f32 = 0.25;
 /// How far `predicted_db` may lie from `snr_db` at a recorded point, dB. Without
 /// this check a bias in `predict_snr_db` present when the points were recorded would
-/// be recorded with them and never caught.
-const PREDICT_TOLERANCE_DB: f32 = 0.5;
+/// be recorded with them and never caught. The recorded prediction runs up to about
+/// 0.45 dB low at wide levels 3 to 5 (the model's clipping ceilings there); this
+/// leaves room for a re-recording's noise and fails a bias half a dB larger.
+const PREDICT_TOLERANCE_DB: f32 = 0.75;
 /// Bursts per point of the sweep at least. A point whose per-burst SNR scatters more
 /// gets more (`bursts_for`).
 const RECORD_BURSTS: u32 = 200;
@@ -178,9 +183,11 @@ fn measure(level: &Case, source: &Case, cnr: f32, first: u32, bursts: u32) -> St
 }
 
 /// Bursts for a median of a per-burst scatter `sigma` dB to stay within
-/// `SNR_GATE_MARGIN_DB` of another median over as many bursts at 3 sigma. A median
-/// over n bursts has a variance of about pi/2 sigma^2 / n, so the difference of two
-/// has pi sigma^2 / n: `3 sigma sqrt(pi / n) <= margin`. The sweep records over this
+/// `SNR_GATE_MARGIN_DB` of another median over as many bursts at 3 sigma. For a
+/// normal distribution a median over n bursts has a variance of about
+/// pi/2 sigma^2 / n, so the difference of two has pi sigma^2 / n:
+/// `3 sigma sqrt(pi / n) <= margin`. Away from normal the variance is
+/// 1 / (4 n f(m)^2), with f the density at the median, so this is an estimate. The sweep records over this
 /// many and the gate measures over as many. At least `min`.
 fn bursts_for(sigma: f32, min: u32) -> u32 {
     let k = (3.0 * sigma / SNR_GATE_MARGIN_DB).powi(2);
@@ -196,7 +203,7 @@ fn round(x: f32) -> f32 {
 
 /// Measures every mode, level and offset; with `WRITE=1`, records them in
 /// `perf/snr.toml`. A point is measured over `TRIALS` bursts, then again over more
-/// when its scatter needs more for the gate's margin (`bursts_for`).
+/// while its scatter needs more for the gate's margin (`bursts_for`).
 #[test]
 #[ignore]
 fn snr_sweep() {
@@ -221,10 +228,15 @@ fn snr_sweep() {
             let case = Case::new(&m, mode, target);
             for offset in SNR_OFFSETS_DB {
                 let cnr = at.cnr_db + offset;
+                // The scatter measured over more bursts can need more still: measure
+                // again until the count it asks for has been measured.
                 let mut n = bursts;
                 let mut s = measure(&case, &source, cnr, 0, n);
-                let need = bursts_for(s.sigma_db.max(s.predicted_sigma_db), bursts);
-                if need > n {
+                loop {
+                    let need = bursts_for(s.sigma_db.max(s.predicted_sigma_db), bursts);
+                    if need <= n {
+                        break;
+                    }
                     n = need;
                     s = measure(&case, &source, cnr, 0, n);
                 }
@@ -295,7 +307,8 @@ fn snr_gate() {
             let case = Case::new(&m, mode, target);
             for offset in GATE_OFFSETS_DB {
                 let p = base.point(mode, l, offset);
-                let s = measure(&case, &source, p.cnr_db + offset, GATE_FIRST_TRIAL, p.bursts.max(bursts));
+                let n = bursts_for(p.sigma_db.max(p.predicted_sigma_db), p.bursts.max(bursts));
+                let s = measure(&case, &source, p.cnr_db + offset, GATE_FIRST_TRIAL, n);
                 let ok = within(p.snr_db, s.snr_db) && within(p.predicted_db, s.predicted_db);
                 println!(
                     "{} at {:.2}{offset:+.2} dB: SNR {:.2} dB (recorded {:.2}), predicted {:.2} dB (recorded {:.2}) {}",
@@ -333,35 +346,50 @@ fn snr_gate_fails_a_shifted_point() {
 }
 
 /// The measurement path reports what `Receiver` reports on the same audio, so the
-/// gate covers the SNR the link sees.
+/// gate covers the SNR the link sees: for every level at its upper gated point and,
+/// near the ceiling, at 30 dB CNR. Trials whose burst the receiver does not detect or
+/// whose header it does not decode report nothing to compare; at narrow level 0's
+/// point, below the header's, only about one in eight does, so each level and CNR
+/// needs one.
 #[test]
 fn measurement_matches_the_receiver() {
+    let levels = level_eval::load();
+    let upper = GATE_OFFSETS_DB[GATE_OFFSETS_DB.len() - 1];
     for mode in ALL_MODES.split(',') {
         let m = modem(mode);
-        for l in [0, LEVELS.len() as u8 - 1] {
+        for l in 0..LEVELS.len() as u8 {
             let case = Case::new(&m, mode, Target::Level(l));
-            let cnr = 30.0;
-            for t in 0..2 {
-                let sent = trial_burst(l, case.ncw, t);
-                let audio = through_channel(&m, mode, cnr, &sent, t);
-                let mut rx = Receiver::new(m.clone());
-                let mut got: Vec<RxBurst> = audio.chunks(480).flat_map(|c| rx.push(c)).collect();
-                got.extend(rx.push(&vec![0.0; 48_000]));
-                assert_eq!(got.len(), 1, "{mode} L{l}: receiver got {} bursts", got.len());
-                let want = snr(&case, cnr, t);
-                let d = got[0].snr_db - want;
-                assert!(
-                    d.abs() < MATCH_TOLERANCE_DB,
-                    "{mode} L{l} trial {t}: receiver {:.2} dB, gate {want:.2} dB",
-                    got[0].snr_db
-                );
+            let gated = levels.point(mode, Target::Level(l)).cnr_db + upper;
+            for (cnr, trials) in [(gated, MATCH_TRIALS), (30.0, 2)] {
+                let mut compared = 0;
+                for t in 0..trials {
+                    let sent = trial_burst(l, case.ncw, t);
+                    let audio = through_channel(&m, mode, cnr, &sent, t);
+                    let mut rx = Receiver::new(m.clone());
+                    let mut got: Vec<RxBurst> = audio.chunks(480).flat_map(|c| rx.push(c)).collect();
+                    got.extend(rx.push(&vec![0.0; 48_000]));
+                    assert!(got.len() <= 1, "{mode} L{l} at {cnr:.2} dB: receiver got {} bursts", got.len());
+                    let Some(g) = got.first() else { continue };
+                    let want = snr(&case, cnr, t);
+                    assert!(
+                        (g.snr_db - want).abs() < MATCH_TOLERANCE_DB,
+                        "{mode} L{l} at {cnr:.2} dB, trial {t}: receiver {:.2} dB, gate {want:.2} dB",
+                        g.snr_db
+                    );
+                    compared += 1;
+                }
+                assert!(compared > 0, "{mode} L{l} at {cnr:.2} dB: the receiver decoded none of {trials} bursts");
             }
         }
     }
 }
 
+/// Trials per level of `measurement_matches_the_receiver` at the gated point.
+const MATCH_TRIALS: u32 = 8;
+
 /// How far the receiver's SNR may lie from the gate's on the same audio, dB. The
-/// receiver finds the burst itself, a few samples from the true position.
+/// receiver finds the burst itself, a few samples from the true position; at the
+/// gated points they differed by at most 0.05 dB.
 const MATCH_TOLERANCE_DB: f32 = 0.1;
 
 /// The committed points cover every mode, level and offset, at the CNRs and drives
