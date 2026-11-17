@@ -1,0 +1,734 @@
+[source]
+what = "Median SNR the receiver reports, around each level's 10 % CER point, from the known position"
+commit = "6ff1c13"
+command = "WRITE=1 TRIALS=200 cargo test --release -p vardefm-modem snr_sweep -- --ignored"
+min_bursts = 200
+levels_commit = "eb35213"
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = -0.5
+snr_db = -5.338
+predicted_db = -5.338
+sigma_db = 0.9
+predicted_sigma_db = 0.9
+bursts = 382
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = 0.0
+snr_db = -3.924
+predicted_db = -3.924
+sigma_db = 0.883
+predicted_sigma_db = 0.883
+bursts = 319
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = 0.5
+snr_db = -2.473
+predicted_db = -2.473
+sigma_db = 0.8
+predicted_sigma_db = 0.8
+bursts = 246
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = 1.0
+snr_db = -0.79
+predicted_db = -0.79
+sigma_db = 0.802
+predicted_sigma_db = 0.802
+bursts = 297
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = -0.5
+snr_db = -2.072
+predicted_db = -2.114
+sigma_db = 0.873
+predicted_sigma_db = 0.79
+bursts = 334
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = 0.0
+snr_db = -0.351
+predicted_db = -0.429
+sigma_db = 0.58
+predicted_sigma_db = 0.663
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = 0.5
+snr_db = 1.352
+predicted_db = 1.285
+sigma_db = 0.627
+predicted_sigma_db = 0.563
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = 1.0
+snr_db = 2.922
+predicted_db = 2.954
+sigma_db = 0.537
+predicted_sigma_db = 0.538
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = -0.5
+snr_db = 2.199
+predicted_db = 2.178
+sigma_db = 0.518
+predicted_sigma_db = 0.531
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = 0.0
+snr_db = 3.703
+predicted_db = 3.719
+sigma_db = 0.474
+predicted_sigma_db = 0.527
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = 0.5
+snr_db = 5.31
+predicted_db = 5.296
+sigma_db = 0.383
+predicted_sigma_db = 0.396
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = 1.0
+snr_db = 6.962
+predicted_db = 6.847
+sigma_db = 0.333
+predicted_sigma_db = 0.377
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = -0.5
+snr_db = 4.878
+predicted_db = 4.894
+sigma_db = 0.592
+predicted_sigma_db = 0.434
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = 0.0
+snr_db = 6.334
+predicted_db = 6.358
+sigma_db = 0.473
+predicted_sigma_db = 0.439
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = 0.5
+snr_db = 7.714
+predicted_db = 7.722
+sigma_db = 0.424
+predicted_sigma_db = 0.313
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = 1.0
+snr_db = 8.755
+predicted_db = 8.774
+sigma_db = 0.419
+predicted_sigma_db = 0.309
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = -0.5
+snr_db = 9.32
+predicted_db = 9.344
+sigma_db = 0.38
+predicted_sigma_db = 0.273
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = 0.0
+snr_db = 10.23
+predicted_db = 10.182
+sigma_db = 0.347
+predicted_sigma_db = 0.242
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = 0.5
+snr_db = 10.897
+predicted_db = 10.888
+sigma_db = 0.371
+predicted_sigma_db = 0.267
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = 1.0
+snr_db = 11.553
+predicted_db = 11.568
+sigma_db = 0.345
+predicted_sigma_db = 0.206
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = -0.5
+snr_db = 13.787
+predicted_db = 13.573
+sigma_db = 0.24
+predicted_sigma_db = 0.189
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = 0.0
+snr_db = 14.293
+predicted_db = 14.105
+sigma_db = 0.255
+predicted_sigma_db = 0.226
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = 0.5
+snr_db = 14.782
+predicted_db = 14.557
+sigma_db = 0.254
+predicted_sigma_db = 0.188
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = 1.0
+snr_db = 15.257
+predicted_db = 15.069
+sigma_db = 0.227
+predicted_sigma_db = 0.246
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = -0.5
+snr_db = 17.005
+predicted_db = 16.815
+sigma_db = 0.23
+predicted_sigma_db = 0.242
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = 0.0
+snr_db = 17.377
+predicted_db = 17.271
+sigma_db = 0.289
+predicted_sigma_db = 0.31
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = 0.5
+snr_db = 17.899
+predicted_db = 17.722
+sigma_db = 0.235
+predicted_sigma_db = 0.31
+bursts = 200
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = 1.0
+snr_db = 18.32
+predicted_db = 18.18
+sigma_db = 0.25
+predicted_sigma_db = 0.31
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = -0.5
+snr_db = -4.268
+predicted_db = -4.268
+sigma_db = 0.624
+predicted_sigma_db = 0.624
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = 0.0
+snr_db = -2.713
+predicted_db = -2.713
+sigma_db = 0.509
+predicted_sigma_db = 0.509
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = 0.5
+snr_db = -1.233
+predicted_db = -1.233
+sigma_db = 0.445
+predicted_sigma_db = 0.445
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = 1.0
+snr_db = 0.074
+predicted_db = 0.074
+sigma_db = 0.286
+predicted_sigma_db = 0.286
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = -0.5
+snr_db = -0.438
+predicted_db = -0.49
+sigma_db = 0.471
+predicted_sigma_db = 0.381
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = 0.0
+snr_db = 0.724
+predicted_db = 0.736
+sigma_db = 0.435
+predicted_sigma_db = 0.303
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = 0.5
+snr_db = 1.693
+predicted_db = 1.718
+sigma_db = 0.367
+predicted_sigma_db = 0.248
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = 1.0
+snr_db = 2.533
+predicted_db = 2.504
+sigma_db = 0.355
+predicted_sigma_db = 0.256
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = -0.5
+snr_db = 3.153
+predicted_db = 3.108
+sigma_db = 0.307
+predicted_sigma_db = 0.271
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = 0.0
+snr_db = 3.875
+predicted_db = 3.888
+sigma_db = 0.32
+predicted_sigma_db = 0.241
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = 0.5
+snr_db = 4.591
+predicted_db = 4.549
+sigma_db = 0.255
+predicted_sigma_db = 0.219
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = 1.0
+snr_db = 5.212
+predicted_db = 5.187
+sigma_db = 0.241
+predicted_sigma_db = 0.185
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = -0.5
+snr_db = 5.419
+predicted_db = 5.05
+sigma_db = 0.26
+predicted_sigma_db = 0.152
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = 0.0
+snr_db = 5.916
+predicted_db = 5.557
+sigma_db = 0.301
+predicted_sigma_db = 0.163
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = 0.5
+snr_db = 6.432
+predicted_db = 6.107
+sigma_db = 0.294
+predicted_sigma_db = 0.173
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = 1.0
+snr_db = 6.972
+predicted_db = 6.623
+sigma_db = 0.256
+predicted_sigma_db = 0.174
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = -0.5
+snr_db = 9.546
+predicted_db = 9.187
+sigma_db = 0.263
+predicted_sigma_db = 0.167
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = 0.0
+snr_db = 10.028
+predicted_db = 9.67
+sigma_db = 0.224
+predicted_sigma_db = 0.161
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = 0.5
+snr_db = 10.543
+predicted_db = 10.176
+sigma_db = 0.236
+predicted_sigma_db = 0.155
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = 1.0
+snr_db = 11.002
+predicted_db = 10.678
+sigma_db = 0.261
+predicted_sigma_db = 0.17
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = -0.5
+snr_db = 13.034
+predicted_db = 12.587
+sigma_db = 0.286
+predicted_sigma_db = 0.305
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = 0.0
+snr_db = 13.499
+predicted_db = 13.133
+sigma_db = 0.277
+predicted_sigma_db = 0.342
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = 0.5
+snr_db = 14.048
+predicted_db = 13.671
+sigma_db = 0.319
+predicted_sigma_db = 0.417
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = 1.0
+snr_db = 14.559
+predicted_db = 14.144
+sigma_db = 0.308
+predicted_sigma_db = 0.403
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = -0.5
+snr_db = 16.532
+predicted_db = 16.27
+sigma_db = 0.256
+predicted_sigma_db = 0.659
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = 0.0
+snr_db = 17.036
+predicted_db = 16.846
+sigma_db = 0.303
+predicted_sigma_db = 0.664
+bursts = 200
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = 0.5
+snr_db = 17.557
+predicted_db = 17.393
+sigma_db = 0.25
+predicted_sigma_db = 0.88
+bursts = 323
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = 1.0
+snr_db = 18.024
+predicted_db = 17.862
+sigma_db = 0.293
+predicted_sigma_db = 0.942
+bursts = 395
