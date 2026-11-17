@@ -944,3 +944,16 @@ fn check_point(at: &str, grid: &[f32], rates: &[f32], point: f32, target: f32, m
     assert!(((x * 100.0).round() / 100.0 - point).abs() < 1e-3, "{at}: recorded {point}, the grid crosses at {x}");
     assert!(grid[0] <= point - margin && point + margin <= grid[grid.len() - 1], "{at}: gate points off the grid");
 }
+
+/// On a channel too narrow to find the burst even without noise, a case is an
+/// error for the sweep to report as no point, not a panic that ends the run.
+#[test]
+fn a_channel_too_narrow_for_detection_is_an_error() {
+    let m = modem("wide");
+    let narrow_if = FmChannelConfig::parse_channel("data-12k5:if=200").unwrap();
+    let e = Case::on_channel(&m, "wide", Some("data-12k5:if=200"), narrow_if, Target::Level(0)).err();
+    assert!(e.is_some_and(|e| e.contains("not found")), "the burst was found through a 200 Hz IF");
+    // The same case on the mode's own channel is found.
+    let own = FmChannelConfig::by_name("wide").unwrap();
+    assert!(Case::on_channel(&m, "wide", None, own, Target::Level(0)).is_ok());
+}

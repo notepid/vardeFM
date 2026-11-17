@@ -219,6 +219,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "the signal's power is")]
+    fn infinity_has_no_spectrum() {
+        Spectrum::welch([vec![Complex32::new(f32::INFINITY, 0.0); NFFT].as_slice()], FS, NFFT);
+    }
+
+    #[test]
     #[should_panic(expected = "shorter than nfft")]
     fn a_short_segment_is_refused() {
         let x = vec![Complex32::new(1.0, 0.0); NFFT];

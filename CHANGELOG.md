@@ -10,8 +10,9 @@ run the same minor version.
 - **Channel spacing in the simulator.** The FM channel simulator can now run a mode on a
   channel other than its own: `mic-12k5`, `mic-25k`, `data-25k` and `data-12k5`, with
   the deviation and IF bandwidth overridable (`data-12k5:dev=2500:if=8000`). `vardefm
-  sim` and `sweep` take `--channel`; `level_sweep` and `level_table` take `CHANNELS` and
-  report thresholds as C/N0, so channels compare at equal signal strength. A new ignored
+  sim` and `sweep` take `--channel`; `level_sweep` and `level_table` take `CHANNELS`, and
+  `level_sweep` also gives each threshold as C/N0, so channels compare at equal signal
+  strength. A new ignored
   test, `occupied_bandwidth`, reports the occupied bandwidth and adjacent-channel power of
   real bursts. The modem itself is unchanged.
 

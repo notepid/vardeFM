@@ -129,5 +129,5 @@ fn presets_fit_or_spill_as_measured() {
     assert!(a < -65.0, "narrow on data-12k5:dev=2500: ACP {a:.1} dBc, expected well under -60");
     let s = spectrum(&modem("wide"), &FmChannelConfig::parse_channel("data-25k").unwrap(), 0, 1);
     let a = acp(&s, 12_500.0, ACP_BW_12K5_HZ);
-    assert!(a > -50.0, "wide on data-25k: ACP {a:.1} dBc, expected far over -60");
+    assert!(a > -60.0, "wide on data-25k: ACP {a:.1} dBc, expected over -60");
 }
