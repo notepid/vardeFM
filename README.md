@@ -162,7 +162,9 @@ cargo test --release -p vardefm-modem snr_gate -- --ignored --nocapture     # ab
 cargo test --release -p vardefm-fec fer_gate -- --ignored --nocapture       # about 7 s
 ```
 A deliberate change records new points in the same PR. Commit the code first, so the
-files name the commit measured, then record and commit the files:
+files name the commit measured, then record and commit the files. `snr.toml` is measured at
+the CNRs in `levels.toml`, so a new `levels.toml` needs `snr_sweep` run again; until then
+`snr_baseline_covers_every_mode_and_level` fails:
 ```powershell
 # Windows PowerShell
 $env:WRITE = "1"; cargo test --release -p vardefm-modem level_sweep -- --ignored --nocapture; Remove-Item Env:WRITE
@@ -173,6 +175,7 @@ $env:WRITE = "1"; $env:TRIALS = "1000"; cargo test --release -p vardefm-fec fer_
 ```sh
 # Linux / macOS / Git Bash
 WRITE=1 cargo test --release -p vardefm-modem level_sweep -- --ignored --nocapture
+WRITE=1 cargo test --release -p vardefm-modem snr_sweep -- --ignored --nocapture
 WRITE=1 TRIALS=1000 cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture
 ```
 The recorded commit must stay reachable from `master`, so merge such a PR with a merge

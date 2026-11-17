@@ -73,7 +73,7 @@ use crate::detect_eval::{
 use vardefm_dsp::prng::Prng;
 
 /// Error rate at which a point is recorded and gated.
-pub(crate) const TARGET_RATE: f32 = 0.1;
+const TARGET_RATE: f32 = 0.1;
 /// The gate measures this far either side of a level's recorded point, dB.
 const GATE_MARGIN_DB: f32 = 0.25;
 /// ... and this far for the header. Its curve falls only by about a factor of 1.5
@@ -124,7 +124,7 @@ const HEADERS_PER_BURST: u32 = 16;
 const HEADER_SEED: u32 = 0x4ead_0001;
 
 /// The recorded points, `perf/levels.toml`.
-pub(crate) const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
+const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,7 +133,7 @@ pub(crate) struct Baseline {
     /// One header point per mode and drive.
     header: Vec<Point>,
     /// One codeword point per mode and level.
-    pub(crate) level: Vec<Point>,
+    level: Vec<Point>,
 }
 
 /// How a baseline was made, so a change to it can be reproduced.
@@ -156,12 +156,12 @@ pub(crate) struct Source {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Point {
-    pub(crate) mode: String,
+    mode: String,
     /// The level; for the header, the lowest level sent at its drive.
-    pub(crate) level: u8,
-    pub(crate) name: String,
+    level: u8,
+    name: String,
     /// The level's drive, `Modem::tx_rms`.
-    pub(crate) drive: f32,
+    drive: f32,
     /// CNR at which the error rate crosses `TARGET_RATE`, dB.
     pub(crate) cnr_db: f32,
     /// The fine grid the crossing comes from, for review in diffs.
@@ -294,6 +294,13 @@ impl<'a> Case<'a> {
         Case { m, mode, target, level, ncw, truth }
     }
 
+    /// Bursts of `ncw` codewords at `level`, as the link also sends them: 0 for an
+    /// acknowledgement or poll, 1 for a connect request.
+    pub(crate) fn with_ncw(m: &'a Modem, mode: &'a str, level: u8, ncw: usize) -> Self {
+        let truth = true_position(m, mode, level, ncw);
+        Case { m, mode, target: Target::Level(level), level, ncw, truth }
+    }
+
     /// Failed decisions of trial `t` at `cnr` dB, from the true position: whether
     /// the header fails, or how many codewords do.
     fn errors(&self, cnr: f32, t: u32) -> u32 {
@@ -379,7 +386,7 @@ fn trial_header(level: u8, ncw: usize, t: u32) -> Header {
 /// `None` when the grid does not bracket the target. A waterfall bends down in log
 /// scale, so the chord lies below it and the crossing comes out slightly low; on
 /// the recorded grids the bias is well inside the gate's margin.
-pub(crate) fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
+fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
     let i = rates.windows(2).position(|w| w[0] >= target && w[1] < target)?;
     let (x0, x1, y0, y1) = (grid[i], grid[i + 1], rates[i], rates[i + 1]);
     let t =

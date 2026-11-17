@@ -243,13 +243,15 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   level's SNR ceiling (the clipping floor of its drive, measured in the simulator):
   `1/snr = 1/(channel · drive²) + 1/ceiling`. Thresholds (estimated SNR on a burst at that
   level, levels 0–6): −2, 1.5, 4.5, 7, 11, 15, 18 dB (level 0's is never used). The SNR
-  the receiver reports around each level's 10 % codeword error point is recorded in
-  `crates/vardefm-modem/perf/snr.toml` and checked by the `snr_gate` test; each threshold
-  plus 1 dB lies 0.5 to 2 dB above the recorded SNR at which its level reaches 1 % codeword
-  errors. After a
-  failed codeword the request drops at least one level below the burst's level. Each
-  unanswered burst lowers our own level by one. The called station starts at the level
-  it measured on the connect request.
+  the receiver reports around each level's 10 % codeword error point, and the SNR
+  predicted for each level from level-0 bursts, are recorded in
+  `crates/vardefm-modem/perf/snr.toml` and checked by the `snr_gate` test. Each threshold
+  plus 1 dB lies 0.5 to 2 dB above the recorded median SNR at which its level reaches
+  1 % codeword errors, where it lies nearest. That holds for medians only: the link acts
+  on single bursts, and at a level's 10 % codeword error point many single bursts give a
+  predicted SNR above its threshold. After a failed codeword the request drops at least
+  one level below the burst's level. Each unanswered burst lowers our own level by one.
+  The called station starts at the level it measured on the connect request.
 - **Retries:** an unanswered burst is resent after 1.2 s (plus a random back-off, and
   longer while the channel is busy). After 8 consecutive failures the link is lost.
 - **Keepalive:** a quiet link is probed with a POLL burst after 30 s (caller) or 45 s
