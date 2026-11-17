@@ -1,8 +1,10 @@
 [source]
 what = "SNR the receiver reports, and predicts from level-0 bursts, around each level's 10 % CER point"
-commit = "73edc11"
+commit = "7235189"
 command = "WRITE=1 TRIALS=200 cargo test --release -p vardefm-modem snr_sweep -- --ignored"
 min_bursts = 200
+tail_bursts = 1000
+codewords = 4
 levels_commit = "eb35213"
 
 [[point]]
