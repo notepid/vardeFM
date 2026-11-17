@@ -1,8 +1,8 @@
 [source]
 what = "SNR the receiver reports, and predicts from level-0 bursts, around each level's 10 % CER point"
-commit = "7235189"
-command = "WRITE=1 TRIALS=200 cargo test --release -p vardefm-modem snr_sweep -- --ignored"
-min_bursts = 200
+commit = "d93f102"
+command = "WRITE=1 TRIALS=300 cargo test --release -p vardefm-modem snr_sweep -- --ignored"
+min_bursts = 300
 tail_bursts = 1000
 codewords = 4
 levels_commit = "eb35213"
@@ -14,17 +14,17 @@ name = "BPSK 1/2"
 drive = 0.3
 cnr_db = 3.04
 offset_db = -0.5
-snr_db = -5.338
-sigma_db = 0.9
-bursts = 382
+snr_db = -5.336
+sigma_db = 0.905
+bursts = 375
 
 [point.from_data]
-median_db = -5.338
-q95_db = -4.018
+median_db = -5.336
+q95_db = -4.009
 q99_db = -3.635
-sigma_db = 0.9
-median_share = 0.5
-q95_share = 0.052
+sigma_db = 0.905
+median_share = 0.501
+q95_share = 0.051
 
 [point.from_short]
 median_db = -5.318
@@ -49,17 +49,17 @@ name = "BPSK 1/2"
 drive = 0.3
 cnr_db = 3.04
 offset_db = 0.0
-snr_db = -3.974
-sigma_db = 0.878
-bursts = 353
+snr_db = -3.972
+sigma_db = 0.882
+bursts = 363
 
 [point.from_data]
-median_db = -3.974
-q95_db = -2.734
+median_db = -3.972
+q95_db = -2.728
 q99_db = -2.083
-sigma_db = 0.878
+sigma_db = 0.882
 median_share = 0.501
-q95_share = 0.051
+q95_share = 0.052
 
 [point.from_short]
 median_db = -3.845
@@ -84,17 +84,17 @@ name = "BPSK 1/2"
 drive = 0.3
 cnr_db = 3.04
 offset_db = 0.5
-snr_db = -2.468
+snr_db = -2.463
 sigma_db = 0.784
-bursts = 290
+bursts = 300
 
 [point.from_data]
-median_db = -2.468
+median_db = -2.463
 q95_db = -1.435
-q99_db = -0.951
+q99_db = -1.055
 sigma_db = 0.784
 median_share = 0.5
-q95_share = 0.052
+q95_share = 0.053
 
 [point.from_short]
 median_db = -2.456
@@ -119,17 +119,17 @@ name = "BPSK 1/2"
 drive = 0.3
 cnr_db = 3.04
 offset_db = 1.0
-snr_db = -0.79
-sigma_db = 0.802
-bursts = 297
+snr_db = -0.796
+sigma_db = 0.805
+bursts = 300
 
 [point.from_data]
-median_db = -0.79
-q95_db = 0.293
-q99_db = 0.471
-sigma_db = 0.802
-median_share = 0.502
-q95_share = 0.051
+median_db = -0.796
+q95_db = 0.264
+q99_db = 0.451
+sigma_db = 0.805
+median_share = 0.5
+q95_share = 0.053
 
 [point.from_short]
 median_db = -0.751
@@ -154,17 +154,17 @@ name = "QPSK 1/2"
 drive = 0.3
 cnr_db = 4.17
 offset_db = -0.5
-snr_db = -2.07
-sigma_db = 0.872
-bursts = 345
+snr_db = -2.065
+sigma_db = 0.859
+bursts = 341
 
 [point.from_data]
-median_db = -2.112
+median_db = -2.15
 q95_db = -0.923
 q99_db = -0.496
-sigma_db = 0.795
+sigma_db = 0.813
 median_share = 0.501
-q95_share = 0.052
+q95_share = 0.053
 
 [point.from_short]
 median_db = -1.966
@@ -189,17 +189,17 @@ name = "QPSK 1/2"
 drive = 0.3
 cnr_db = 4.17
 offset_db = 0.0
-snr_db = -0.351
-sigma_db = 0.58
-bursts = 200
+snr_db = -0.352
+sigma_db = 0.618
+bursts = 300
 
 [point.from_data]
-median_db = -0.429
-q95_db = 0.582
-q99_db = 0.943
-sigma_db = 0.663
+median_db = -0.482
+q95_db = 0.561
+q99_db = 0.806
+sigma_db = 0.729
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = -0.352
@@ -224,17 +224,17 @@ name = "QPSK 1/2"
 drive = 0.3
 cnr_db = 4.17
 offset_db = 0.5
-snr_db = 1.352
-sigma_db = 0.627
-bursts = 200
+snr_db = 1.348
+sigma_db = 0.641
+bursts = 300
 
 [point.from_data]
-median_db = 1.285
-q95_db = 2.063
-q99_db = 2.422
-sigma_db = 0.563
+median_db = 1.235
+q95_db = 2.059
+q99_db = 2.325
+sigma_db = 0.596
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 1.341
@@ -259,17 +259,17 @@ name = "QPSK 1/2"
 drive = 0.3
 cnr_db = 4.17
 offset_db = 1.0
-snr_db = 2.922
-sigma_db = 0.537
-bursts = 200
+snr_db = 2.955
+sigma_db = 0.482
+bursts = 300
 
 [point.from_data]
-median_db = 2.954
-q95_db = 3.639
-q99_db = 3.849
-sigma_db = 0.538
+median_db = 2.948
+q95_db = 3.651
+q99_db = 4.038
+sigma_db = 0.542
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 2.966
@@ -295,16 +295,16 @@ drive = 0.3
 cnr_db = 5.42
 offset_db = -0.5
 snr_db = 2.199
-sigma_db = 0.518
-bursts = 200
+sigma_db = 0.526
+bursts = 300
 
 [point.from_data]
-median_db = 2.178
-q95_db = 2.859
+median_db = 2.171
+q95_db = 2.921
 q99_db = 3.164
-sigma_db = 0.531
+sigma_db = 0.513
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 2.141
@@ -329,17 +329,17 @@ name = "QPSK 3/4"
 drive = 0.3
 cnr_db = 5.42
 offset_db = 0.0
-snr_db = 3.703
-sigma_db = 0.474
-bursts = 200
+snr_db = 3.709
+sigma_db = 0.453
+bursts = 300
 
 [point.from_data]
-median_db = 3.719
-q95_db = 4.424
-q99_db = 4.676
-sigma_db = 0.527
+median_db = 3.726
+q95_db = 4.42
+q99_db = 4.666
+sigma_db = 0.515
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 3.724
@@ -364,17 +364,17 @@ name = "QPSK 3/4"
 drive = 0.3
 cnr_db = 5.42
 offset_db = 0.5
-snr_db = 5.31
-sigma_db = 0.383
-bursts = 200
+snr_db = 5.312
+sigma_db = 0.387
+bursts = 300
 
 [point.from_data]
-median_db = 5.296
-q95_db = 6.021
+median_db = 5.304
+q95_db = 6.04
 q99_db = 6.345
-sigma_db = 0.396
+sigma_db = 0.406
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 5.308
@@ -399,17 +399,17 @@ name = "QPSK 3/4"
 drive = 0.3
 cnr_db = 5.42
 offset_db = 1.0
-snr_db = 6.962
-sigma_db = 0.333
-bursts = 200
+snr_db = 6.908
+sigma_db = 0.335
+bursts = 300
 
 [point.from_data]
-median_db = 6.847
-q95_db = 7.451
-q99_db = 7.67
-sigma_db = 0.377
+median_db = 6.836
+q95_db = 7.441
+q99_db = 7.651
+sigma_db = 0.35
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 6.864
@@ -434,17 +434,17 @@ name = "16QAM 1/2"
 drive = 0.3
 cnr_db = 6.26
 offset_db = -0.5
-snr_db = 4.878
-sigma_db = 0.592
-bursts = 200
+snr_db = 4.872
+sigma_db = 0.575
+bursts = 300
 
 [point.from_data]
-median_db = 4.894
-q95_db = 5.545
-q99_db = 5.686
-sigma_db = 0.434
+median_db = 4.839
+q95_db = 5.529
+q99_db = 5.669
+sigma_db = 0.455
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 4.827
@@ -469,17 +469,17 @@ name = "16QAM 1/2"
 drive = 0.3
 cnr_db = 6.26
 offset_db = 0.0
-snr_db = 6.334
-sigma_db = 0.473
-bursts = 200
+snr_db = 6.347
+sigma_db = 0.51
+bursts = 300
 
 [point.from_data]
-median_db = 6.358
-q95_db = 7.076
-q99_db = 7.201
-sigma_db = 0.439
+median_db = 6.372
+q95_db = 7.049
+q99_db = 7.292
+sigma_db = 0.415
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 6.394
@@ -504,17 +504,17 @@ name = "16QAM 1/2"
 drive = 0.3
 cnr_db = 6.26
 offset_db = 0.5
-snr_db = 7.714
-sigma_db = 0.424
-bursts = 200
+snr_db = 7.718
+sigma_db = 0.462
+bursts = 300
 
 [point.from_data]
-median_db = 7.722
+median_db = 7.686
 q95_db = 8.149
-q99_db = 8.366
-sigma_db = 0.313
+q99_db = 8.349
+sigma_db = 0.299
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 7.705
@@ -539,17 +539,17 @@ name = "16QAM 1/2"
 drive = 0.3
 cnr_db = 6.26
 offset_db = 1.0
-snr_db = 8.755
-sigma_db = 0.419
-bursts = 200
+snr_db = 8.792
+sigma_db = 0.444
+bursts = 300
 
 [point.from_data]
-median_db = 8.774
-q95_db = 9.214
+median_db = 8.766
+q95_db = 9.202
 q99_db = 9.43
-sigma_db = 0.309
+sigma_db = 0.329
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 8.772
@@ -574,17 +574,17 @@ name = "16QAM 3/4"
 drive = 0.3
 cnr_db = 8.07
 offset_db = -0.5
-snr_db = 9.32
-sigma_db = 0.38
-bursts = 200
+snr_db = 9.314
+sigma_db = 0.382
+bursts = 300
 
 [point.from_data]
-median_db = 9.344
+median_db = 9.355
 q95_db = 9.793
-q99_db = 9.933
-sigma_db = 0.273
+q99_db = 9.919
+sigma_db = 0.281
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 9.34
@@ -609,17 +609,17 @@ name = "16QAM 3/4"
 drive = 0.3
 cnr_db = 8.07
 offset_db = 0.0
-snr_db = 10.23
-sigma_db = 0.347
-bursts = 200
+snr_db = 10.221
+sigma_db = 0.365
+bursts = 300
 
 [point.from_data]
-median_db = 10.182
-q95_db = 10.564
-q99_db = 10.778
-sigma_db = 0.242
+median_db = 10.186
+q95_db = 10.605
+q99_db = 10.907
+sigma_db = 0.262
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 10.226
@@ -644,17 +644,17 @@ name = "16QAM 3/4"
 drive = 0.3
 cnr_db = 8.07
 offset_db = 0.5
-snr_db = 10.897
-sigma_db = 0.371
-bursts = 200
+snr_db = 10.904
+sigma_db = 0.356
+bursts = 300
 
 [point.from_data]
-median_db = 10.888
-q95_db = 11.357
+median_db = 10.882
+q95_db = 11.355
 q99_db = 11.434
-sigma_db = 0.267
+sigma_db = 0.261
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 10.936
@@ -679,17 +679,17 @@ name = "16QAM 3/4"
 drive = 0.3
 cnr_db = 8.07
 offset_db = 1.0
-snr_db = 11.553
-sigma_db = 0.345
-bursts = 200
+snr_db = 11.555
+sigma_db = 0.329
+bursts = 300
 
 [point.from_data]
-median_db = 11.568
-q95_db = 11.917
+median_db = 11.547
+q95_db = 11.882
 q99_db = 11.986
 sigma_db = 0.206
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 11.579
@@ -714,17 +714,17 @@ name = "64QAM 2/3"
 drive = 0.25
 cnr_db = 12.73
 offset_db = -0.5
-snr_db = 13.787
-sigma_db = 0.24
-bursts = 200
+snr_db = 13.784
+sigma_db = 0.239
+bursts = 300
 
 [point.from_data]
-median_db = 13.573
-q95_db = 13.908
+median_db = 13.56
+q95_db = 13.898
 q99_db = 14.094
-sigma_db = 0.189
+sigma_db = 0.208
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 13.58
@@ -749,17 +749,17 @@ name = "64QAM 2/3"
 drive = 0.25
 cnr_db = 12.73
 offset_db = 0.0
-snr_db = 14.293
-sigma_db = 0.255
-bursts = 200
+snr_db = 14.29
+sigma_db = 0.26
+bursts = 300
 
 [point.from_data]
-median_db = 14.105
+median_db = 14.076
 q95_db = 14.423
-q99_db = 14.496
-sigma_db = 0.226
+q99_db = 14.586
+sigma_db = 0.218
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 14.067
@@ -784,17 +784,17 @@ name = "64QAM 2/3"
 drive = 0.25
 cnr_db = 12.73
 offset_db = 0.5
-snr_db = 14.782
-sigma_db = 0.254
-bursts = 200
+snr_db = 14.751
+sigma_db = 0.248
+bursts = 300
 
 [point.from_data]
-median_db = 14.557
-q95_db = 14.868
-q99_db = 15.011
-sigma_db = 0.188
+median_db = 14.544
+q95_db = 14.869
+q99_db = 15.019
+sigma_db = 0.21
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 14.531
@@ -819,17 +819,17 @@ name = "64QAM 2/3"
 drive = 0.25
 cnr_db = 12.73
 offset_db = 1.0
-snr_db = 15.257
-sigma_db = 0.227
-bursts = 200
+snr_db = 15.244
+sigma_db = 0.218
+bursts = 300
 
 [point.from_data]
-median_db = 15.069
+median_db = 15.064
 q95_db = 15.416
-q99_db = 15.519
-sigma_db = 0.246
+q99_db = 15.53
+sigma_db = 0.236
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 15.021
@@ -854,17 +854,17 @@ name = "64QAM 5/6"
 drive = 0.25
 cnr_db = 16.13
 offset_db = -0.5
-snr_db = 17.005
-sigma_db = 0.23
-bursts = 200
+snr_db = 17.006
+sigma_db = 0.237
+bursts = 300
 
 [point.from_data]
-median_db = 16.815
+median_db = 16.807
 q95_db = 17.27
 q99_db = 17.405
-sigma_db = 0.242
+sigma_db = 0.24
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 16.803
@@ -889,17 +889,17 @@ name = "64QAM 5/6"
 drive = 0.25
 cnr_db = 16.13
 offset_db = 0.0
-snr_db = 17.377
-sigma_db = 0.289
-bursts = 200
+snr_db = 17.395
+sigma_db = 0.267
+bursts = 300
 
 [point.from_data]
-median_db = 17.271
+median_db = 17.274
 q95_db = 17.7
-q99_db = 17.803
-sigma_db = 0.31
+q99_db = 17.833
+sigma_db = 0.304
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 17.267
@@ -924,17 +924,17 @@ name = "64QAM 5/6"
 drive = 0.25
 cnr_db = 16.13
 offset_db = 0.5
-snr_db = 17.899
-sigma_db = 0.235
-bursts = 200
+snr_db = 17.91
+sigma_db = 0.24
+bursts = 300
 
 [point.from_data]
-median_db = 17.722
-q95_db = 18.26
+median_db = 17.713
+q95_db = 18.247
 q99_db = 18.458
-sigma_db = 0.31
+sigma_db = 0.307
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 17.717
@@ -959,17 +959,17 @@ name = "64QAM 5/6"
 drive = 0.25
 cnr_db = 16.13
 offset_db = 1.0
-snr_db = 18.32
-sigma_db = 0.25
-bursts = 200
+snr_db = 18.335
+sigma_db = 0.252
+bursts = 300
 
 [point.from_data]
-median_db = 18.18
-q95_db = 18.665
-q99_db = 18.834
-sigma_db = 0.31
+median_db = 18.175
+q95_db = 18.729
+q99_db = 18.921
+sigma_db = 0.311
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 18.133
@@ -994,17 +994,17 @@ name = "BPSK 1/2"
 drive = 0.5
 cnr_db = 4.86
 offset_db = -0.5
-snr_db = -4.268
-sigma_db = 0.624
-bursts = 200
+snr_db = -4.274
+sigma_db = 0.632
+bursts = 300
 
 [point.from_data]
-median_db = -4.268
-q95_db = -3.443
-q99_db = -3.141
-sigma_db = 0.624
+median_db = -4.274
+q95_db = -3.417
+q99_db = -3.175
+sigma_db = 0.632
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = -4.079
@@ -1029,17 +1029,17 @@ name = "BPSK 1/2"
 drive = 0.5
 cnr_db = 4.86
 offset_db = 0.0
-snr_db = -2.713
-sigma_db = 0.509
-bursts = 200
+snr_db = -2.715
+sigma_db = 0.518
+bursts = 300
 
 [point.from_data]
-median_db = -2.713
-q95_db = -1.984
-q99_db = -1.744
-sigma_db = 0.509
+median_db = -2.715
+q95_db = -1.991
+q99_db = -1.739
+sigma_db = 0.518
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = -2.635
@@ -1064,17 +1064,17 @@ name = "BPSK 1/2"
 drive = 0.5
 cnr_db = 4.86
 offset_db = 0.5
-snr_db = -1.233
-sigma_db = 0.445
-bursts = 200
+snr_db = -1.266
+sigma_db = 0.4
+bursts = 300
 
 [point.from_data]
-median_db = -1.233
-q95_db = -0.639
+median_db = -1.266
+q95_db = -0.646
 q99_db = -0.493
-sigma_db = 0.445
+sigma_db = 0.4
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = -1.223
@@ -1099,17 +1099,17 @@ name = "BPSK 1/2"
 drive = 0.5
 cnr_db = 4.86
 offset_db = 1.0
-snr_db = 0.074
-sigma_db = 0.286
-bursts = 200
+snr_db = 0.079
+sigma_db = 0.291
+bursts = 300
 
 [point.from_data]
-median_db = 0.074
-q95_db = 0.536
-q99_db = 0.71
-sigma_db = 0.286
+median_db = 0.079
+q95_db = 0.555
+q99_db = 0.714
+sigma_db = 0.291
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 0.06
@@ -1134,17 +1134,17 @@ name = "QPSK 1/2"
 drive = 0.5
 cnr_db = 6.15
 offset_db = -0.5
-snr_db = -0.438
-sigma_db = 0.471
-bursts = 200
+snr_db = -0.403
+sigma_db = 0.477
+bursts = 300
 
 [point.from_data]
-median_db = -0.49
-q95_db = 0.018
-q99_db = 0.104
-sigma_db = 0.381
+median_db = -0.48
+q95_db = 0.065
+q99_db = 0.158
+sigma_db = 0.378
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = -0.403
@@ -1169,17 +1169,17 @@ name = "QPSK 1/2"
 drive = 0.5
 cnr_db = 6.15
 offset_db = 0.0
-snr_db = 0.724
-sigma_db = 0.435
-bursts = 200
+snr_db = 0.753
+sigma_db = 0.433
+bursts = 300
 
 [point.from_data]
-median_db = 0.736
-q95_db = 1.175
-q99_db = 1.402
-sigma_db = 0.303
+median_db = 0.748
+q95_db = 1.181
+q99_db = 1.355
+sigma_db = 0.299
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 0.719
@@ -1204,17 +1204,17 @@ name = "QPSK 1/2"
 drive = 0.5
 cnr_db = 6.15
 offset_db = 0.5
-snr_db = 1.693
-sigma_db = 0.367
-bursts = 200
+snr_db = 1.709
+sigma_db = 0.372
+bursts = 300
 
 [point.from_data]
-median_db = 1.718
+median_db = 1.711
 q95_db = 2.081
-q99_db = 2.146
-sigma_db = 0.248
+q99_db = 2.159
+sigma_db = 0.257
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 1.72
@@ -1239,17 +1239,17 @@ name = "QPSK 1/2"
 drive = 0.5
 cnr_db = 6.15
 offset_db = 1.0
-snr_db = 2.533
-sigma_db = 0.355
-bursts = 200
+snr_db = 2.531
+sigma_db = 0.344
+bursts = 300
 
 [point.from_data]
-median_db = 2.504
-q95_db = 2.889
+median_db = 2.528
+q95_db = 2.916
 q99_db = 3.059
-sigma_db = 0.256
+sigma_db = 0.234
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 2.527
@@ -1274,17 +1274,17 @@ name = "QPSK 3/4"
 drive = 0.5
 cnr_db = 8.01
 offset_db = -0.5
-snr_db = 3.153
-sigma_db = 0.307
-bursts = 200
+snr_db = 3.129
+sigma_db = 0.314
+bursts = 300
 
 [point.from_data]
-median_db = 3.108
-q95_db = 3.499
+median_db = 3.128
+q95_db = 3.482
 q99_db = 3.637
-sigma_db = 0.271
+sigma_db = 0.244
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 3.119
@@ -1309,17 +1309,17 @@ name = "QPSK 3/4"
 drive = 0.5
 cnr_db = 8.01
 offset_db = 0.0
-snr_db = 3.875
-sigma_db = 0.32
-bursts = 200
+snr_db = 3.872
+sigma_db = 0.338
+bursts = 300
 
 [point.from_data]
-median_db = 3.888
-q95_db = 4.24
-q99_db = 4.362
-sigma_db = 0.241
+median_db = 3.882
+q95_db = 4.243
+q99_db = 4.377
+sigma_db = 0.231
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 3.884
@@ -1344,17 +1344,17 @@ name = "QPSK 3/4"
 drive = 0.5
 cnr_db = 8.01
 offset_db = 0.5
-snr_db = 4.591
-sigma_db = 0.255
-bursts = 200
+snr_db = 4.586
+sigma_db = 0.267
+bursts = 300
 
 [point.from_data]
-median_db = 4.549
-q95_db = 4.905
+median_db = 4.546
+q95_db = 4.897
 q99_db = 5.003
-sigma_db = 0.219
+sigma_db = 0.209
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 4.579
@@ -1379,17 +1379,17 @@ name = "QPSK 3/4"
 drive = 0.5
 cnr_db = 8.01
 offset_db = 1.0
-snr_db = 5.212
-sigma_db = 0.241
-bursts = 200
+snr_db = 5.208
+sigma_db = 0.256
+bursts = 300
 
 [point.from_data]
-median_db = 5.187
+median_db = 5.201
 q95_db = 5.517
-q99_db = 5.61
-sigma_db = 0.185
+q99_db = 5.589
+sigma_db = 0.187
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 5.191
@@ -1414,17 +1414,17 @@ name = "16QAM 1/2"
 drive = 0.4
 cnr_db = 10.91
 offset_db = -0.5
-snr_db = 5.419
-sigma_db = 0.26
-bursts = 200
+snr_db = 5.397
+sigma_db = 0.303
+bursts = 300
 
 [point.from_data]
 median_db = 5.05
-q95_db = 5.339
-q99_db = 5.379
-sigma_db = 0.152
+q95_db = 5.332
+q99_db = 5.372
+sigma_db = 0.155
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 5.044
@@ -1449,17 +1449,17 @@ name = "16QAM 1/2"
 drive = 0.4
 cnr_db = 10.91
 offset_db = 0.0
-snr_db = 5.916
-sigma_db = 0.301
-bursts = 200
+snr_db = 5.944
+sigma_db = 0.315
+bursts = 300
 
 [point.from_data]
-median_db = 5.557
-q95_db = 5.847
-q99_db = 5.936
-sigma_db = 0.163
+median_db = 5.579
+q95_db = 5.829
+q99_db = 5.926
+sigma_db = 0.144
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 5.591
@@ -1485,16 +1485,16 @@ drive = 0.4
 cnr_db = 10.91
 offset_db = 0.5
 snr_db = 6.432
-sigma_db = 0.294
-bursts = 200
+sigma_db = 0.271
+bursts = 300
 
 [point.from_data]
-median_db = 6.107
-q95_db = 6.344
-q99_db = 6.431
-sigma_db = 0.173
+median_db = 6.105
+q95_db = 6.376
+q99_db = 6.449
+sigma_db = 0.151
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 6.082
@@ -1519,17 +1519,17 @@ name = "16QAM 1/2"
 drive = 0.4
 cnr_db = 10.91
 offset_db = 1.0
-snr_db = 6.972
-sigma_db = 0.256
-bursts = 200
+snr_db = 6.976
+sigma_db = 0.268
+bursts = 300
 
 [point.from_data]
 median_db = 6.623
-q95_db = 6.859
-q99_db = 6.98
-sigma_db = 0.174
+q95_db = 6.867
+q99_db = 7.003
+sigma_db = 0.181
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 6.609
@@ -1554,17 +1554,17 @@ name = "16QAM 3/4"
 drive = 0.4
 cnr_db = 14.95
 offset_db = -0.5
-snr_db = 9.546
-sigma_db = 0.263
-bursts = 200
+snr_db = 9.563
+sigma_db = 0.253
+bursts = 300
 
 [point.from_data]
-median_db = 9.187
-q95_db = 9.447
-q99_db = 9.526
+median_db = 9.193
+q95_db = 9.453
+q99_db = 9.595
 sigma_db = 0.167
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 9.182
@@ -1590,16 +1590,16 @@ drive = 0.4
 cnr_db = 14.95
 offset_db = 0.0
 snr_db = 10.028
-sigma_db = 0.224
-bursts = 200
+sigma_db = 0.234
+bursts = 300
 
 [point.from_data]
-median_db = 9.67
-q95_db = 9.936
-q99_db = 9.997
-sigma_db = 0.161
+median_db = 9.681
+q95_db = 9.924
+q99_db = 10.042
+sigma_db = 0.154
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 9.686
@@ -1624,17 +1624,17 @@ name = "16QAM 3/4"
 drive = 0.4
 cnr_db = 14.95
 offset_db = 0.5
-snr_db = 10.543
-sigma_db = 0.236
-bursts = 200
+snr_db = 10.536
+sigma_db = 0.238
+bursts = 300
 
 [point.from_data]
-median_db = 10.176
-q95_db = 10.429
-q99_db = 10.588
-sigma_db = 0.155
+median_db = 10.181
+q95_db = 10.428
+q99_db = 10.517
+sigma_db = 0.158
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 10.203
@@ -1660,16 +1660,16 @@ drive = 0.4
 cnr_db = 14.95
 offset_db = 1.0
 snr_db = 11.002
-sigma_db = 0.261
-bursts = 200
+sigma_db = 0.258
+bursts = 300
 
 [point.from_data]
-median_db = 10.678
+median_db = 10.667
 q95_db = 10.975
-q99_db = 11.115
-sigma_db = 0.17
+q99_db = 11.092
+sigma_db = 0.171
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 10.663
@@ -1694,17 +1694,17 @@ name = "64QAM 2/3"
 drive = 0.3
 cnr_db = 20.61
 offset_db = -0.5
-snr_db = 13.034
-sigma_db = 0.286
-bursts = 200
+snr_db = 13.062
+sigma_db = 0.282
+bursts = 300
 
 [point.from_data]
-median_db = 12.587
-q95_db = 13.102
-q99_db = 13.213
-sigma_db = 0.305
+median_db = 12.603
+q95_db = 13.114
+q99_db = 13.248
+sigma_db = 0.31
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 12.602
@@ -1729,17 +1729,17 @@ name = "64QAM 2/3"
 drive = 0.3
 cnr_db = 20.61
 offset_db = 0.0
-snr_db = 13.499
-sigma_db = 0.277
-bursts = 200
+snr_db = 13.558
+sigma_db = 0.271
+bursts = 300
 
 [point.from_data]
-median_db = 13.133
+median_db = 13.137
 q95_db = 13.717
-q99_db = 13.86
-sigma_db = 0.342
+q99_db = 13.988
+sigma_db = 0.337
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 13.131
@@ -1764,17 +1764,17 @@ name = "64QAM 2/3"
 drive = 0.3
 cnr_db = 20.61
 offset_db = 0.5
-snr_db = 14.048
-sigma_db = 0.319
-bursts = 200
+snr_db = 14.034
+sigma_db = 0.302
+bursts = 300
 
 [point.from_data]
-median_db = 13.671
-q95_db = 14.217
-q99_db = 14.344
-sigma_db = 0.417
+median_db = 13.668
+q95_db = 14.241
+q99_db = 14.423
+sigma_db = 0.41
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 13.609
@@ -1799,17 +1799,17 @@ name = "64QAM 2/3"
 drive = 0.3
 cnr_db = 20.61
 offset_db = 1.0
-snr_db = 14.559
-sigma_db = 0.308
-bursts = 200
+snr_db = 14.523
+sigma_db = 0.315
+bursts = 300
 
 [point.from_data]
-median_db = 14.144
-q95_db = 14.706
-q99_db = 14.838
-sigma_db = 0.403
+median_db = 14.134
+q95_db = 14.77
+q99_db = 15.048
+sigma_db = 0.391
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 14.135
@@ -1834,17 +1834,17 @@ name = "64QAM 5/6"
 drive = 0.3
 cnr_db = 24.18
 offset_db = -0.5
-snr_db = 16.532
-sigma_db = 0.256
-bursts = 200
+snr_db = 16.519
+sigma_db = 0.265
+bursts = 300
 
 [point.from_data]
-median_db = 16.27
-q95_db = 17.389
-q99_db = 17.684
-sigma_db = 0.659
+median_db = 16.295
+q95_db = 17.436
+q99_db = 17.732
+sigma_db = 0.64
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 16.257
@@ -1869,17 +1869,17 @@ name = "64QAM 5/6"
 drive = 0.3
 cnr_db = 24.18
 offset_db = 0.0
-snr_db = 17.036
-sigma_db = 0.303
-bursts = 200
+snr_db = 17.06
+sigma_db = 0.286
+bursts = 300
 
 [point.from_data]
-median_db = 16.846
-q95_db = 17.992
+median_db = 16.881
+q95_db = 18.046
 q99_db = 18.414
-sigma_db = 0.664
+sigma_db = 0.725
 median_share = 0.5
-q95_share = 0.055
+q95_share = 0.053
 
 [point.from_short]
 median_db = 16.767
@@ -1905,16 +1905,16 @@ drive = 0.3
 cnr_db = 24.18
 offset_db = 0.5
 snr_db = 17.554
-sigma_db = 0.251
-bursts = 351
+sigma_db = 0.25
+bursts = 346
 
 [point.from_data]
-median_db = 17.392
+median_db = 17.396
 q95_db = 18.841
 q99_db = 19.393
-sigma_db = 0.86
-median_share = 0.501
-q95_share = 0.051
+sigma_db = 0.874
+median_share = 0.5
+q95_share = 0.052
 
 [point.from_short]
 median_db = 17.297
