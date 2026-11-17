@@ -125,8 +125,8 @@ your user needs to be in group `gpio` (the default user already is):
      25 kHz channel.
    - `--mode wide` needs the radio set to wide and a 25 kHz channel. On any
      setting it spills into neighbouring 12.5 kHz channels. On a radio set to
-     narrow, with the 6–9 kHz receive filters such radios typically have, the
-     faster levels stop working.
+     narrow, with a receive filter of 8–9 kHz (as in radios we checked), the
+     fastest level stops working and the others need several dB more signal.
    - On a 12.5 kHz channel with only the data port available, use `--mode narrow`
      on the data port, on both stations, with the radio set to narrow. Set the
      deviation in step 3 to 2.5 kHz with the radio already set to narrow (a radio

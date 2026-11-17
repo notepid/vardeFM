@@ -172,6 +172,13 @@ impl FmChannelConfig {
     pub fn cn0_db(&self, cnr_db: f32) -> f32 {
         cnr_db + 10.0 * self.if_bandwidth_hz.log10()
     }
+
+    /// Standard deviation of each of the I and Q noise samples that [`receive`]
+    /// adds for `cnr_db`: complex noise of N0 = 1 / (CNR · IF) per Hz across fs,
+    /// against a unit carrier, which is the C/N0 that [`Self::cn0_db`] reports.
+    pub fn noise_sigma(&self, cnr_db: f32) -> f32 {
+        (10f32.powf(-cnr_db / 10.0) * self.fs / self.if_bandwidth_hz / 2.0).sqrt()
+    }
 }
 
 /// A channel preset: its name and its constructor.
@@ -253,6 +260,25 @@ pub fn modulate(cfg: &FmChannelConfig, audio: &[f32]) -> Rf {
     Rf { samples, carrier }
 }
 
+/// `rf` with the receiver's RF noise for `cfg.cnr_db`, seeded by `cfg.seed`.
+pub fn add_noise(cfg: &FmChannelConfig, rf: &Rf) -> Vec<Complex32> {
+    let mut rng = StdRng::seed_from_u64(cfg.seed);
+    let sigma = cfg.cnr_db.map(|c| cfg.noise_sigma(c));
+    let normal = Normal::new(0.0f32, 1.0).unwrap();
+    (0..rf.samples.len())
+        .map(|i| {
+            let mut z = rf.samples[i];
+            if let Some(s) = sigma {
+                z += Complex32::new(normal.sample(&mut rng), normal.sample(&mut rng)) * s;
+            } else if !rf.carrier.contains(&i) {
+                // A tiny noise floor keeps the discriminator defined with no carrier.
+                z += Complex32::new(normal.sample(&mut rng), normal.sample(&mut rng)) * 1e-3;
+            }
+            z
+        })
+        .collect()
+}
+
 /// The receiver: RF noise at `cfg.cnr_db`, IF filter, discriminator, de-emphasis,
 /// audio filter, squelch and sound-card clock.
 pub fn receive(cfg: &FmChannelConfig, rf: &Rf) -> Vec<f32> {
@@ -261,23 +287,7 @@ pub fn receive(cfg: &FmChannelConfig, rf: &Rf) -> Vec<f32> {
     let tail = (cfg.squelch_tail_s * fs) as usize;
     let total = rf.samples.len();
     let carrier = rf.carrier.clone();
-
-    // --- RF noise ---
-    let mut rng = StdRng::seed_from_u64(cfg.seed);
-    let sigma = cfg.cnr_db.map(|c| (10f32.powf(-c / 10.0) * fs / cfg.if_bandwidth_hz / 2.0).sqrt());
-    let normal = Normal::new(0.0f32, 1.0).unwrap();
-    let rf: Vec<Complex32> = (0..total)
-        .map(|i| {
-            let mut z = rf.samples[i];
-            if let Some(s) = sigma {
-                z += Complex32::new(normal.sample(&mut rng), normal.sample(&mut rng)) * s;
-            } else if !carrier.contains(&i) {
-                // A tiny noise floor keeps the discriminator defined with no carrier.
-                z += Complex32::new(normal.sample(&mut rng), normal.sample(&mut rng)) * 1e-3;
-            }
-            z
-        })
-        .collect();
+    let rf = add_noise(cfg, rf);
 
     // --- Receiver: IF filter, discriminator, de-emphasis, audio filter ---
     let taps = design_lowpass_fir(129, cfg.if_bandwidth_hz / 2.0, fs);
@@ -315,6 +325,27 @@ pub fn receive(cfg: &FmChannelConfig, rf: &Rf) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The noise `receive` adds has the density that `cn0_db` reports: measured on a
+    /// steady unit carrier, 10 log10(1 / N0) matches C/N0 within 0.1 dB, for two
+    /// IF bandwidths and CNRs. Every threshold given as C/N0 rests on this.
+    #[test]
+    fn added_noise_has_the_reported_c_n0() {
+        let n = 1 << 18;
+        for (base, cnr) in [(FmChannelConfig::narrow(), 5.0), (FmChannelConfig::mic_25k(), 20.0)] {
+            let cfg = FmChannelConfig { cnr_db: Some(cnr), ..base };
+            let rf = Rf { samples: vec![Complex32::new(1.0, 0.0); n], carrier: 0..n };
+            let noisy = add_noise(&cfg, &rf);
+            let power: f64 = noisy.iter().map(|z| (z - 1.0).norm_sqr() as f64).sum::<f64>() / n as f64;
+            let measured = -10.0 * (power / cfg.fs as f64).log10();
+            let want = cfg.cn0_db(cnr) as f64;
+            assert!(
+                (measured - want).abs() < 0.1,
+                "IF {}: C/N0 {measured:.2} dB-Hz, want {want:.2}",
+                cfg.if_bandwidth_hz
+            );
+        }
+    }
 
     #[test]
     fn clean_tone_passes_through() {
