@@ -158,7 +158,7 @@ around those points (`crates/vardefm-modem/perf/snr.toml`), or a code's 1 % FER 
 (`crates/vardefm-fec/perf/ldpc.toml`), has moved. Times are from a 14-thread laptop:
 ```sh
 cargo test --release -p vardefm-modem level_gate -- --ignored --nocapture   # about 45 s
-cargo test --release -p vardefm-modem snr_gate -- --ignored --nocapture     # about 50 s
+cargo test --release -p vardefm-modem snr_gate -- --ignored --nocapture     # about 3 min
 cargo test --release -p vardefm-fec fer_gate -- --ignored --nocapture       # about 7 s
 ```
 A deliberate change records new points in the same PR. Commit the code first, so the
