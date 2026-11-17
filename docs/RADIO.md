@@ -108,6 +108,26 @@ your user needs to be in group `gpio` (the default user already is):
    Use `--mode wide` only with the radio's flat 9600-baud data port, on both
    stations. Stop with Ctrl-C; PTT is released on exit.
 
+   **The radio's wide/narrow setting.** Many radios have their own wide/narrow
+   (25 / 12.5 kHz channel) setting. It is not VardeFM's `--mode`; set it to suit
+   the channel you are on, on both stations.
+
+   - `--mode narrow` on the mic/speaker path fits a 12.5 kHz channel (about
+     7 kHz wide at 2.5 kHz deviation). Where 25 kHz channels are allowed, setting
+     the radio to wide makes the fastest speed levels work with a signal about
+     5 dB weaker; the robust levels hardly change. It then needs a 25 kHz channel.
+   - `--mode wide` needs the radio set to wide and a 25 kHz channel. On a radio
+     set to narrow the receiver's filter cuts the signal and the faster levels
+     stop working; and on any setting it spills into neighbouring 12.5 kHz channels.
+   - On a 12.5 kHz channel with only the data port available, use `--mode narrow`
+     on the data port, on both stations, with the radio set to narrow. Set the
+     deviation in step 3 to 2.5 kHz with the radio already set to narrow (some
+     radios halve the data-port deviation in narrow). Expect it to need about
+     1 dB more signal than the mic path at the robust levels and about 3 dB more at
+     the fastest.
+
+   These figures come from the FM channel simulator, not from radios.
+
 ## 3. Timing options
 
 | Option | Default | Meaning |
