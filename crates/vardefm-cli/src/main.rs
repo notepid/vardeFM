@@ -38,6 +38,10 @@ struct ModemArgs {
     /// Leader before each frame, seconds (must exceed the radio's key-up time)
     #[arg(long, default_value_t = 0.1)]
     txdelay: f32,
+    /// Simulated radio channel instead of the mode's own (sim and sweep only):
+    /// mic-12k5, mic-25k, data-25k or data-12k5, optionally with :dev=HZ and :if=HZ
+    #[arg(long)]
+    channel: Option<String>,
 }
 
 impl ModemArgs {
@@ -51,6 +55,21 @@ impl ModemArgs {
         }
         let m = Modulation::from_name(&self.modulation).unwrap_or_else(|| die("unknown modulation"));
         (Ofdm::new(p), m)
+    }
+
+    /// Stops a command that has no simulated channel when `--channel` is given.
+    fn no_channel(&self) {
+        if self.channel.is_some() {
+            die("--channel applies to sim and sweep only");
+        }
+    }
+
+    /// The simulated channel: `--channel`, or the mode's own.
+    fn channel(&self) -> FmChannelConfig {
+        match &self.channel {
+            Some(spec) => FmChannelConfig::parse_channel(spec).unwrap_or_else(|e| die(&e)),
+            None => FmChannelConfig::by_name(&self.mode).unwrap_or_else(|| die("unknown mode")),
+        }
     }
 }
 
@@ -302,7 +321,7 @@ fn main() {
     match cli.cmd {
         Cmd::Sim { modem, cnr, frames, ppm, keyup } => {
             let (ofdm, m) = modem.build();
-            let mut cfg = FmChannelConfig::by_name(&modem.mode).unwrap();
+            let mut cfg = modem.channel();
             cfg.cnr_db = cnr;
             cfg.clock_offset_ppm = ppm;
             cfg.keyup_delay_s = keyup;
@@ -326,7 +345,15 @@ fn main() {
         Cmd::Sweep { modem, frames, ppm, keyup } => {
             let (ofdm, _) = modem.build();
             let cnrs = [6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0, 40.0];
-            println!("mode={} symbols/frame={} ppm={} frames/point={}", modem.mode, modem.symbols, ppm, frames);
+            let channel = modem.channel();
+            println!(
+                "mode={} channel={} symbols/frame={} ppm={} frames/point={}",
+                modem.mode,
+                modem.channel.as_deref().unwrap_or("own"),
+                modem.symbols,
+                ppm,
+                frames
+            );
             print!("{:>8} {:>8}", "mod", "raw b/s");
             for c in cnrs {
                 print!(" {:>8}", format!("{c}dB"));
@@ -336,7 +363,7 @@ fn main() {
             for m in Modulation::ALL {
                 print!("{:>8} {:>8.0}", m.name(), raw_rate(&ofdm, m, modem.symbols));
                 for (ci, &c) in cnrs.iter().enumerate() {
-                    let mut cfg = FmChannelConfig::by_name(&modem.mode).unwrap();
+                    let mut cfg = channel.clone();
                     cfg.cnr_db = Some(c);
                     cfg.clock_offset_ppm = ppm;
                     cfg.keyup_delay_s = keyup;
@@ -355,6 +382,7 @@ fn main() {
             println!();
         }
         Cmd::TxWav { modem, frames, out } => {
+            modem.no_channel();
             let (ofdm, m) = modem.build();
             let gap = vec![0f32; (ofdm.p.fs * 0.5) as usize];
             let mut audio = gap.clone();
@@ -486,6 +514,7 @@ fn main() {
             sp.wait();
         }
         Cmd::RxWav { modem, input } => {
+            modem.no_channel();
             let (ofdm, m) = modem.build();
             let (fs, rx) = read_wav(&input).unwrap_or_else(|e| die(&e.to_string()));
             if fs != ofdm.p.fs as u32 {
