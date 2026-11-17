@@ -204,11 +204,13 @@ fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t
 /// layout is fixed by level and size), so one noiseless copy gives it for every trial.
 pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
     true_position_on(m, &FmChannelConfig::by_name(mode).unwrap(), level, ncw)
+        .expect("burst not found on a clean channel")
 }
 
-/// As [`true_position`], over channel `channel`.
-pub(crate) fn true_position_on(m: &Modem, channel: &FmChannelConfig, level: u8, ncw: usize) -> usize {
-    clean_position(m, &clean_copy_on(m, channel, level, ncw, 0).1)
+/// As [`true_position`], over channel `channel`; `None` when the burst is not
+/// found even without noise, as on a channel too narrow for the mode.
+pub(crate) fn true_position_on(m: &Modem, channel: &FmChannelConfig, level: u8, ncw: usize) -> Option<usize> {
+    m.ofdm.detect(&clean_copy_on(m, channel, level, ncw, 0).1, 0)
 }
 
 /// The true position in `rx`, a noiseless copy from [`clean_copy`]: where the

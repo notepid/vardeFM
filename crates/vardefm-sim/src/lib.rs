@@ -138,8 +138,13 @@ impl FmChannelConfig {
         let name = parts.next().unwrap_or_default().trim();
         let mut cfg = Self::by_channel(name)
             .ok_or_else(|| format!("unknown channel {name:?} in {spec:?} (one of {})", CHANNELS.join(", ")))?;
+        let mut seen = Vec::new();
         for part in parts {
             let (key, value) = part.split_once('=').ok_or_else(|| format!("{spec:?}: {part:?} is not key=value"))?;
+            if seen.contains(&key.trim()) {
+                return Err(format!("{spec:?}: {} is given twice", key.trim()));
+            }
+            seen.push(key.trim());
             let hz: f32 = value.trim().parse().map_err(|_| format!("{spec:?}: {value:?} is not a number"))?;
             if !(hz.is_finite() && hz > 0.0) {
                 return Err(format!("{spec:?}: {key} must be above 0 Hz"));
@@ -376,9 +381,15 @@ mod tests {
         assert_eq!((c.deviation_hz, c.if_bandwidth_hz, c.tx_emphasis_us), (2000.0, 8000.0, None));
         let n = FmChannelConfig::parse_channel("mic-12k5").unwrap();
         assert_eq!((n.deviation_hz, n.if_bandwidth_hz), (2500.0, 11_000.0));
-        for bad in
-            ["narrow", "mic-12k5:dev", "mic-12k5:dev=x", "mic-12k5:dev=-1", "mic-12k5:bw=9000", "data-25k:dev=9000"]
-        {
+        for bad in [
+            "narrow",
+            "mic-12k5:dev",
+            "mic-12k5:dev=x",
+            "mic-12k5:dev=-1",
+            "mic-12k5:bw=9000",
+            "data-25k:dev=9000",
+            "mic-12k5:dev=2000:dev=3000",
+        ] {
             assert!(FmChannelConfig::parse_channel(bad).is_err(), "{bad} parsed");
         }
     }

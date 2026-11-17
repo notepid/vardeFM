@@ -78,6 +78,8 @@ impl Spectrum {
     /// `(1 - fraction) / 2` of the power lies each (ITU-R SM.328), as (low, high) Hz,
     /// interpolated within a bin.
     pub fn occupied(&self, fraction: f64) -> (f32, f32) {
+        // At 0 or 1 a tail holds no power and its edge is undefined.
+        assert!(0.0 < fraction && fraction < 1.0, "fraction {fraction} must lie strictly between 0 and 1");
         let total = self.total();
         let tail = (1.0 - fraction) / 2.0 * total;
         let edge = |bins: &mut dyn Iterator<Item = usize>, sign: f32| {
