@@ -81,7 +81,7 @@
 //! `WRITE=1 cargo test --release -p vardefm-modem snr_sweep -- --ignored --nocapture`
 //!
 //! Environment: `MODES` (narrow,wide), `LEVELS` (0,1,..,6), `TRIALS` (bursts per
-//! point at least: 100 for the gate, 200 for the sweep), `WRITE` (sweep only).
+//! point at least: 100 for the gate, 300 for the sweep), `WRITE` (sweep only).
 
 use super::*;
 use crate::detect_eval::{env_flag, env_list, env_modes, env_or, modem, on_every_core, through_channel};
@@ -112,9 +112,10 @@ const TAIL_BURSTS: u32 = 1000;
 /// clipping ceilings there); this leaves room for a re-recording's noise and fails a
 /// bias half a dB larger.
 const PREDICT_TOLERANCE_DB: f32 = 0.75;
-/// Bursts per point of the sweep at least. A point whose per-burst SNR scatters more
-/// gets more (`bursts_for`).
-const RECORD_BURSTS: u32 = 200;
+/// Bursts per point of the sweep at least, and so of the gate. A point whose per-burst
+/// SNR scatters more gets more (`bursts_for`). At 200, the median at narrow level 1's
+/// point scattered 25 % more than `bursts_for` assumes (`median_noise_fits_the_margin`).
+const RECORD_BURSTS: u32 = 300;
 /// Most bursts per point that a scatter may ask for: one that needs more is a change
 /// to look at. `TRIALS` may ask for more.
 const MAX_BURSTS: u32 = 2000;
