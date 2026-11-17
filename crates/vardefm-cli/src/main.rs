@@ -347,9 +347,10 @@ fn main() {
             let cnrs = [6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0, 40.0];
             let channel = modem.channel();
             println!(
-                "mode={} channel={} symbols/frame={} ppm={} frames/point={}",
+                "mode={} channel={} IF={} Hz symbols/frame={} ppm={} frames/point={}",
                 modem.mode,
                 modem.channel.as_deref().unwrap_or("own"),
+                channel.if_bandwidth_hz,
                 modem.symbols,
                 ppm,
                 frames
@@ -357,6 +358,13 @@ fn main() {
             print!("{:>8} {:>8}", "mod", "raw b/s");
             for c in cnrs {
                 print!(" {:>8}", format!("{c}dB"));
+            }
+            println!();
+            // CNR is in the channel's own IF bandwidth; C/N0 compares channels at
+            // equal signal strength.
+            print!("{:>8} {:>8}", "C/N0", "dB-Hz");
+            for c in cnrs {
+                print!(" {:>8.1}", channel.cn0_db(c));
             }
             println!();
             let mut snr_row = Vec::new();

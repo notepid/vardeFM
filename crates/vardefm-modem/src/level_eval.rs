@@ -280,7 +280,7 @@ struct Case<'a> {
     mode: &'a str,
     /// The channel, and its name when it is not the mode's own.
     channel: FmChannelConfig,
-    on: Option<&'a str>,
+    channel_name: Option<&'a str>,
     target: Target,
     /// The level of the bursts sent.
     level: u8,
@@ -294,23 +294,36 @@ struct Case<'a> {
 impl<'a> Case<'a> {
     /// `target` of `mode` on the mode's own channel.
     fn new(m: &'a Modem, mode: &'a str, target: Target) -> Self {
-        Self::on(m, mode, None, FmChannelConfig::by_name(mode).unwrap(), target)
+        Self::on_channel(m, mode, None, FmChannelConfig::by_name(mode).unwrap(), target)
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// `target` of `mode` on `channel`, named `on` when it is not the mode's own.
-    fn on(m: &'a Modem, mode: &'a str, on: Option<&'a str>, channel: FmChannelConfig, target: Target) -> Self {
+    /// `target` of `mode` on `channel`, named `channel_name` when it is not the
+    /// mode's own. Fails when the burst is not found even on the noiseless channel.
+    fn on_channel(
+        m: &'a Modem,
+        mode: &'a str,
+        channel_name: Option<&'a str>,
+        channel: FmChannelConfig,
+        target: Target,
+    ) -> Result<Self, String> {
         let level = target.level();
         let ncw = match target {
             Target::Header(_) => 1,
             Target::Level(l) => m.max_ncw(l).min(CODEWORDS),
         };
-        let truth = true_position_on(m, &channel, level, ncw);
-        Case { m, mode, channel, on, target, level, ncw, truth }
+        let label = |n: Option<&str>| match n {
+            Some(n) => format!("{} on {n}", target.label(mode)),
+            None => target.label(mode),
+        };
+        let truth = true_position_on(m, &channel, level, ncw)
+            .ok_or_else(|| format!("{}: burst not found on the noiseless channel", label(channel_name)))?;
+        Ok(Case { m, mode, channel, channel_name, target, level, ncw, truth })
     }
 
     fn label(&self) -> String {
-        match self.on {
-            Some(on) => format!("{} on {on}", self.target.label(self.mode)),
+        match self.channel_name {
+            Some(n) => format!("{} on {n}", self.target.label(self.mode)),
             None => self.target.label(self.mode),
         }
     }
@@ -569,13 +582,22 @@ fn level_sweep() {
             // its kind.
             let (mut header_start, mut level_start) = (0i32, 0i32);
             for target in Target::all(&m, &specs) {
-                let case = Case::on(&m, mode, name, channel.clone(), target);
                 let (list, start) = match target {
                     Target::Header(_) => (&mut header, &mut header_start),
                     Target::Level(_) => (&mut level, &mut level_start),
                 };
                 // On the modes' own channels a point that cannot be measured stops the
                 // run; on others it is a result, and the sweep goes on.
+                let case = match Case::on_channel(&m, mode, name, channel.clone(), target) {
+                    Ok(case) => case,
+                    Err(e) if channels.is_empty() => panic!("{e}"),
+                    Err(e) => {
+                        println!("NO POINT: {e}");
+                        let label = format!("{} on {}", target.label(mode), name.unwrap_or(mode));
+                        summary.push(format!("  {label:<50} drive {:.2}  no point", m.tx_rms(target.level())));
+                        continue;
+                    }
+                };
                 let (p, c) = match sweep(&case, *start, bursts) {
                     Ok(pc) => pc,
                     Err(e) if channels.is_empty() => panic!("{e}"),
