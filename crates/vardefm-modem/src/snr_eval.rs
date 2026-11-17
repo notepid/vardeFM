@@ -43,14 +43,26 @@
 //!
 //! `perf/snr.toml` holds the points. `snr_gate` measures them at `GATE_OFFSETS_DB` on
 //! fresh bursts and fails when a median has moved from the recorded value by more
-//! than `SNR_GATE_MARGIN_DB`, or a 95th percentile by more than
-//! `QUANTILE_GATE_MARGIN_DB`. Each point is recorded and gated over enough bursts that
-//! the noise of both values would stay inside those margins at 3 sigma: for the
-//! medians if the per-burst estimate were normal (`bursts_for`), for the percentiles
-//! from a bootstrap of the recorded bursts (`quantile_se`). Both are estimates, not
-//! bounds. The 99th percentiles are recorded, not gated. The link's thresholds are
-//! checked against the recorded points by `thresholds_lie_above_recorded_snr` in
-//! vardefm-link.
+//! than `SNR_GATE_MARGIN_DB`, over enough bursts that the noise of both medians would
+//! stay inside that margin at 3 sigma if the per-burst estimate were normal
+//! (`bursts_for`); that is an estimate, not a bound.
+//!
+//! The connect request's and the header-only burst's predictions are gated in share,
+//! not in dB. The sweep records, over `TAIL_BURSTS` bursts, the median and 95th
+//! percentile and the share of bursts at or above each; the gate measures that share
+//! on as many fresh bursts and fails when it lies more than 3 sigma of the
+//! difference of two binomial shares from the recorded one (`share_tolerance`). Values
+//! in dB are no measure where the prediction is clamped: at wide levels 5 and 6 the
+//! header-only bursts' prediction splits into a cluster at the level's ceiling and the
+//! rest, so its percentiles jump between the two and its scatter asks for more bursts
+//! than `MAX_BURSTS`. At wide level 6 more than 5 % sit at the ceiling, so the 95th
+//! percentile is the ceiling itself and its recorded share is that cluster's. A share
+//! is binomial whatever the distribution, so its noise is known. The data burst's
+//! percentiles come from the median's bursts and are recorded only; so are all 99th
+//! percentiles.
+//!
+//! The link's thresholds are checked against the recorded points by
+//! `thresholds_lie_above_recorded_snr` in vardefm-link.
 //!
 //! `cargo test --release -p vardefm-modem snr_gate -- --ignored --nocapture`
 //!
@@ -68,7 +80,6 @@
 use super::*;
 use crate::detect_eval::{env_flag, env_list, env_modes, env_or, modem, on_every_core, through_channel};
 use crate::level_eval::{self, trial_burst, Case, Target, ALL_MODES, GATE_BURSTS, GATE_FIRST_TRIAL};
-use vardefm_dsp::prng::Prng;
 
 /// CNRs the sweep records, relative to a level's 10 % codeword error point, dB. They
 /// span the CNR at which the level reaches 1 % CER, where the link's thresholds sit.
@@ -79,13 +90,14 @@ const GATE_OFFSETS_DB: [f32; 2] = [0.0, 0.5];
 /// How far a measured median may lie from the recorded one, dB. The same unit as the
 /// link's thresholds; a quarter dB is the margin the decoding gate allows a CNR point.
 const SNR_GATE_MARGIN_DB: f32 = 0.25;
-/// How far a measured 95th percentile may lie from the recorded one, dB. A tail is
-/// noisier than a median; twice the median's margin keeps the bursts it needs in
-/// bounds.
-const QUANTILE_GATE_MARGIN_DB: f32 = 0.5;
-/// The percentile gated, and the one only recorded.
+/// The percentile whose share is gated, and the one only recorded.
 const GATE_QUANTILE: f32 = 0.95;
 const RECORD_QUANTILE: f32 = 0.99;
+/// Bursts of each share, recorded and gated: header-only and one-codeword bursts are
+/// cheap. At 5 % the share's tolerance is then 2.9 %, at 50 % 6.7 %; where the
+/// per-burst scatter is a dB, a shift of a quarter dB moves the median's share by about
+/// 10 %.
+const TAIL_BURSTS: u32 = 1000;
 /// How far the data burst's predicted median may lie from `snr_db` at a recorded
 /// point, dB. Without this check a bias in `predict_snr_db` present when the points
 /// were recorded would be recorded with them and never caught. The recorded
@@ -94,13 +106,11 @@ const RECORD_QUANTILE: f32 = 0.99;
 /// bias half a dB larger.
 const PREDICT_TOLERANCE_DB: f32 = 0.75;
 /// Bursts per point of the sweep at least. A point whose per-burst SNR scatters more
-/// gets more (`bursts_for`, `quantile_se`).
+/// gets more (`bursts_for`).
 const RECORD_BURSTS: u32 = 200;
 /// Most bursts per point that a scatter may ask for: one that needs more is a change
 /// to look at. `TRIALS` may ask for more.
-const MAX_BURSTS: u32 = 4000;
-/// Bootstrap resamples behind `quantile_se`.
-const BOOTSTRAP: u32 = 200;
+const MAX_BURSTS: u32 = 2000;
 /// The level of the bursts whose SNR is normalized to every level.
 const SOURCE_LEVEL: u8 = 0;
 const ALL_LEVELS: &str = "0,1,2,3,4,5,6";
@@ -196,12 +206,17 @@ struct SnrPoint {
 #[serde(deny_unknown_fields)]
 struct Predicted {
     median_db: f32,
-    /// `GATE_QUANTILE`.
+    /// `GATE_QUANTILE`; for the data burst over the median's bursts, for the others
+    /// over `TAIL_BURSTS`.
     q95_db: f32,
     /// `RECORD_QUANTILE`.
     q99_db: f32,
     /// As `SnrPoint::sigma_db`.
     sigma_db: f32,
+    /// Share of the bursts at or above `median_db` and `q95_db`; for the data burst
+    /// over the median's bursts, for the others over `TAIL_BURSTS`.
+    median_share: f32,
+    q95_share: f32,
 }
 
 fn load() -> SnrBaseline {
@@ -244,22 +259,6 @@ fn quantile(x: &[f32], q: f32) -> f32 {
     v[rank.clamp(1, v.len()) - 1]
 }
 
-/// Standard error of the `q` quantile of `x`, from `BOOTSTRAP` resamples with a fixed
-/// seed, so a recording is reproducible.
-fn quantile_se(x: &[f32], q: f32) -> f32 {
-    let mut rng = Prng::new(0x5e_0095);
-    let n = x.len();
-    let qs: Vec<f64> = (0..BOOTSTRAP)
-        .map(|_| {
-            let r: Vec<f32> = (0..n).map(|_| x[rng.next_u32() as usize % n]).collect();
-            quantile(&r, q) as f64
-        })
-        .collect();
-    let mean = qs.iter().sum::<f64>() / qs.len() as f64;
-    let var = qs.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (qs.len() - 1) as f64;
-    var.sqrt() as f32
-}
-
 /// The SNR the receiver reports on trial `t` of `case` at `cnr` dB.
 fn snr(case: &Case, cnr: f32, t: u32) -> f32 {
     let (_, frame) = case.frame(cnr, t);
@@ -267,57 +266,75 @@ fn snr(case: &Case, cnr: f32, t: u32) -> f32 {
 }
 
 /// Per-burst values of one point: the SNR on the level's bursts, and the SNR
-/// predicted for its level from each source's.
+/// predicted for its level from the level-0 data burst's.
 struct Samples {
     snr: Vec<f32>,
-    predicted: [Vec<f32>; 3],
+    data: Vec<f32>,
 }
 
 /// `bursts` trials from `first` at `cnr` dB. On every core.
-fn sample(level: &Case, sources: &[Case; 3], cnr: f32, first: u32, bursts: u32) -> Samples {
+fn sample(level: &Case, data: &Case, cnr: f32, first: u32, bursts: u32) -> Samples {
     let rows = on_every_core(bursts, |t| {
         let s = snr(level, cnr, first + t);
-        let p = sources.each_ref().map(|src| {
-            let from = if (src.level, src.ncw) == (level.level, level.ncw) { s } else { snr(src, cnr, first + t) };
-            level.m.predict_snr_db(from, src.level, level.level)
-        });
-        (s, p)
+        let from = if (data.level, data.ncw) == (level.level, level.ncw) { s } else { snr(data, cnr, first + t) };
+        (s, level.m.predict_snr_db(from, data.level, level.level))
     });
-    let mut out = Samples { snr: Vec::new(), predicted: Default::default() };
-    for (s, p) in rows {
-        out.snr.push(s);
-        for (v, x) in out.predicted.iter_mut().zip(p) {
+    let (snr, data) = rows.into_iter().unzip();
+    Samples { snr, data }
+}
+
+/// Median, scatter and percentiles of predictions `x`.
+fn predicted(x: &[f32]) -> Predicted {
+    let (median_db, sigma_db) = median_sigma(x);
+    let q95_db = quantile(x, GATE_QUANTILE);
+    Predicted {
+        median_db,
+        q95_db,
+        q99_db: quantile(x, RECORD_QUANTILE),
+        sigma_db,
+        median_share: share_at_or_above(x, median_db),
+        q95_share: share_at_or_above(x, q95_db),
+    }
+}
+
+impl Samples {
+    /// Bursts these samples ask for: enough for both medians to fit their margin
+    /// (`bursts_for`).
+    fn need(&self, min: u32) -> u32 {
+        bursts_for(median_sigma(&self.snr).1.max(median_sigma(&self.data).1), min)
+    }
+
+    /// The predictions from every source in `SOURCES` order, the tailed ones from
+    /// `tails`.
+    fn all(&self, tails: &[Vec<f32>; 2]) -> [Predicted; 3] {
+        [predicted(&self.data), predicted(&tails[0]), predicted(&tails[1])]
+    }
+}
+
+/// The SNR predicted for `level`'s level from the tailed sources (`SOURCES[1..]`), over
+/// `bursts` trials from `first` at `cnr` dB. On every core.
+fn sample_tails(level: &Case, sources: &[Case; 3], cnr: f32, first: u32, bursts: u32) -> [Vec<f32>; 2] {
+    let rows = on_every_core(bursts, |t| {
+        [&sources[1], &sources[2]].map(|src| level.m.predict_snr_db(snr(src, cnr, first + t), src.level, level.level))
+    });
+    let mut out: [Vec<f32>; 2] = Default::default();
+    for r in rows {
+        for (v, x) in out.iter_mut().zip(r) {
             v.push(x);
         }
     }
     out
 }
 
-impl Samples {
-    fn predicted(&self, i: usize) -> Predicted {
-        let x = &self.predicted[i];
-        let (median_db, sigma_db) = median_sigma(x);
-        Predicted { median_db, q95_db: quantile(x, GATE_QUANTILE), q99_db: quantile(x, RECORD_QUANTILE), sigma_db }
-    }
+/// Share of `x` at or above `limit`.
+fn share_at_or_above(x: &[f32], limit: f32) -> f32 {
+    x.iter().filter(|&&v| v >= limit).count() as f32 / x.len() as f32
+}
 
-    /// Bursts these samples ask for: enough for every median (`bursts_for`) and every
-    /// gated percentile, whose standard error falls with the square root of the
-    /// count, to fit their margins at 3 sigma for two independent measurements.
-    fn need(&self, min: u32) -> u32 {
-        let n = self.snr.len() as f32;
-        let sigma = self.predicted.iter().map(|x| median_sigma(x).1).fold(median_sigma(&self.snr).1, f32::max);
-        let tail = self
-            .predicted
-            .iter()
-            .map(|x| {
-                let k = 3.0 * std::f32::consts::SQRT_2 * quantile_se(x, GATE_QUANTILE) / QUANTILE_GATE_MARGIN_DB;
-                (n * k * k).ceil() as u32
-            })
-            .max()
-            .unwrap();
-        assert!(tail <= MAX_BURSTS, "a 95th percentile this scattered needs {tail} bursts per point");
-        bursts_for(sigma, min).max(tail)
-    }
+/// How far a share measured over `TAIL_BURSTS` fresh bursts may lie from `recorded`,
+/// itself measured over as many: 3 sigma of the difference of two binomial shares.
+fn share_tolerance(recorded: f32) -> f32 {
+    3.0 * (2.0 * recorded * (1.0 - recorded) / TAIL_BURSTS as f32).sqrt()
 }
 
 /// Bursts for a median of a per-burst scatter `sigma` dB to stay within
@@ -346,6 +363,8 @@ impl Predicted {
             q95_db: round(self.q95_db),
             q99_db: round(self.q99_db),
             sigma_db: round(self.sigma_db),
+            median_share: round(self.median_share),
+            q95_share: round(self.q95_share),
         }
     }
 }
@@ -357,7 +376,8 @@ fn source_cases<'a>(m: &'a Modem, mode: &'a str) -> [Case<'a>; 3] {
 
 /// Measures every mode, level and offset; with `WRITE=1`, records them in
 /// `perf/snr.toml`. A point is measured over `TRIALS` bursts, then again over more
-/// while its scatter needs more for the gate's margins (`Samples::need`).
+/// while its scatter needs more for the gate's margin (`Samples::need`); the tails over
+/// `TAIL_BURSTS`.
 #[test]
 #[ignore]
 fn snr_sweep() {
@@ -385,19 +405,19 @@ fn snr_sweep() {
                 // The scatter measured over more bursts can need more still: measure
                 // again until the count it asks for has been measured.
                 let mut n = bursts;
-                let mut s = sample(&case, &sources, cnr, 0, n);
+                let mut s = sample(&case, &sources[0], cnr, 0, n);
                 loop {
                     let need = s.need(bursts);
                     if need <= n {
                         break;
                     }
                     n = need;
-                    s = sample(&case, &sources, cnr, 0, n);
+                    s = sample(&case, &sources[0], cnr, 0, n);
                 }
                 // The gate's bursts must be fresh, not a replay of these.
                 assert!(n <= GATE_FIRST_TRIAL, "{n} bursts reach the gate's first trial");
                 let (snr_db, sigma_db) = median_sigma(&s.snr);
-                let p = [s.predicted(0), s.predicted(1), s.predicted(2)];
+                let p = s.all(&sample_tails(&case, &sources, cnr, 0, TAIL_BURSTS));
                 let tails: String = SOURCES
                     .iter()
                     .zip(&p)
@@ -446,10 +466,13 @@ fn snr_sweep() {
     }
 }
 
-/// Fails when a median SNR, the receiver's or one predicted from a level-0 source,
-/// has moved from `perf/snr.toml` by more than `SNR_GATE_MARGIN_DB`, or a predicted
-/// 95th percentile by more than `QUANTILE_GATE_MARGIN_DB`. Each point is measured over
-/// as many fresh bursts as it was recorded over, or `TRIALS` if more.
+/// Fails when the receiver's median SNR, or the median predicted from a level-0 data
+/// burst, has moved from `perf/snr.toml` by more than `SNR_GATE_MARGIN_DB`; or when the
+/// share of fresh connect requests or header-only bursts predicting at or above a
+/// recorded median or 95th percentile has moved from the recorded share by more than
+/// `share_tolerance`. Each point's medians are measured over as many
+/// fresh bursts as they were recorded over, or `TRIALS` if more; the shares over
+/// `TAIL_BURSTS`.
 #[test]
 #[ignore]
 fn snr_gate() {
@@ -468,30 +491,30 @@ fn snr_gate() {
             let case = Case::new(&m, mode, target);
             for offset in GATE_OFFSETS_DB {
                 let p = base.point(mode, l, offset);
-                let s = sample(&case, &sources, p.cnr_db + offset, GATE_FIRST_TRIAL, p.bursts.max(bursts));
-                let snr_db = median(&s.snr);
-                let got = [s.predicted(0), s.predicted(1), s.predicted(2)];
-                let moved = verdict(p, snr_db, &got);
-                let line: String = SOURCES
-                    .iter()
-                    .zip(&got)
-                    .map(|(src, g)| {
-                        let r = src.of(p);
-                        format!(
-                            "; from {} {:.2}/{:.2} ({:.2}/{:.2})",
-                            src.name(),
-                            g.median_db,
-                            g.q95_db,
-                            r.median_db,
-                            r.q95_db
-                        )
-                    })
-                    .collect();
+                let s = sample(&case, &sources[0], p.cnr_db + offset, GATE_FIRST_TRIAL, p.bursts.max(bursts));
+                let (snr_db, data_db) = (median(&s.snr), median(&s.data));
+                let tails = sample_tails(&case, &sources, p.cnr_db + offset, GATE_FIRST_TRIAL, TAIL_BURSTS);
+                let shares = [0, 1].map(|i| {
+                    let r = SOURCES[i + 1].of(p);
+                    [share_at_or_above(&tails[i], r.median_db), share_at_or_above(&tails[i], r.q95_db)]
+                });
+                let moved = verdict(p, snr_db, data_db, shares);
                 println!(
-                    "{} at {:.2}{offset:+.2} dB: SNR {snr_db:.2} dB ({:.2}){line} (median/q95, recorded in brackets) {}",
+                    "{} at {:.2}{offset:+.2} dB: SNR {snr_db:.2} dB ({:.2}), from data {data_db:.2} dB ({:.2}) \
+                     (recorded in brackets); at or above recorded median/q95: from 1 codeword {:.1}/{:.1} % \
+                     ({:.1}/{:.1}), header only {:.1}/{:.1} % ({:.1}/{:.1}) {}",
                     target.label(mode),
                     p.cnr_db,
                     p.snr_db,
+                    p.from_data.median_db,
+                    100.0 * shares[0][0],
+                    100.0 * shares[0][1],
+                    100.0 * p.from_short.median_share,
+                    100.0 * p.from_short.q95_share,
+                    100.0 * shares[1][0],
+                    100.0 * shares[1][1],
+                    100.0 * p.from_header.median_share,
+                    100.0 * p.from_header.q95_share,
                     if moved.is_empty() { "ok".to_string() } else { format!("FAIL: {}", moved.join(", ")) }
                 );
                 if !moved.is_empty() {
@@ -503,20 +526,25 @@ fn snr_gate() {
     assert!(failed.is_empty(), "SNR estimate moved for {failed:?}");
 }
 
-/// What moved at recorded point `p`, given the measured median SNR and the
-/// predictions from each source in `SOURCES` order; empty when nothing did.
-fn verdict(p: &SnrPoint, snr_db: f32, got: &[Predicted; 3]) -> Vec<String> {
+/// What moved at recorded point `p`, given the measured median SNR and median
+/// prediction from the data burst, and for the connect request and the header-only
+/// burst the shares of fresh bursts at or above their recorded median and 95th
+/// percentile; empty when nothing did.
+fn verdict(p: &SnrPoint, snr_db: f32, data_db: f32, shares: [[f32; 2]; 2]) -> Vec<String> {
     let mut moved = Vec::new();
     if !within(p.snr_db, snr_db, SNR_GATE_MARGIN_DB) {
         moved.push("SNR".to_string());
     }
-    for (src, g) in SOURCES.iter().zip(got) {
+    if !within(p.from_data.median_db, data_db, SNR_GATE_MARGIN_DB) {
+        moved.push("median from data".to_string());
+    }
+    for (src, [median, tail]) in SOURCES[1..].iter().zip(shares) {
         let r = src.of(p);
-        if !within(r.median_db, g.median_db, SNR_GATE_MARGIN_DB) {
+        if !within(r.median_share, median, share_tolerance(r.median_share)) {
             moved.push(format!("median from {}", src.name()));
         }
-        if !within(r.q95_db, g.q95_db, QUANTILE_GATE_MARGIN_DB) {
-            moved.push(format!("q95 from {}", src.name()));
+        if !within(r.q95_share, tail, share_tolerance(r.q95_share)) {
+            moved.push(format!("tail from {}", src.name()));
         }
     }
     moved
@@ -530,7 +558,7 @@ fn within(recorded: f32, measured: f32, margin: f32) -> bool {
 /// A recorded point with every value at `x` dB.
 #[cfg(test)]
 fn flat_point(x: f32) -> SnrPoint {
-    let p = Predicted { median_db: x, q95_db: x, q99_db: x, sigma_db: 0.5 };
+    let p = Predicted { median_db: x, q95_db: x, q99_db: x, sigma_db: 0.5, median_share: 0.5, q95_share: 0.05 };
     SnrPoint {
         mode: "narrow".into(),
         level: 1,
@@ -548,35 +576,46 @@ fn flat_point(x: f32) -> SnrPoint {
 }
 
 /// The verdict passes a measurement within the margins and fails one where any single
-/// gated value moved by twice its margin, in either direction; the 99th percentile is
-/// not gated.
+/// gated value moved by twice its margin, in either direction.
 #[test]
 fn verdict_fails_any_moved_value() {
     let p = flat_point(5.0);
-    let same = || [0, 1, 2].map(|i| SOURCES[i].of(&p).clone());
-    assert!(verdict(&p, 5.0, &same()).is_empty());
-    assert!(verdict(&p, 5.0 + 0.5 * SNR_GATE_MARGIN_DB, &same()).is_empty());
+    let even = [[0.5, 0.05]; 2];
+    let margins = [share_tolerance(0.5), share_tolerance(0.05)];
+    assert!(verdict(&p, 5.0, 5.0, even).is_empty());
+    let half = 0.5 * SNR_GATE_MARGIN_DB;
+    assert!(verdict(&p, 5.0 + half, 5.0 - half, even).is_empty());
     for sign in [-1.0, 1.0] {
-        assert_eq!(verdict(&p, 5.0 + sign * 2.0 * SNR_GATE_MARGIN_DB, &same()), ["SNR"]);
-        for i in 0..3 {
-            let mut got = same();
-            got[i].median_db += sign * 2.0 * SNR_GATE_MARGIN_DB;
-            assert_eq!(verdict(&p, 5.0, &got).len(), 1, "median from {:?}", SOURCES[i]);
-            let mut got = same();
-            got[i].q95_db += sign * 2.0 * QUANTILE_GATE_MARGIN_DB;
-            assert_eq!(verdict(&p, 5.0, &got).len(), 1, "q95 from {:?}", SOURCES[i]);
-            let mut got = same();
-            got[i].q95_db += sign * 0.5 * QUANTILE_GATE_MARGIN_DB;
-            got[i].q99_db += 10.0;
-            assert!(verdict(&p, 5.0, &got).is_empty(), "q95 within its margin, q99 not gated");
+        let d = sign * 2.0 * SNR_GATE_MARGIN_DB;
+        assert_eq!(verdict(&p, 5.0 + d, 5.0, even), ["SNR"]);
+        assert_eq!(verdict(&p, 5.0, 5.0 + d, even), ["median from data"]);
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut shares = even;
+                shares[i][j] += sign * 2.0 * margins[j];
+                assert_eq!(verdict(&p, 5.0, 5.0, shares).len(), 1, "{:?} share {j}", SOURCES[i + 1]);
+                shares[i][j] = even[i][j] + sign * 0.5 * margins[j];
+                assert!(verdict(&p, 5.0, 5.0, shares).is_empty());
+            }
         }
     }
+}
+
+/// The share tolerances quoted at `TAIL_BURSTS` hold, and a share counts ties: a
+/// cluster at a clamp is at or above a percentile that falls on it.
+#[test]
+fn share_tolerances_and_ties() {
+    assert!((share_tolerance(0.05) - 0.029).abs() < 0.001);
+    assert!((share_tolerance(0.5) - 0.067).abs() < 0.001);
+    assert_eq!(share_at_or_above(&[1.0, 2.0, 3.0, 4.0], 3.0), 0.5);
+    let clamped = [1.0, 2.0, 29.0, 29.0];
+    assert_eq!(share_at_or_above(&clamped, quantile(&clamped, GATE_QUANTILE)), 0.5);
 }
 
 // The gate measures bursts the sweep did not: a gate that replayed the recording
 // would always see nothing move. The sweep also asserts this for a `TRIALS` above
 // `MAX_BURSTS`.
-const _: () = assert!(MAX_BURSTS <= GATE_FIRST_TRIAL);
+const _: () = assert!(MAX_BURSTS <= GATE_FIRST_TRIAL && TAIL_BURSTS <= GATE_FIRST_TRIAL);
 
 /// The measurement path reports what `Receiver` reports on the same audio, so the
 /// gate covers the SNR the link sees: every level at its upper gated point and near
@@ -712,11 +751,6 @@ fn quantile_by_nearest_rank() {
     assert_eq!(quantile(&x, 0.99), 99.0);
     assert_eq!(quantile(&x, 0.0), 1.0);
     assert_eq!(quantile(&[3.0, 1.0, 2.0], 0.5), 2.0);
-    // A constant sample has no spread to bootstrap.
-    assert_eq!(quantile_se(&[2.0; 50], 0.95), 0.0);
-    // The bootstrap error falls with more samples.
-    let wide: Vec<f32> = (0..400).map(|i| (i % 97) as f32).collect();
-    assert!(quantile_se(&wide, 0.95) < quantile_se(&wide[..100], 0.95));
 }
 
 #[test]
