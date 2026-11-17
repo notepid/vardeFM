@@ -90,7 +90,8 @@ fn decodes_through_noisy_radio() {
 }
 
 /// Prints, per level, the codeword success rate and estimated SNR across CNR.
-/// Used to set the rate-adaptation thresholds in vardefm-link.
+/// Used to set the rate-adaptation thresholds in vardefm-link. It asserts nothing:
+/// `snr_gate` (`snr_eval`) gates the SNR estimate.
 /// `cargo test --release -p vardefm-modem level_table -- --ignored --nocapture`
 #[test]
 #[ignore]

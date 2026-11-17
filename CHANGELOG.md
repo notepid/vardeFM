@@ -26,6 +26,12 @@ run the same minor version.
   `crates/vardefm-fec/perf/ldpc.toml`. `level_sweep` and `fer_curve` with `WRITE=1`
   record them again. The figures in `docs/PROTOCOL.md` §2.2 and §2.4 now refer to these
   files.
+- **SNR gate.** `snr_gate` fails when the SNR the receiver reports, or the SNR predicted
+  for a level from a level-0 burst, has moved by more than 0.25 dB around each level's
+  10 % codeword error point (`crates/vardefm-modem/perf/snr.toml`, recorded by
+  `snr_sweep`). A fast test in vardefm-link checks that each rate threshold plus its
+  1 dB margin lies at or above the recorded SNR at which its level reaches 1 % codeword
+  errors, and not more than 2 dB above it.
 
 ### Changed
 - **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).

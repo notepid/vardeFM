@@ -153,10 +153,12 @@ cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture       # L
 
 Performance gates (ignored by default, run by hand in release mode). They fail when a
 level's 10 % codeword error point or the 10 % header error point at one of a mode's
-drive levels (`crates/vardefm-modem/perf/levels.toml`), or a code's 1 % FER point
+drive levels (`crates/vardefm-modem/perf/levels.toml`), the receiver's SNR estimate
+around those points (`crates/vardefm-modem/perf/snr.toml`), or a code's 1 % FER point
 (`crates/vardefm-fec/perf/ldpc.toml`), has moved. Times are from a 14-thread laptop:
 ```sh
 cargo test --release -p vardefm-modem level_gate -- --ignored --nocapture   # about 45 s
+cargo test --release -p vardefm-modem snr_gate -- --ignored --nocapture     # about 50 s
 cargo test --release -p vardefm-fec fer_gate -- --ignored --nocapture       # about 7 s
 ```
 A deliberate change records new points in the same PR. Commit the code first, so the
@@ -164,6 +166,7 @@ files name the commit measured, then record and commit the files:
 ```powershell
 # Windows PowerShell
 $env:WRITE = "1"; cargo test --release -p vardefm-modem level_sweep -- --ignored --nocapture; Remove-Item Env:WRITE
+$env:WRITE = "1"; cargo test --release -p vardefm-modem snr_sweep -- --ignored --nocapture; Remove-Item Env:WRITE
 $env:WRITE = "1"; $env:TRIALS = "1000"; cargo test --release -p vardefm-fec fer_curve -- --ignored --nocapture; Remove-Item Env:WRITE, Env:TRIALS
 ```
 

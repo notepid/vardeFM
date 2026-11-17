@@ -53,6 +53,11 @@ use vardefm_modem::{Burst, Header, Kind, Modem, RxBurst, FLAG_POLL, FLAG_ROUTED,
 /// requested at least 1 dB above every failure seen. Below about 10 dB the SNR
 /// estimate falls fast with CNR (FM threshold), so the low levels' values are small
 /// or negative; level 0's is never used.
+///
+/// `threshold_check` holds each threshold plus the margin against the median SNR at
+/// which its level reaches 1 % codeword errors, recorded in
+/// `crates/vardefm-modem/perf/snr.toml`; the modem's `snr_gate` checks that the
+/// recorded SNR still holds.
 pub const SNR_THRESHOLDS_DB: [f32; 7] = [-2.0, 1.5, 4.5, 7.0, 11.0, 15.0, 18.0];
 const SNR_MARGIN_DB: f32 = 1.0;
 

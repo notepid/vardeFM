@@ -242,7 +242,11 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   burst's own level. Another level's SNR is predicted from the drive difference and each
   level's SNR ceiling (the clipping floor of its drive, measured in the simulator):
   `1/snr = 1/(channel · drive²) + 1/ceiling`. Thresholds (estimated SNR on a burst at that
-  level, levels 0–6): −2, 1.5, 4.5, 7, 11, 15, 18 dB (level 0's is never used). After a
+  level, levels 0–6): −2, 1.5, 4.5, 7, 11, 15, 18 dB (level 0's is never used). The SNR
+  the receiver reports around each level's 10 % codeword error point is recorded in
+  `crates/vardefm-modem/perf/snr.toml` and checked by the `snr_gate` test; each threshold
+  plus 1 dB lies at or above the recorded SNR at which its level reaches 1 % codeword
+  errors. After a
   failed codeword the request drops at least one level below the burst's level. Each
   unanswered burst lowers our own level by one. The called station starts at the level
   it measured on the connect request.
