@@ -1,7 +1,6 @@
 //! Helpers shared by the `vardefm` tool and the integration tests:
 //! known test payloads, frame generation, error counting and WAV I/O.
 
-use num_complex::Complex32;
 use std::path::Path;
 use vardefm_dsp::prng::Prng;
 use vardefm_dsp::{Frame, Modulation, Ofdm};
@@ -13,15 +12,13 @@ pub fn test_bits(ofdm: &Ofdm, m: Modulation, nsym: usize, f: usize) -> Vec<u8> {
 
 /// Modulate `bits` into one frame of audio, with a leader of `txdelay` seconds.
 pub fn make_frame(ofdm: &Ofdm, m: Modulation, bits: &[u8], txdelay: f32) -> Vec<f32> {
-    let syms = m.map_all(bits);
-    let data: Vec<Vec<Complex32>> = syms.chunks(ofdm.data_carriers()).map(|c| c.to_vec()).collect();
-    ofdm.modulate_with_leader(&data, txdelay)
+    ofdm.modulate_with_leader(&m.map_all(bits), txdelay)
 }
 
 /// Hard-decision bit errors between a demodulated frame and the bits that were sent.
 pub fn count_errors(m: Modulation, frame: &Frame, bits: &[u8]) -> usize {
     let mut out = Vec::with_capacity(bits.len());
-    for s in frame.symbols.iter().flatten() {
+    for s in &frame.symbols {
         m.hard_bits(*s, &mut out);
     }
     out.iter().zip(bits).filter(|(a, b)| a != b).count()

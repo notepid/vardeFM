@@ -241,10 +241,10 @@ fn header_only_burst_reports_the_same_snr() {
 
 /// Error vector magnitude (dB, relative to the symbol power) of the equalized header
 /// symbols of `f` against the transmitted values, skipping symbol `skip`.
-fn header_evm_db(f: &Frame, known: &[Vec<Complex32>], skip: usize) -> f32 {
+fn header_evm_db(f: &Frame, known: &[Complex32], skip: usize) -> f32 {
     let (mut err, mut sig) = (0.0, 0.0);
-    for (i, k) in known.iter().enumerate().filter(|(i, _)| *i != skip) {
-        for (y, x) in f.symbols[i].iter().zip(k) {
+    for (i, k) in known.chunks_exact(f.noise_var.len()).enumerate().filter(|(i, _)| *i != skip) {
+        for (y, x) in f.symbol(i).iter().zip(k) {
             err += (y - x).norm_sqr();
             sig += x.norm_sqr();
         }

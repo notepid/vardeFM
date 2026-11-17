@@ -38,7 +38,8 @@ pub struct Ofdm {
     pub pilot_idx: Vec<usize>,
     /// Carrier indices that hold data.
     pub data_idx: Vec<usize>,
-    pilot_table: Vec<Vec<f32>>,
+    /// `PILOT_TABLE_LEN` rows of one value per pilot, row after row.
+    pilot_table: Vec<f32>,
     gains: Vec<f32>,
     pre_a: Vec<Complex32>,
     pre_b: Vec<Complex32>,
@@ -48,8 +49,9 @@ pub struct Ofdm {
 
 /// A demodulated frame.
 pub struct Frame {
-    /// Equalized data-carrier symbols, one Vec per OFDM symbol.
-    pub symbols: Vec<Vec<Complex32>>,
+    /// Equalized data-carrier symbols: `data_carriers()` values per OFDM symbol,
+    /// symbol after symbol. [`Frame::symbol`] returns one OFDM symbol.
+    pub symbols: Vec<Complex32>,
     /// Estimated noise variance after equalization, per data carrier.
     pub noise_var: Vec<f32>,
     /// Noise scale per OFDM symbol (at least 1). The noise variance of symbol `i`,
@@ -60,6 +62,25 @@ pub struct Frame {
     pub snr_db: f32,
     /// Sample index just past the end of the frame.
     pub end: usize,
+}
+
+impl Frame {
+    /// Number of OFDM symbols.
+    pub fn nsym(&self) -> usize {
+        self.symbol_noise_scale.len()
+    }
+
+    /// The equalized data carriers of OFDM symbol `i`.
+    pub fn symbol(&self, i: usize) -> &[Complex32] {
+        let nd = self.noise_var.len();
+        &self.symbols[i * nd..(i + 1) * nd]
+    }
+}
+
+/// Work buffers for one in-place FFT, reused across the symbols of a frame.
+struct FftBufs {
+    x: Vec<Complex32>,
+    scratch: Vec<Complex32>,
 }
 
 impl Ofdm {
@@ -73,7 +94,10 @@ impl Ofdm {
             (0..nc).partition(|&k| k % p.pilot_spacing == 0 || k == nc - 1);
 
         let mut rng = Prng::new(0x5eed_0001);
-        let pilot_table = (0..PILOT_TABLE_LEN).map(|_| pilot_idx.iter().map(|_| rng.bpsk()).collect()).collect();
+        let mut pilot_table = Vec::with_capacity(PILOT_TABLE_LEN * pilot_idx.len());
+        for _ in 0..PILOT_TABLE_LEN {
+            pilot_table.extend(pilot_idx.iter().map(|_| rng.bpsk()));
+        }
 
         let f0 = p.carrier_freq(0);
         let gains = (0..nc)
@@ -99,8 +123,9 @@ impl Ofdm {
 
         let mut s =
             Self { p, fft, ifft, pilot_idx, data_idx, pilot_table, gains, pre_a, pre_b, pre_b_body: Vec::new() };
-        let b = s.symbol_time(&s.pre_b);
-        let mut body = b[s.p.ncp..].to_vec();
+        let mut b = Vec::with_capacity(s.p.symbol_len());
+        s.symbol_time(&s.pre_b, &mut s.fft_bufs(), &mut b);
+        let mut body = b.split_off(s.p.ncp);
         let e = body.iter().map(|x| x * x).sum::<f32>().sqrt();
         body.iter_mut().for_each(|x| *x /= e);
         s.pre_b_body = body;
@@ -117,30 +142,35 @@ impl Ofdm {
     }
 
     fn pilot_value(&self, sym: usize, n: usize) -> f32 {
-        self.pilot_table[sym % PILOT_TABLE_LEN][n]
+        self.pilot_table[(sym % PILOT_TABLE_LEN) * self.pilot_idx.len() + n]
     }
 
-    /// One OFDM symbol (cyclic prefix + body) from carrier values.
-    fn symbol_time(&self, carriers: &[Complex32]) -> Vec<f32> {
+    fn fft_bufs(&self) -> FftBufs {
+        let zero = Complex32::new(0.0, 0.0);
+        let scratch = self.fft.get_inplace_scratch_len().max(self.ifft.get_inplace_scratch_len());
+        FftBufs { x: vec![zero; self.p.nfft], scratch: vec![zero; scratch] }
+    }
+
+    /// Append one OFDM symbol (cyclic prefix + body) from carrier values to `out`.
+    fn symbol_time(&self, carriers: &[Complex32], bufs: &mut FftBufs, out: &mut Vec<f32>) {
         let n = self.p.nfft;
-        let mut x = vec![Complex32::new(0.0, 0.0); n];
+        let x = &mut bufs.x;
+        x.fill(Complex32::new(0.0, 0.0));
         for (k, &v) in carriers.iter().enumerate() {
             let bin = self.p.first_bin + k;
             let v = v * self.gains[k];
             x[bin] = v;
             x[n - bin] = v.conj();
         }
-        self.ifft.process(&mut x);
+        self.ifft.process_with_scratch(x, &mut bufs.scratch);
         let scale = 1.0 / (n as f32).sqrt();
-        let body: Vec<f32> = x.iter().map(|c| c.re * scale).collect();
-        let mut out = Vec::with_capacity(self.p.symbol_len());
-        out.extend_from_slice(&body[n - self.p.ncp..]);
-        out.extend_from_slice(&body);
-        out
+        out.extend(x[n - self.p.ncp..].iter().map(|c| c.re * scale));
+        out.extend(x.iter().map(|c| c.re * scale));
     }
 
-    /// Build a frame. Each entry of `data` holds `data_carriers()` symbols.
-    pub fn modulate(&self, data: &[Vec<Complex32>]) -> Vec<f32> {
+    /// Build a frame. `data` holds `data_carriers()` values per OFDM symbol, symbol
+    /// after symbol.
+    pub fn modulate(&self, data: &[Complex32]) -> Vec<f32> {
         self.modulate_with_leader(data, 0.0)
     }
 
@@ -149,7 +179,7 @@ impl Ofdm {
     /// The leader covers the radio's key-up time (PTT to carrier up and squelch open)
     /// and lets the receiver's audio levels settle. The filler is random QPSK, so it
     /// cannot be mistaken for preamble A.
-    pub fn modulate_with_leader(&self, data: &[Vec<Complex32>], leader_s: f32) -> Vec<f32> {
+    pub fn modulate_with_leader(&self, data: &[Complex32], leader_s: f32) -> Vec<f32> {
         self.modulate_with_leader_rms(data, leader_s, self.p.tx_rms)
     }
 
@@ -166,7 +196,7 @@ impl Ofdm {
     ///
     /// The low-pass is linear and time-invariant and the corrections only touch peaks, so
     /// preamble A stays periodic enough for detection.
-    pub fn modulate_with_leader_rms(&self, data: &[Vec<Complex32>], leader_s: f32, rms: f32) -> Vec<f32> {
+    pub fn modulate_with_leader_rms(&self, data: &[Complex32], leader_s: f32, rms: f32) -> Vec<f32> {
         let mut out = self.frame_samples(data, leader_s);
         let now = (out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32).sqrt();
         let g = rms / now.max(1e-12);
@@ -189,27 +219,30 @@ impl Ofdm {
     }
 
     /// Unscaled samples of a frame with its leader.
-    fn frame_samples(&self, data: &[Vec<Complex32>], leader_s: f32) -> Vec<f32> {
+    fn frame_samples(&self, data: &[Complex32], leader_s: f32) -> Vec<f32> {
         let nc = self.p.num_carriers;
+        let nd = self.data_idx.len();
+        assert!(data.len().is_multiple_of(nd), "wrong number of data symbols");
         let n_leader = (leader_s / self.p.symbol_duration()).ceil() as usize;
-        let mut out = Vec::with_capacity(self.frame_len(data.len()) + n_leader * self.p.symbol_len());
+        let mut out = Vec::with_capacity(self.frame_len(data.len() / nd) + n_leader * self.p.symbol_len());
+        let mut bufs = self.fft_bufs();
+        // Every carrier is written before each use: data and pilots cover them all.
+        let mut c = vec![Complex32::new(0.0, 0.0); nc];
         let mut rng = Prng::new(0x5eed_00c3);
         for _ in 0..n_leader {
-            let c: Vec<Complex32> = (0..nc).map(|_| Complex32::new(rng.bpsk(), rng.bpsk()) * (1.0 / SQRT_2)).collect();
-            out.extend(self.symbol_time(&c));
+            c.iter_mut().for_each(|v| *v = Complex32::new(rng.bpsk(), rng.bpsk()) * (1.0 / SQRT_2));
+            self.symbol_time(&c, &mut bufs, &mut out);
         }
-        out.extend(self.symbol_time(&self.pre_a));
-        out.extend(self.symbol_time(&self.pre_b));
-        for (i, d) in data.iter().enumerate() {
-            assert_eq!(d.len(), self.data_idx.len(), "wrong number of data symbols");
-            let mut c = vec![Complex32::new(0.0, 0.0); nc];
+        self.symbol_time(&self.pre_a, &mut bufs, &mut out);
+        self.symbol_time(&self.pre_b, &mut bufs, &mut out);
+        for (i, d) in data.chunks_exact(nd).enumerate() {
             for (j, &k) in self.data_idx.iter().enumerate() {
                 c[k] = d[j];
             }
             for (n, &k) in self.pilot_idx.iter().enumerate() {
                 c[k] = Complex32::new(self.pilot_value(i, n), 0.0);
             }
-            out.extend(self.symbol_time(&c));
+            self.symbol_time(&c, &mut bufs, &mut out);
         }
         out
     }
@@ -219,17 +252,20 @@ impl Ofdm {
         self.p.carrier_freq(self.p.num_carriers - 1) * TX_LOWPASS_FACTOR
     }
 
-    /// FFT of the window starting at `pos`, returning only the carrier bins.
-    fn carriers_at(&self, rx: &[f32], pos: isize) -> Option<Vec<Complex32>> {
+    /// FFT of the window starting at `pos`; writes only the carrier bins to `out`
+    /// (`num_carriers` long). `None` if the window is outside `rx`.
+    fn carriers_at(&self, rx: &[f32], pos: isize, bufs: &mut FftBufs, out: &mut [Complex32]) -> Option<()> {
         let n = self.p.nfft;
         if pos < 0 || pos as usize + n > rx.len() {
             return None;
         }
         let pos = pos as usize;
-        let mut x: Vec<Complex32> = rx[pos..pos + n].iter().map(|&v| Complex32::new(v, 0.0)).collect();
-        self.fft.process(&mut x);
+        let x = &mut bufs.x;
+        x.iter_mut().zip(&rx[pos..pos + n]).for_each(|(c, &v)| *c = Complex32::new(v, 0.0));
+        self.fft.process_with_scratch(x, &mut bufs.scratch);
         let scale = 1.0 / (n as f32).sqrt();
-        Some((0..self.p.num_carriers).map(|k| x[self.p.first_bin + k] * scale).collect())
+        out.iter_mut().zip(&x[self.p.first_bin..]).for_each(|(o, &c)| *o = c * scale);
+        Some(())
     }
 
     /// Search `rx` from `from` for a frame. Returns the sample index where the
@@ -322,51 +358,62 @@ impl Ofdm {
     }
 
     /// Like [`demodulate`](Self::demodulate), but the data-carrier values of the first
-    /// `known.len()` symbols are known (for example a header that has already been
-    /// decoded). Those symbols train the channel estimate together with preamble B.
-    pub fn demodulate_known(&self, rx: &[f32], b_start: usize, nsym: usize, known: &[Vec<Complex32>]) -> Option<Frame> {
+    /// symbols are known (for example a header that has already been decoded): `known`
+    /// holds `data_carriers()` values per symbol, symbol after symbol. Those symbols
+    /// train the channel estimate together with preamble B.
+    pub fn demodulate_known(&self, rx: &[f32], b_start: usize, nsym: usize, known: &[Complex32]) -> Option<Frame> {
         if nsym == 0 {
             return None;
         }
         let n = self.p.nfft;
         let l = self.p.symbol_len() as isize;
         let nc = self.p.num_carriers;
+        let nd = self.data_idx.len();
+        let np = self.pilot_idx.len();
+        assert!(known.len().is_multiple_of(nd), "wrong number of known symbols");
         // Centre the FFT window in the cyclic prefix. That leaves ncp/2 samples of
         // slack each way for sound-card clock drift without ever moving the window.
         let base = b_start as isize - (self.p.ncp / 2) as isize;
 
-        let yb = self.carriers_at(rx, base)?;
-        let ys: Vec<Vec<Complex32>> =
-            (0..nsym).map(|i| self.carriers_at(rx, base + (i as isize + 1) * l)).collect::<Option<_>>()?;
+        // Carrier values of preamble B and of each symbol (`nc` per symbol).
+        let zero = Complex32::new(0.0, 0.0);
+        let mut bufs = self.fft_bufs();
+        let mut yb = vec![zero; nc];
+        self.carriers_at(rx, base, &mut bufs, &mut yb)?;
+        let mut ys = vec![zero; nsym * nc];
+        for (i, y) in ys.chunks_exact_mut(nc).enumerate() {
+            self.carriers_at(rx, base + (i as isize + 1) * l, &mut bufs, y)?;
+        }
 
         // Channel estimate: preamble B averaged with the known symbols. Clock drift moves
         // the timing by at most a sample or so over the header; the pilot tracking below
         // takes that out, so the symbols are simply averaged. (Removing each symbol's own
         // phase slope instead costs up to 2 dB at low SNR: the slope estimate is noisy and
         // its error grows across the band.)
-        let nk = known.len().min(nsym);
-        let mut obs: Vec<Vec<Complex32>> = Vec::with_capacity(nk + 1);
-        obs.push((0..nc).map(|k| yb[k] / self.pre_b[k]).collect());
-        for (i, d) in known[..nk].iter().enumerate() {
-            assert_eq!(d.len(), self.data_idx.len(), "wrong number of known symbols");
-            let mut o = vec![Complex32::new(0.0, 0.0); nc];
+        // One channel observation (`nc` values) per training symbol.
+        let nk = (known.len() / nd).min(nsym);
+        let mut obs = vec![zero; (nk + 1) * nc];
+        obs[..nc].iter_mut().zip(yb.iter().zip(&self.pre_b)).for_each(|(o, (y, b))| *o = y / b);
+        for (i, ((o, y), d)) in
+            obs[nc..].chunks_exact_mut(nc).zip(ys.chunks_exact(nc)).zip(known.chunks_exact(nd)).enumerate()
+        {
             for (j, &k) in self.data_idx.iter().enumerate() {
-                o[k] = ys[i][k] / d[j];
+                o[k] = y[k] / d[j];
             }
             for (m, &k) in self.pilot_idx.iter().enumerate() {
-                o[k] = ys[i][k] * self.pilot_value(i, m);
+                o[k] = y[k] * self.pilot_value(i, m);
             }
-            obs.push(o);
         }
         // A header symbol hit by an FM click can still decode (the header code is rate
         // 0.24) and so be offered as training. At full weight it would corrupt the
         // estimate for every carrier of the burst, which the per-symbol noise scale
         // below cannot undo. So each training symbol is weighted by the inverse of its
         // noise, and `ntrain` is the effective number of symbols averaged.
-        let weights = training_weights(&obs);
+        let weights = training_weights(&obs, nc);
         let ntrain: f32 = weights.iter().sum();
-        let acc: Vec<Complex32> =
-            (0..nc).map(|k| obs.iter().zip(&weights).map(|(o, &w)| o[k] * w).sum::<Complex32>() / ntrain).collect();
+        let acc: Vec<Complex32> = (0..nc)
+            .map(|k| obs.chunks_exact(nc).zip(&weights).map(|(o, &w)| o[k] * w).sum::<Complex32>() / ntrain)
+            .collect();
         // Light [1 2 1]/4 smoothing across frequency (the audio channel response is
         // smooth). It still pays with the header averaged in: dropping it costs about
         // 0.5 dB in wide mode. Remove the linear phase from the timing offset first, or
@@ -383,29 +430,27 @@ impl Ofdm {
         // the kernel passes 3/8 of the noise of the `ntrain` averaged symbols.
         let est_noise = 0.375 / ntrain;
 
-        // Pilot ratios against the channel estimate.
-        let cs: Vec<Vec<Complex32>> = ys
-            .iter()
-            .enumerate()
-            .map(|(i, y)| {
-                self.pilot_idx.iter().enumerate().map(|(m, &k)| y[k] / (hb[k] * self.pilot_value(i, m))).collect()
-            })
-            .collect();
+        // Pilot ratios against the channel estimate (`np` per symbol).
+        let mut cs = Vec::with_capacity(nsym * np);
+        for (i, y) in ys.chunks_exact(nc).enumerate() {
+            cs.extend(self.pilot_idx.iter().enumerate().map(|(m, &k)| y[k] / (hb[k] * self.pilot_value(i, m))));
+        }
 
         // Average each pilot over neighbouring symbols, weighting each symbol by the
         // inverse of its noise. The first pass (equal weights) finds symbols hit by an
         // FM click or a fade; the second keeps them out of their neighbours' averages.
-        let (_, dev) = track_pilots(&cs, &vec![1.0; nsym]);
-        let (scale, _) = noise_model(&dev);
-        let (avg, dev) = track_pilots(&cs, &scale);
-        let (scale, pilot_var) = noise_model(&dev);
+        let (_, dev) = track_pilots(&cs, np, &vec![1.0; nsym]);
+        let (scale, _) = noise_model(&dev, np);
+        let (avg, dev) = track_pilots(&cs, np, &scale);
+        let (scale, pilot_var) = noise_model(&dev, np);
 
         // Interpolate between pilots and equalize. Each carrier only depends on nearby
         // pilots, so noisy pilots at one end of the band do not corrupt carriers at the
         // other end.
-        let symbols: Vec<Vec<Complex32>> = (0..nsym)
-            .map(|i| self.data_idx.iter().map(|&k| ys[i][k] / (hb[k] * self.interp_pilots(&avg[i], k))).collect())
-            .collect();
+        let mut symbols = Vec::with_capacity(nsym * nd);
+        for (y, a) in ys.chunks_exact(nc).zip(avg.chunks_exact(np)) {
+            symbols.extend(self.data_idx.iter().map(|&k| y[k] / (hb[k] * self.interp_pilots(a, k))));
+        }
 
         // Noise per data carrier, interpolated from the pilots, plus the noise of the
         // channel estimate.
@@ -461,44 +506,48 @@ fn remove_slope(raw: &[Complex32]) -> (f32, Vec<Complex32>) {
 /// Average each pilot over up to `TRACK_HALF_WINDOW` symbols either side, weighting
 /// symbol `i` by `1 / scale[i]`. Returns the averages and each pilot's squared
 /// deviation from its average, corrected for the pilot's own share of that average.
-fn track_pilots(cs: &[Vec<Complex32>], scale: &[f32]) -> (Vec<Vec<Complex32>>, Vec<Vec<f32>>) {
-    let nsym = cs.len();
-    let np = cs.first().map_or(0, |c| c.len());
-    let mut avgs = Vec::with_capacity(nsym);
-    let mut devs = Vec::with_capacity(nsym);
+/// `cs` holds `np` pilots per symbol and `scale` one value per symbol; both results are
+/// laid out like `cs`.
+fn track_pilots(cs: &[Complex32], np: usize, scale: &[f32]) -> (Vec<Complex32>, Vec<f32>) {
+    let nsym = scale.len();
+    debug_assert_eq!(cs.len(), nsym * np);
+    let mut avgs = Vec::with_capacity(nsym * np);
+    let mut devs = Vec::with_capacity(nsym * np);
     for i in 0..nsym {
         let lo = i.saturating_sub(TRACK_HALF_WINDOW);
         let hi = (i + TRACK_HALF_WINDOW + 1).min(nsym);
         let wsum: f32 = scale[lo..hi].iter().map(|s| 1.0 / s).sum();
-        let avg: Vec<Complex32> =
-            (0..np).map(|m| (lo..hi).map(|j| cs[j][m] / scale[j]).sum::<Complex32>() / wsum).collect();
+        let a0 = avgs.len();
+        avgs.extend((0..np).map(|m| (lo..hi).map(|j| cs[j * np + m] / scale[j]).sum::<Complex32>() / wsum));
+        let avg = &avgs[a0..];
+        let c = &cs[i * np..(i + 1) * np];
         // With weights matched to the noise, the deviation's variance is the symbol's
         // own noise times (1 - its share of the average).
         let share = 1.0 / scale[i] / wsum;
-        let dev = if share < 0.999 {
+        if share < 0.999 {
             let bias = 1.0 / (1.0 - share);
-            (0..np).map(|m| (cs[i][m] / avg[m] - 1.0).norm_sqr() * bias).collect()
+            devs.extend(c.iter().zip(avg).map(|(c, a)| (c / a - 1.0).norm_sqr() * bias));
         } else {
-            vec![0.0; np]
-        };
-        avgs.push(avg);
-        devs.push(dev);
+            devs.resize(devs.len() + np, 0.0);
+        }
     }
     (avgs, devs)
 }
 
-/// Weight per channel observation (one per training symbol): 1 for a symbol whose
-/// deviation from the plain average is at most `SCALE_THRESHOLD` times the typical
-/// level, otherwise typical / own, so that a symbol hit by a click adds almost nothing.
-/// Fewer than three observations cannot show an outlier and all get weight 1.
-fn training_weights(obs: &[Vec<Complex32>]) -> Vec<f32> {
-    let n = obs.len();
+/// Weight per channel observation (one per training symbol, `nc` values each, symbol
+/// after symbol): 1 for a symbol whose deviation from the plain average is at most
+/// `SCALE_THRESHOLD` times the typical level, otherwise typical / own, so that a symbol
+/// hit by a click adds almost nothing. Fewer than three observations cannot show an
+/// outlier and all get weight 1.
+fn training_weights(obs: &[Complex32], nc: usize) -> Vec<f32> {
+    let n = obs.len() / nc;
     if n < 3 {
         return vec![1.0; n];
     }
-    let nc = obs[0].len();
-    let mean: Vec<Complex32> = (0..nc).map(|k| obs.iter().map(|o| o[k]).sum::<Complex32>() / n as f32).collect();
-    let e: Vec<f32> = obs.iter().map(|o| o.iter().zip(&mean).map(|(x, h)| (x - h).norm_sqr()).sum()).collect();
+    let mean: Vec<Complex32> =
+        (0..nc).map(|k| obs.chunks_exact(nc).map(|o| o[k]).sum::<Complex32>() / n as f32).collect();
+    let e: Vec<f32> =
+        obs.chunks_exact(nc).map(|o| o.iter().zip(&mean).map(|(x, h)| (x - h).norm_sqr()).sum()).collect();
     let reference = robust_reference(&e);
     e.iter().map(|x| x / reference).map(|r| if r > SCALE_THRESHOLD { 1.0 / r } else { 1.0 }).collect()
 }
@@ -520,11 +569,14 @@ fn robust_reference(e: &[f32]) -> f32 {
 /// typical level: with 9-12 pilots per symbol the estimate is noisy, and the point is
 /// to catch symbols hit by a click, not to fine-tune the rest. (Scaling every symbol by
 /// `max(1, e/mean)` cost a little at the 64QAM levels.)
-fn noise_model(dev: &[Vec<f32>]) -> (Vec<f32>, Vec<f32>) {
-    let nsym = dev.len();
-    let np = dev.first().map_or(0, |d| d.len());
+///
+/// `dev` holds `np` pilots per symbol, symbol after symbol.
+fn noise_model(dev: &[f32], np: usize) -> (Vec<f32>, Vec<f32>) {
+    let nsym = dev.len() / np;
     let per_pilot = |scale: &[f32]| -> Vec<f32> {
-        (0..np).map(|m| dev.iter().zip(scale).map(|(d, s)| d[m] / s).sum::<f32>() / nsym.max(1) as f32).collect()
+        (0..np)
+            .map(|m| dev.chunks_exact(np).zip(scale).map(|(d, s)| d[m] / s).sum::<f32>() / nsym.max(1) as f32)
+            .collect()
     };
     let ones = vec![1.0; nsym];
     let var = per_pilot(&ones);
@@ -532,8 +584,10 @@ fn noise_model(dev: &[Vec<f32>]) -> (Vec<f32>, Vec<f32>) {
         return (ones, var);
     }
     // Noise energy per symbol, each pilot relative to its own average.
-    let e: Vec<f32> =
-        dev.iter().map(|d| d.iter().zip(&var).map(|(x, v)| x / v.max(1e-12)).sum::<f32>() / np as f32).collect();
+    let e: Vec<f32> = dev
+        .chunks_exact(np)
+        .map(|d| d.iter().zip(&var).map(|(x, v)| x / v.max(1e-12)).sum::<f32>() / np as f32)
+        .collect();
     let reference = robust_reference(&e);
     let scale: Vec<f32> = e.iter().map(|x| x / reference).map(|r| if r > SCALE_THRESHOLD { r } else { 1.0 }).collect();
     let var = per_pilot(&scale);
@@ -550,16 +604,17 @@ mod tests {
         let nsym = 20;
         let mut rng = Prng::new(42);
         let bits = rng.bits(nsym * ofdm.data_carriers() * m.bits_per_symbol());
-        let syms = m.map_all(&bits);
-        let data: Vec<Vec<Complex32>> = syms.chunks(ofdm.data_carriers()).map(|c| c.to_vec()).collect();
+        let data = m.map_all(&bits);
         let mut rx = vec![0.0; lead];
         rx.extend(ofdm.modulate(&data));
         rx.extend(vec![0.0; 2000]);
 
         let b = ofdm.detect(&rx, 0).expect("frame not detected");
         let frame = ofdm.demodulate(&rx, b, nsym).expect("demod failed");
+        assert_eq!(frame.nsym(), nsym);
+        assert_eq!(frame.symbol(nsym - 1), &frame.symbols[(nsym - 1) * ofdm.data_carriers()..]);
         let mut out = Vec::new();
-        for s in frame.symbols.iter().flatten() {
+        for s in &frame.symbols {
             m.hard_bits(*s, &mut out);
         }
         assert_eq!(out, bits);
@@ -578,10 +633,10 @@ mod tests {
         roundtrip(OfdmParams::wide(), Modulation::Qam64, 1234);
     }
 
-    fn random_frame(ofdm: &Ofdm, m: Modulation, nsym: usize, seed: u32) -> Vec<Vec<Complex32>> {
+    fn random_frame(ofdm: &Ofdm, m: Modulation, nsym: usize, seed: u32) -> Vec<Complex32> {
         let mut rng = Prng::new(seed);
         let bits = rng.bits(nsym * ofdm.data_carriers() * m.bits_per_symbol());
-        m.map_all(&bits).chunks(ofdm.data_carriers()).map(|c| c.to_vec()).collect()
+        m.map_all(&bits)
     }
 
     fn rms(x: &[f32]) -> f32 {
@@ -656,15 +711,16 @@ mod tests {
             let ofdm = Ofdm::new(p);
             let m = Modulation::Qpsk;
             let mut rng = Prng::new(5);
-            let bits = rng.bits(20 * ofdm.data_carriers() * m.bits_per_symbol());
-            let data: Vec<Vec<Complex32>> = m.map_all(&bits).chunks(ofdm.data_carriers()).map(|c| c.to_vec()).collect();
+            let nsym = 20;
+            let bits = rng.bits(nsym * ofdm.data_carriers() * m.bits_per_symbol());
+            let data = m.map_all(&bits);
             let mut rx = vec![0.0; 777];
             rx.extend(ofdm.modulate_with_leader_rms(&data, 0.1, 0.5));
             rx.extend(vec![0.0; 2000]);
             let b = ofdm.detect(&rx, 0).expect("frame not detected");
-            let frame = ofdm.demodulate(&rx, b, data.len()).expect("demod failed");
+            let frame = ofdm.demodulate(&rx, b, nsym).expect("demod failed");
             let mut out = Vec::new();
-            for s in frame.symbols.iter().flatten() {
+            for s in &frame.symbols {
                 m.hard_bits(*s, &mut out);
             }
             assert_eq!(out, bits, "{}", ofdm.p.name);
