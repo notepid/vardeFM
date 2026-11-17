@@ -112,8 +112,11 @@ your user needs to be in group `gpio` (the default user already is):
    (25 / 12.5 kHz channel) setting. It is not VardeFM's `--mode`; set it to suit
    the channel you are on, on both stations.
 
-   - `--mode narrow` on the mic/speaker path fits a 12.5 kHz channel (about
-     7 kHz wide at 2.5 kHz deviation). Where 25 kHz channels are allowed, setting
+   - `--mode narrow` on the mic/speaker path fits a 12.5 kHz channel: about
+     7 kHz wide at 2.5 kHz deviation. At the robust speed levels the power it
+     puts into a neighbouring channel is about 2 dB above the 60 dB below carrier
+     that commercial 12.5 kHz equipment must meet (ETSI EN 300 086); the fast
+     levels meet it. Where 25 kHz channels are allowed, setting
      the radio to wide makes the fastest speed levels work with a signal about
      5 dB weaker; the robust levels hardly change. It then needs a 25 kHz channel.
    - `--mode wide` needs the radio set to wide and a 25 kHz channel. On a radio
@@ -124,7 +127,9 @@ your user needs to be in group `gpio` (the default user already is):
      deviation in step 3 to 2.5 kHz with the radio already set to narrow (some
      radios halve the data-port deviation in narrow). Expect it to need about
      1 dB more signal than the mic path at the robust levels and about 3 dB more at
-     the fastest.
+     the fastest. How the link picks its speed level was tuned on the mic path
+     and has not been tested on this one, so it may choose a level slower or
+     faster than the signal allows.
 
    These figures come from the FM channel simulator, not from radios.
 
