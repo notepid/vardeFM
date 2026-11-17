@@ -112,8 +112,10 @@ fn occupied_bandwidth() {
     println!("{bursts} bursts of up to {CODEWORDS} codewords per level, Welch {NFFT} points");
 }
 
-/// The channel presets in CI, not only in the ignored runs: `narrow` on the mic
-/// path stays inside the 11.25 kHz authorised for 12.5 kHz equipment, and `wide` on
+/// The spectrum claims behind docs/RADIO.md in CI, not only in the ignored runs:
+/// `narrow` on the mic path stays inside the 11.25 kHz authorised for 12.5 kHz
+/// equipment, `narrow` on the data port at 2.5 kHz stays under the -60 dBc
+/// adjacent-channel limit (measured -75 dBc), and `wide` on
 /// its own channel spills far over the -60 dBc adjacent-channel limit. By 99 %
 /// occupied bandwidth `wide` is only about 11 kHz, so the spill is the check that
 /// tells it does not fit 12.5 kHz.
@@ -122,6 +124,9 @@ fn presets_fit_or_spill_as_measured() {
     let s = spectrum(&modem("narrow"), &FmChannelConfig::parse_channel("mic-12k5").unwrap(), 0, 1);
     let (lo, hi) = s.occupied(0.99);
     assert!(hi - lo < 11_250.0, "narrow on mic-12k5: obw99 {:.0} Hz", hi - lo);
+    let s = spectrum(&modem("narrow"), &FmChannelConfig::parse_channel("data-12k5:dev=2500").unwrap(), 0, 1);
+    let a = acp(&s, 12_500.0, ACP_BW_12K5_HZ);
+    assert!(a < -65.0, "narrow on data-12k5:dev=2500: ACP {a:.1} dBc, expected well under -60");
     let s = spectrum(&modem("wide"), &FmChannelConfig::parse_channel("data-25k").unwrap(), 0, 1);
     let a = acp(&s, 12_500.0, ACP_BW_12K5_HZ);
     assert!(a > -50.0, "wide on data-25k: ACP {a:.1} dBc, expected far over -60");

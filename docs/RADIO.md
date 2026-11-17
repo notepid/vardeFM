@@ -116,16 +116,21 @@ your user needs to be in group `gpio` (the default user already is):
      7 kHz wide at 2.5 kHz deviation. At the robust speed levels the power it
      puts into a neighbouring channel is close to the 60 dB below carrier that
      commercial 12.5 kHz equipment must meet (ETSI EN 300 086); the fast levels
-     are a few dB clearer. Where 25 kHz channels are allowed, setting
-     the radio to wide makes the fastest speed levels work with a signal about
-     5 dB weaker; the robust levels hardly change. It then needs a 25 kHz channel.
-   - `--mode wide` needs the radio set to wide and a 25 kHz channel. On a radio
-     set to narrow the receiver's filter cuts the signal and the faster levels
-     stop working; and on any setting it spills into neighbouring 12.5 kHz channels.
+     are a few dB clearer. Where 25 kHz channels are allowed, setting the radio
+     to wide can make the fastest speed levels work with a signal about 5 dB
+     weaker; the robust levels hardly change. That assumes the radio itself
+     doubles the deviation in wide (to about 5 kHz), so set the level in step 3
+     with the radio on narrow and leave it there when you switch. If you set it
+     to 2.5 kHz with the radio on wide, wide gains nothing. It then needs a
+     25 kHz channel.
+   - `--mode wide` needs the radio set to wide and a 25 kHz channel. On any
+     setting it spills into neighbouring 12.5 kHz channels. On a radio set to
+     narrow, with the 6–9 kHz receive filters such radios typically have, the
+     faster levels stop working.
    - On a 12.5 kHz channel with only the data port available, use `--mode narrow`
      on the data port, on both stations, with the radio set to narrow. Set the
-     deviation in step 3 to 2.5 kHz with the radio already set to narrow (some
-     radios halve the data-port deviation in narrow). Expect it to need about
+     deviation in step 3 to 2.5 kHz with the radio already set to narrow (a radio
+     may change the data-port deviation when set to narrow). Expect it to need about
      1 dB more signal than the mic path at the robust levels and about 3 dB more at
      the fastest. How the link picks its speed level was tuned on the mic path
      and has not been tested on this one, so it may choose a level slower or
