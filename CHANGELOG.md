@@ -7,6 +7,20 @@ run the same minor version.
 ## [Unreleased]
 
 ### Added
+- **SNR gate.** `snr_gate` fails when the SNR the receiver reports, or the SNR predicted
+  for a level from a level-0 burst, has moved by more than 0.25 dB around each level's
+  10 % codeword error point (`crates/vardefm-modem/perf/snr.toml`, recorded by
+  `snr_sweep`). A fast test in vardefm-link checks that each rate threshold plus its
+  1 dB margin lies at or above the recorded SNR at which its level reaches 1 % codeword
+  errors, and not more than 2 dB above it.
+
+## [0.3.2] - 2026-11-16
+
+On-air compatible with 0.3.0 and 0.3.1 for direct sessions. Digipeating is new and
+experimental: how a routed session looks on air may change in the next release, so the
+end stations and the digipeaters of a routed session should all run 0.3.2.
+
+### Added
 - **Digipeating.** `CONNECT <mycall> <target> VIA <d1> [<d2>]` connects through up to
   two VardeFM digipeaters, as in VARA FM. `vardefm modem --digi <call>` makes a
   station repeat the sessions routed through that call, with or without a host
@@ -17,7 +31,8 @@ run the same minor version.
   digipeaters between A and B, which then hear only their neighbours. On air, every burst
   of a routed session is marked in new header flag bits, and its connect bursts carry a
   `VFM2` payload; direct sessions are unchanged and still work with older builds, and
-  digipeaters never repeat them. See docs/PROTOCOL.md §3.4.
+  digipeaters never repeat them. See docs/PROTOCOL.md §3.4. (#24, #31, reviewed by
+  @mustig)
 - **Performance gates.** `level_gate` and `fer_gate` are ignored tests, run by hand in
   release mode, that fail when decoding performance moves. Per mode and level, the CNR
   at which 10 % of codewords fail, and per mode and drive level the CNR at which 10 % of
@@ -25,13 +40,10 @@ run the same minor version.
   `crates/vardefm-modem/perf/levels.toml`; per LDPC code, the Eb/N0 of 1 % FER in
   `crates/vardefm-fec/perf/ldpc.toml`. `level_sweep` and `fer_curve` with `WRITE=1`
   record them again. The figures in `docs/PROTOCOL.md` §2.2 and §2.4 now refer to these
-  files.
-- **SNR gate.** `snr_gate` fails when the SNR the receiver reports, or the SNR predicted
-  for a level from a level-0 burst, has moved by more than 0.25 dB around each level's
-  10 % codeword error point (`crates/vardefm-modem/perf/snr.toml`, recorded by
-  `snr_sweep`). A fast test in vardefm-link checks that each rate threshold plus its
-  1 dB margin lies at or above the recorded SNR at which its level reaches 1 % codeword
-  errors, and not more than 2 dB above it.
+  files. (#13, thanks @mustig)
+- **Detector harness.** `detector_eval` is an ignored test that measures how often a burst
+  detector leads to a decoded burst, against decoding from the known burst position. It
+  changes nothing in the modem. (#6, thanks @mustig)
 
 ### Changed
 - **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).
@@ -147,7 +159,8 @@ correction with seven speed levels, selective-repeat ARQ link layer, VARA-compat
 host interface, `sim-pair` virtual radio pair, sound card I/O with serial, CM108 and
 GPIO PTT, and release builds for Windows, Linux and Raspberry Pi.
 
-[Unreleased]: https://github.com/notepid/vardeFM/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/notepid/vardeFM/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/notepid/vardeFM/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/notepid/vardeFM/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/notepid/vardeFM/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/notepid/vardeFM/compare/v0.2.0...v0.2.1
