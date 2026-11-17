@@ -47,7 +47,10 @@
 //! than `SNR_GATE_MARGIN_DB`, over enough bursts that the noise of both medians would
 //! stay inside that margin at 3 sigma if the per-burst estimate were normal
 //! (`bursts_for`); that is an estimate, not a bound. `median_noise_fits_the_margin`
-//! measures it where the estimate is least normal.
+//! measures it where the estimate is least normal: on the recording from 7235189 the
+//! median at narrow level 1's point, over the minimum 200 bursts, scattered by 0.074 dB
+//! against the 0.059 dB the margin assumes. That is within what 8 blocks can tell
+//! apart, but the gate may fail there more often than 3 sigma suggests.
 //!
 //! The connect request's and the header-only burst's predictions are gated in share,
 //! not in dB. The sweep records, over `TAIL_BURSTS` bursts, the median and 95th
