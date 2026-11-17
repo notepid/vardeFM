@@ -141,24 +141,26 @@ impl FmChannelConfig {
         let mut seen = Vec::new();
         for part in parts {
             let (key, value) = part.split_once('=').ok_or_else(|| format!("{spec:?}: {part:?} is not key=value"))?;
-            if seen.contains(&key.trim()) {
-                return Err(format!("{spec:?}: {} is given twice", key.trim()));
+            let key = key.trim();
+            let field = match key {
+                "dev" => &mut cfg.deviation_hz,
+                "if" => &mut cfg.if_bandwidth_hz,
+                k => return Err(format!("{spec:?}: unknown key {k:?} (dev or if)")),
+            };
+            if seen.contains(&key) {
+                return Err(format!("{spec:?}: {key} is given twice"));
             }
-            seen.push(key.trim());
+            seen.push(key);
             let hz: f32 = value.trim().parse().map_err(|_| format!("{spec:?}: {value:?} is not a number"))?;
             if !(hz.is_finite() && hz > 0.0) {
                 return Err(format!("{spec:?}: {key} must be above 0 Hz"));
             }
-            match key.trim() {
-                "dev" => cfg.deviation_hz = hz,
-                "if" => cfg.if_bandwidth_hz = hz,
-                k => return Err(format!("{spec:?}: unknown key {k:?} (dev or if)")),
-            }
+            *field = hz;
         }
         // The complex baseband spans fs; keep Carson's bandwidth and the IF filter
-        // well inside it, so aliased sidebands cannot reach the receiver.
+        // below half of it, so aliased sidebands stay far from the receiver.
         let carson = 2.0 * (cfg.deviation_hz + cfg.tx_band.1);
-        if carson > cfg.fs / 2.0 || cfg.if_bandwidth_hz > cfg.fs / 2.0 {
+        if carson >= cfg.fs / 2.0 || cfg.if_bandwidth_hz >= cfg.fs / 2.0 {
             return Err(format!("{spec:?}: Carson bandwidth {carson} Hz or IF too wide for fs {} Hz", cfg.fs));
         }
         Ok(cfg)
@@ -389,9 +391,13 @@ mod tests {
             "mic-12k5:bw=9000",
             "data-25k:dev=9000",
             "mic-12k5:dev=2000:dev=3000",
+            "data-25k:dev=5000",
         ] {
             assert!(FmChannelConfig::parse_channel(bad).is_err(), "{bad} parsed");
         }
+        // An unknown key is named as such, whatever its value.
+        let e = FmChannelConfig::parse_channel("mic-12k5: bw =-1").unwrap_err();
+        assert!(e.contains("unknown key \"bw\""), "{e}");
     }
 }
 

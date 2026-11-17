@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn occupied_bandwidth_of_a_flat_band() {
         for half in [4_000.0, 8_000.0] {
-            let s = Spectrum::welch([flat_band(half, 1 << 15).as_slice()], FS, NFFT);
+            let s = Spectrum::welch([flat_band(half, 1 << 14).as_slice()], FS, NFFT);
             let (lo, hi) = s.occupied(0.99);
             let want = 0.99 * 2.0 * half;
             assert!(((hi - lo) - want).abs() < 2.0 * s.bin_hz(), "half {half}: {lo}..{hi}, want width {want}");

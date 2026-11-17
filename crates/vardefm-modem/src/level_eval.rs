@@ -65,9 +65,10 @@
 //! every drive), `TRIALS` (bursts per point: 100 for the gate, 200 for the sweep's
 //! fine grid), `WRITE` (sweep only), `CHANNELS` (sweep only: channel specs as in
 //! `FmChannelConfig::parse_channel`, e.g. `mic-25k,data-12k5:dev=2000:if=7500`;
-//! unset, each mode runs on its own channel, the one the baseline holds). With
-//! `CHANNELS` the sweep also gives each point as C/N0 in dB-Hz, which compares
-//! channels at equal signal strength whatever their IF bandwidth; it cannot write.
+//! unset, each mode runs on its own channel, the one the baseline holds; with it
+//! the sweep cannot write, and the gate refuses to run). The sweep gives each
+//! point also as C/N0 in dB-Hz, which compares channels at equal signal strength
+//! whatever their IF bandwidth.
 
 use super::*;
 use crate::detect_eval::{
@@ -661,6 +662,9 @@ fn level_gate() {
     let specs: Vec<Spec> = env_list("LEVELS", ALL_TARGETS);
     let bursts = env_or("TRIALS", GATE_BURSTS);
     assert!(bursts > 0, "TRIALS must be at least 1");
+    // The baseline holds each mode on its own channel only; gating another would
+    // compare it with the wrong points.
+    assert!(std::env::var("CHANNELS").is_err(), "level_gate gates the modes' own channels: unset CHANNELS");
     let base = load();
     println!("baseline {} ({})", base.source.commit, base.source.command);
     let mut failed = Vec::new();
