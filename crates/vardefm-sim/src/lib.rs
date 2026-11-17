@@ -83,16 +83,17 @@ impl FmChannelConfig {
         }
     }
 
-    /// Mic/speaker path of a radio set to 25 kHz channels: the radio scales the
-    /// deviation after its limiter and opens the IF filter, so the audio chain and
-    /// `clip_level` stay as in [`Self::narrow`].
+    /// Mic/speaker path of a radio set to 25 kHz channels. Modelled as: the radio
+    /// scales the deviation after its limiter (to 5 kHz) and opens the IF filter
+    /// (to 15 kHz), so the audio chain and `clip_level` stay as in [`Self::narrow`].
+    /// Both are assumptions, not measured on a radio.
     pub fn mic_25k() -> Self {
         Self { deviation_hz: 5_000.0, if_bandwidth_hz: 15_000.0, ..Self::narrow() }
     }
 
     /// Flat data port of a radio set to 12.5 kHz channels. The deviation is the
-    /// [`Self::wide`] setting halved, as a radio switched to narrow typically does;
-    /// what a given radio does varies, so sweep it.
+    /// [`Self::wide`] setting halved; that is assumed, as no source says what
+    /// radios do with the data port in narrow, so sweep it.
     pub fn data_12k5() -> Self {
         Self { deviation_hz: 1_500.0, if_bandwidth_hz: 11_000.0, ..Self::wide() }
     }
@@ -101,13 +102,12 @@ impl FmChannelConfig {
     /// one of [`CHANNELS`]. `mic-12k5` is [`Self::narrow`] and `data-25k` is
     /// [`Self::wide`].
     pub fn by_channel(name: &str) -> Option<Self> {
-        match name {
-            "mic-12k5" => Some(Self::narrow()),
-            "mic-25k" => Some(Self::mic_25k()),
-            "data-25k" => Some(Self::wide()),
-            "data-12k5" => Some(Self::data_12k5()),
-            _ => None,
-        }
+        CHANNELS.iter().find(|(n, _)| *n == name).map(|(_, preset)| preset())
+    }
+
+    /// The names of [`CHANNELS`], for messages.
+    pub fn channel_names() -> String {
+        CHANNELS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
     }
 
     /// A channel from `name[:dev=HZ][:if=HZ]`: a [`CHANNELS`] preset with its peak
@@ -117,7 +117,7 @@ impl FmChannelConfig {
         let mut parts = spec.split(':');
         let name = parts.next().unwrap_or_default().trim();
         let mut cfg = Self::by_channel(name)
-            .ok_or_else(|| format!("unknown channel {name:?} in {spec:?} (one of {})", CHANNELS.join(", ")))?;
+            .ok_or_else(|| format!("unknown channel {name:?} in {spec:?} (one of {})", Self::channel_names()))?;
         let mut seen = Vec::new();
         for part in parts {
             let (key, value) = part.split_once('=').ok_or_else(|| format!("{spec:?}: {part:?} is not key=value"))?;
@@ -154,9 +154,17 @@ impl FmChannelConfig {
     }
 }
 
+/// A channel preset: its name and its constructor.
+pub type Preset = (&'static str, fn() -> FmChannelConfig);
+
 /// The channel presets of [`FmChannelConfig::by_channel`]: radio path (`mic` for
 /// mic/speaker audio, `data` for the flat data port) and channel spacing.
-pub const CHANNELS: [&str; 4] = ["mic-12k5", "mic-25k", "data-25k", "data-12k5"];
+pub const CHANNELS: [Preset; 4] = [
+    ("mic-12k5", FmChannelConfig::narrow),
+    ("mic-25k", FmChannelConfig::mic_25k),
+    ("data-25k", FmChannelConfig::wide),
+    ("data-12k5", FmChannelConfig::data_12k5),
+];
 
 /// One transmission on the air: complex baseband at `fs`, before noise.
 pub struct Rf {
@@ -285,7 +293,7 @@ mod tests {
     /// range is refused rather than replaced by a default.
     #[test]
     fn channels_parse_and_refuse_what_they_do_not_know() {
-        for name in CHANNELS {
+        for (name, _) in CHANNELS {
             assert!(FmChannelConfig::parse_channel(name).is_ok(), "{name}");
         }
         let c = FmChannelConfig::parse_channel("data-12k5:dev=2000:if=8000").unwrap();
@@ -304,6 +312,9 @@ mod tests {
         ] {
             assert!(FmChannelConfig::parse_channel(bad).is_err(), "{bad} parsed");
         }
+        // An unknown name lists every preset, read from the same table.
+        let e = FmChannelConfig::parse_channel("x").unwrap_err();
+        assert!(CHANNELS.iter().all(|(n, _)| e.contains(n)), "{e}");
         // An unknown key is named as such, whatever its value.
         let e = FmChannelConfig::parse_channel("mic-12k5: bw =-1").unwrap_err();
         assert!(e.contains("unknown key \"bw\""), "{e}");

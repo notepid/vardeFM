@@ -73,6 +73,24 @@ fn header_only_and_back_to_back_bursts() {
     assert!(got[1].payload.iter().all(|p| p.is_some()));
 }
 
+/// `narrow` decodes through the new channel presets, so a preset that breaks fails
+/// CI rather than only the ignored sweeps: the mic path with the radio on 25 kHz,
+/// and the flat data port on 12.5 kHz at the 2.5 kHz the docs recommend.
+#[test]
+fn narrow_decodes_over_the_other_channels() {
+    let m = modem("narrow");
+    for spec in ["mic-25k", "data-12k5:dev=2500"] {
+        for (level, cnr) in [(0, None), (4, Some(20.0))] {
+            let b = burst(level, 2, 9);
+            let cfg = FmChannelConfig { cnr_db: cnr, ..FmChannelConfig::parse_channel(spec).unwrap() };
+            let got = receive(&mut Receiver::new(m.clone()), &transmit(&cfg, &m.modulate(&b)));
+            assert_eq!(got.len(), 1, "{spec} L{level} at {cnr:?} dB");
+            assert_eq!(got[0].header, b.header, "{spec} L{level}");
+            assert!(got[0].payload.iter().all(|p| p.is_some()), "{spec} L{level} at {cnr:?} dB: codeword failed");
+        }
+    }
+}
+
 #[test]
 fn decodes_through_noisy_radio() {
     // (mode, level, CNR): all codewords must decode.
@@ -101,13 +119,8 @@ fn level_table() {
     let channels = crate::detect_eval::env_channels();
     for mode in crate::detect_eval::env_modes("narrow,wide") {
         let mode = mode.as_str();
-        let on = if channels.is_empty() {
-            vec![(mode.to_string(), FmChannelConfig::by_name(mode).unwrap())]
-        } else {
-            channels.clone()
-        };
-        for (name, channel) in &on {
-            level_table_on(mode, name, channel);
+        for (name, channel) in &crate::detect_eval::channels_for(mode, &channels) {
+            level_table_on(mode, &crate::detect_eval::mode_on(mode, name.as_deref()), channel);
         }
     }
 }

@@ -535,6 +535,7 @@ fn summary(expect: Expect, name: &str, res: &[Vec<Metrics>], d: usize) -> String
 #[test]
 #[ignore]
 fn busy_eval() {
+    crate::detect_eval::no_channels("busy_eval");
     let modes: String = env_or("MODES", "narrow,wide".to_string());
     let trials: u32 = env_or("TRIALS", 63);
     let cnr: f32 = env_or("CNR", 20.0);

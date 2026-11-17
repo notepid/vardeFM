@@ -260,6 +260,33 @@ pub(crate) fn env_channels() -> Vec<(String, FmChannelConfig)> {
     v.split(',').map(str::trim).map(|s| (s.to_string(), parse(s))).collect()
 }
 
+/// The channels `mode` runs on: each of `channels` (from [`env_channels`]) with its
+/// name, or the mode's own channel with no name when `channels` is empty.
+pub(crate) fn channels_for(
+    mode: &str,
+    channels: &[(String, FmChannelConfig)],
+) -> Vec<(Option<String>, FmChannelConfig)> {
+    if channels.is_empty() {
+        vec![(None, FmChannelConfig::by_name(mode).unwrap())]
+    } else {
+        channels.iter().map(|(name, cfg)| (Some(name.clone()), cfg.clone())).collect()
+    }
+}
+
+/// `mode`, or `mode on name` for a channel that is not the mode's own.
+pub(crate) fn mode_on(mode: &str, name: Option<&str>) -> String {
+    match name {
+        Some(n) => format!("{mode} on {n}"),
+        None => mode.to_string(),
+    }
+}
+
+/// Stops `eval`, which runs only the modes' own channels, when `CHANNELS` is set,
+/// rather than run something other than what was asked for.
+pub(crate) fn no_channels(eval: &str) {
+    assert!(std::env::var("CHANNELS").is_err(), "{eval} runs the modes' own channels only: unset CHANNELS");
+}
+
 /// Environment variable `name` as a switch: unset, `0` or `false` is off, `1` or
 /// `true` is on. Anything else stops the run, as with [`env_or`].
 pub(crate) fn env_flag(name: &str) -> bool {
@@ -338,6 +365,7 @@ fn false_detections(m: &Modem, f: DetectFn, rx: &[f32]) -> (u32, u32) {
 #[test]
 #[ignore]
 fn detector_eval() {
+    no_channels("detector_eval");
     let modes = env_modes("narrow,wide");
     let trials: u32 = env_or("TRIALS", 100);
     let level: u8 = env_or("LEVEL", 1);

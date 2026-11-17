@@ -9,7 +9,10 @@
 //! - `out6k25` / `out12k5`: the power further than 6.25 kHz / 12.5 kHz from the
 //!   carrier, which a 12.5 kHz / 25 kHz channel does not hold, dBc;
 //! - `acp12k5`: adjacent-channel power for 12.5 kHz spacing, the worse side, in
-//!   `ACP_BW_12K5_HZ` centred 12.5 kHz away, dBc. The 25 kHz adjacent channel
+//!   `ACP_BW_12K5_HZ` centred 12.5 kHz away, dBc. It is a rectangular band sum
+//!   of the spectrum of real bursts, not the standard's measuring-receiver filter
+//!   and test tone, so read it against the -60 dBc limit to a few dB, not finer.
+//!   The 25 kHz adjacent channel
 //!   (17 to 33 kHz away) lies beyond what the simulator's complex baseband holds
 //!   at 48 kHz, so for 25 kHz spacing only `out12k5` is given;
 //! - `far`: the power further than `FAR_HZ` from the carrier, which shows whether
@@ -26,7 +29,9 @@
 //! (0,..,6), `BURSTS` per level (8).
 
 use super::*;
-use crate::detect_eval::{burst, env_channels, env_list, env_modes, env_or, modem, payload_seed};
+use crate::detect_eval::{
+    burst, channels_for, env_channels, env_list, env_modes, env_or, mode_on, modem, payload_seed,
+};
 use vardefm_sim::spectrum::Spectrum;
 use vardefm_sim::FmChannelConfig;
 
@@ -36,6 +41,10 @@ const NFFT: usize = 4096;
 const ACP_BW_12K5_HZ: f32 = 8_500.0;
 /// The aliasing check: power beyond this offset, Hz.
 const FAR_HZ: f32 = 20_000.0;
+/// `far` must lie at least this far below each figure it could inflate, dB.
+const FAR_MARGIN_DB: f64 = 10.0;
+/// ... unless that figure is itself below this, where it no longer matters, dBc.
+const FAR_IRRELEVANT_DBC: f64 = -100.0;
 /// Codewords per burst at most, to keep the run short.
 const CODEWORDS: usize = 8;
 
@@ -72,29 +81,48 @@ fn occupied_bandwidth() {
     );
     for mode in &modes {
         let m = modem(mode);
-        let on: Vec<(String, FmChannelConfig)> = if channels.is_empty() {
-            vec![(format!("{mode}'s own"), FmChannelConfig::by_name(mode).unwrap())]
-        } else {
-            channels.clone()
-        };
-        for (name, channel) in &on {
-            assert!(FAR_HZ < channel.fs / 2.0, "{name}: fs {} Hz does not reach {FAR_HZ} Hz", channel.fs);
+        for (name, channel) in &channels_for(mode, &channels) {
+            let label = mode_on(mode, name.as_deref());
+            assert!(FAR_HZ < channel.fs / 2.0, "{label}: fs {} Hz does not reach {FAR_HZ} Hz", channel.fs);
             for &level in &levels {
                 let s = spectrum(&m, channel, level, bursts);
                 let (lo, hi) = s.occupied(0.99);
+                let (acp12k5, out12k5) = (acp(&s, 12_500.0, ACP_BW_12K5_HZ), dbc(s.fraction_outside(12_500.0)));
+                let far = dbc(s.fraction_outside(FAR_HZ));
+                for (what, x) in [("acp12k5", acp12k5), ("out12k5", out12k5)] {
+                    assert!(
+                        far <= x - FAR_MARGIN_DB || x < FAR_IRRELEVANT_DBC,
+                        "{label} L{level}: power beyond {FAR_HZ} Hz ({far:.1} dBc) is too near {what} ({x:.1} dBc)"
+                    );
+                }
                 println!(
                     "{:<36} {level:>2} {:>5.2} {:>7.0} {:>16} {:>8.1} {:>8.1} {:>8.1} {:>8.1}",
-                    format!("{mode} on {name}"),
+                    label,
                     m.tx_rms(level),
                     hi - lo,
                     format!("{lo:.0}..{hi:.0}"),
                     dbc(s.fraction_outside(6_250.0)),
-                    acp(&s, 12_500.0, ACP_BW_12K5_HZ),
-                    dbc(s.fraction_outside(12_500.0)),
-                    dbc(s.fraction_outside(FAR_HZ)),
+                    acp12k5,
+                    out12k5,
+                    far,
                 );
             }
         }
     }
     println!("{bursts} bursts of up to {CODEWORDS} codewords per level, Welch {NFFT} points");
+}
+
+/// The channel presets in CI, not only in the ignored runs: `narrow` on the mic
+/// path stays inside the 11.25 kHz authorised for 12.5 kHz equipment, and `wide` on
+/// its own channel spills far over the -60 dBc adjacent-channel limit. By 99 %
+/// occupied bandwidth `wide` is only about 11 kHz, so the spill is the check that
+/// tells it does not fit 12.5 kHz.
+#[test]
+fn presets_fit_or_spill_as_measured() {
+    let s = spectrum(&modem("narrow"), &FmChannelConfig::parse_channel("mic-12k5").unwrap(), 0, 1);
+    let (lo, hi) = s.occupied(0.99);
+    assert!(hi - lo < 11_250.0, "narrow on mic-12k5: obw99 {:.0} Hz", hi - lo);
+    let s = spectrum(&modem("wide"), &FmChannelConfig::parse_channel("data-25k").unwrap(), 0, 1);
+    let a = acp(&s, 12_500.0, ACP_BW_12K5_HZ);
+    assert!(a > -50.0, "wide on data-25k: ACP {a:.1} dBc, expected far over -60");
 }
