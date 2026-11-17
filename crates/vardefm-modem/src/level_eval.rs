@@ -114,7 +114,7 @@ pub(crate) const ALL_MODES: &str = "narrow,wide";
 const ALL_TARGETS: &str = "h,0,1,2,3,4,5,6";
 /// Codewords per burst, or fewer where a level's burst holds fewer (2 at narrow
 /// level 0).
-const CODEWORDS: usize = 4;
+pub(crate) const CODEWORDS: usize = 4;
 /// Headers measured for each burst of a level. The header's shallow curve needs
 /// more decisions than a level's: 1600 per gate point put sigma at 0.75 %. Header
 /// trials send bursts of one codeword, so they are cheap.
@@ -662,6 +662,8 @@ fn measurement_decodes_far_above_and_fails_far_below() {
 
 #[test]
 fn crossing_interpolates_in_log() {
+    // `crossing_matches_level_eval` in vardefm-link's `threshold_check` holds its copy
+    // to these same cases.
     let grid = [1.0, 1.5, 2.0];
     assert_eq!(crossing(&grid, &[0.5, 0.1, 0.01], 0.1), Some(1.5));
     let x = crossing(&grid, &[1.0, 0.1, 0.01], 0.0316).unwrap();

@@ -103,7 +103,8 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> T {
 
 /// Where `rates` (falling with `grid`) cross `target`, interpolated in log10 of the
 /// rate, or linearly next to a 0. A copy of `level_eval::crossing` in vardefm-modem,
-/// which is test code there and cannot be shared: change both together.
+/// which is test code there and cannot be shared; `crossing_matches_level_eval` holds
+/// it to the original's test cases.
 fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
     let i = rates.windows(2).position(|w| w[0] >= target && w[1] < target)?;
     let (x0, x1, y0, y1) = (grid[i], grid[i + 1], rates[i], rates[i + 1]);
@@ -182,6 +183,19 @@ fn thresholds_lie_above_recorded_snr() {
         }
     }
     assert!(bad.is_empty(), "SNR_THRESHOLDS_DB and the recorded curves disagree:\n  {}", bad.join("\n  "));
+}
+
+/// The copy of `crossing` gives what `level_eval::crossing` gives on the cases of
+/// `crossing_interpolates_in_log` in vardefm-modem: keep the two tests alike.
+#[test]
+fn crossing_matches_level_eval() {
+    let grid = [1.0, 1.5, 2.0];
+    assert_eq!(crossing(&grid, &[0.5, 0.1, 0.01], 0.1), Some(1.5));
+    let x = crossing(&grid, &[1.0, 0.1, 0.01], 0.0316).unwrap();
+    assert!((x - 1.75).abs() < 1e-3, "{x}");
+    assert_eq!(crossing(&grid, &[0.3, 0.2, 0.0], 0.1), Some(1.75));
+    assert_eq!(crossing(&grid, &[0.05, 0.02, 0.0], 0.1), None);
+    assert_eq!(crossing(&[1.0, 1.5, 2.0, 2.5], &[0.2, 0.1, 0.1, 0.05], 0.1), Some(2.0));
 }
 
 #[test]
