@@ -230,8 +230,8 @@ impl Ofdm {
         let n_leader = (leader_s / self.p.symbol_duration()).ceil() as usize;
         let mut out = Vec::with_capacity(self.frame_len(data.len() / nd) + n_leader * self.p.symbol_len());
         let mut bufs = self.fft_bufs();
-        // Every carrier is written before each use: data and pilots cover them all.
-        let mut c = vec![Complex32::new(0.0, 0.0); nc];
+        let zero = Complex32::new(0.0, 0.0);
+        let mut c = vec![zero; nc];
         let mut rng = Prng::new(0x5eed_00c3);
         for _ in 0..n_leader {
             c.iter_mut().for_each(|v| *v = Complex32::new(rng.bpsk(), rng.bpsk()) * (1.0 / SQRT_2));
@@ -240,6 +240,8 @@ impl Ofdm {
         self.symbol_time(&self.pre_a, &mut bufs, &mut out);
         self.symbol_time(&self.pre_b, &mut bufs, &mut out);
         for (i, d) in data.chunks_exact(nd).enumerate() {
+            // Cleared so that no carrier keeps the previous symbol's value.
+            c.fill(zero);
             for (j, &k) in self.data_idx.iter().enumerate() {
                 c[k] = d[j];
             }

@@ -240,6 +240,7 @@ impl Modem {
     /// symbol `i`, carrier `j` is `f.noise_var[j] * f.symbol_noise_scale[i]`.
     fn llrs(m: Modulation, f: &Frame, from: usize) -> Vec<f32> {
         let nd = f.noise_var.len();
+        assert_eq!(f.symbols.len(), f.nsym() * nd, "Frame fields disagree on the layout");
         let symbols = &f.symbols[from * nd..];
         let mut out = Vec::with_capacity(symbols.len() * m.bits_per_symbol());
         for (sym, &scale) in symbols.chunks_exact(nd).zip(&f.symbol_noise_scale[from..]) {
