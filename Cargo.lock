@@ -1188,6 +1188,8 @@ dependencies = [
 name = "vardefm-link"
 version = "0.3.1"
 dependencies = [
+ "serde",
+ "toml",
  "vardefm-dsp",
  "vardefm-modem",
 ]

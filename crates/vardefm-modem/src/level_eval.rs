@@ -32,7 +32,7 @@
 //!
 //! What the gate does not cover:
 //! - The receiver's SNR estimate, which the link's rate thresholds
-//!   (`SNR_THRESHOLDS_DB`) are compared against. `level_table` reports it.
+//!   (`SNR_THRESHOLDS_DB`) are compared against. `snr_eval` gates it.
 //! - Long bursts and clock drift: bursts hold up to `CODEWORDS` codewords and the
 //!   channel presets have no clock offset, so pilot tracking over a long burst is
 //!   not exercised.
@@ -73,7 +73,7 @@ use crate::detect_eval::{
 use vardefm_dsp::prng::Prng;
 
 /// Error rate at which a point is recorded and gated.
-const TARGET_RATE: f32 = 0.1;
+pub(crate) const TARGET_RATE: f32 = 0.1;
 /// The gate measures this far either side of a level's recorded point, dB.
 const GATE_MARGIN_DB: f32 = 0.25;
 /// ... and this far for the header. Its curve falls only by about a factor of 1.5
@@ -91,11 +91,11 @@ const HEADER_MARGIN_DB: f32 = 0.35;
 /// (1.4 times at narrow level 0), and the level point with the least room, wide
 /// level 6 at +0.25 dB, would sit about 2 sigma below 10 % rather than 4.5. The
 /// sweep's warning uses the independent sigma too.
-const GATE_BURSTS: u32 = 100;
+pub(crate) const GATE_BURSTS: u32 = 100;
 /// The gate's first trial. Its bursts and noise are independent of the recorded
 /// grid's (trials from 0), so the gate is a fresh sample rather than a replay of
 /// the recording, and the sigmas above apply.
-const GATE_FIRST_TRIAL: u32 = 1 << 20;
+pub(crate) const GATE_FIRST_TRIAL: u32 = 1 << 20;
 /// Bursts per point of the sweep's fine grid.
 const RECORD_BURSTS: u32 = 200;
 /// Bursts per point of the sweep's coarse search for the crossing.
@@ -110,7 +110,7 @@ const MAX_CNR_DB: i32 = 40;
 /// ... and below this one, where nothing decodes.
 const MIN_CNR_DB: i32 = -10;
 /// The modes and targets a recorded baseline covers.
-const ALL_MODES: &str = "narrow,wide";
+pub(crate) const ALL_MODES: &str = "narrow,wide";
 const ALL_TARGETS: &str = "h,0,1,2,3,4,5,6";
 /// Codewords per burst, or fewer where a level's burst holds fewer (2 at narrow
 /// level 0).
@@ -124,24 +124,24 @@ const HEADERS_PER_BURST: u32 = 16;
 const HEADER_SEED: u32 = 0x4ead_0001;
 
 /// The recorded points, `perf/levels.toml`.
-const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
+pub(crate) const BASELINE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/perf/levels.toml");
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Baseline {
-    source: Source,
+pub(crate) struct Baseline {
+    pub(crate) source: Source,
     /// One header point per mode and drive.
     header: Vec<Point>,
     /// One codeword point per mode and level.
-    level: Vec<Point>,
+    pub(crate) level: Vec<Point>,
 }
 
 /// How a baseline was made, so a change to it can be reproduced.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Source {
+pub(crate) struct Source {
     what: String,
-    commit: String,
+    pub(crate) commit: String,
     command: String,
     /// Bursts per point of the 1 dB search.
     coarse_bursts: u32,
@@ -155,15 +155,15 @@ struct Source {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Point {
-    mode: String,
+pub(crate) struct Point {
+    pub(crate) mode: String,
     /// The level; for the header, the lowest level sent at its drive.
-    level: u8,
-    name: String,
+    pub(crate) level: u8,
+    pub(crate) name: String,
     /// The level's drive, `Modem::tx_rms`.
-    drive: f32,
+    pub(crate) drive: f32,
     /// CNR at which the error rate crosses `TARGET_RATE`, dB.
-    cnr_db: f32,
+    pub(crate) cnr_db: f32,
     /// The fine grid the crossing comes from, for review in diffs.
     grid_db: Vec<f32>,
     rate: Vec<f32>,
@@ -200,7 +200,7 @@ fn drive_levels(m: &Modem) -> Vec<u8> {
 /// What a point measures: the header at the drive of a level, or the codewords of
 /// a level.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Target {
+pub(crate) enum Target {
     Header(u8),
     Level(u8),
 }
@@ -222,7 +222,7 @@ impl Target {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Target::Header(_) => "header",
             Target::Level(l) => LEVELS[l as usize].name,
@@ -245,7 +245,7 @@ impl Target {
         }
     }
 
-    fn label(self, mode: &str) -> String {
+    pub(crate) fn label(self, mode: &str) -> String {
         match self {
             Target::Header(l) => format!("{mode} header at L{l} drive"),
             Target::Level(l) => format!("{mode} L{l} {}", self.name()),
@@ -253,13 +253,13 @@ impl Target {
     }
 }
 
-fn load() -> Baseline {
+pub(crate) fn load() -> Baseline {
     let text = std::fs::read_to_string(BASELINE).unwrap_or_else(|e| panic!("{BASELINE}: {e}"));
     toml::from_str(&text).unwrap_or_else(|e| panic!("{BASELINE}: {e}"))
 }
 
 impl Baseline {
-    fn point(&self, mode: &str, target: Target) -> &Point {
+    pub(crate) fn point(&self, mode: &str, target: Target) -> &Point {
         let list = match target {
             Target::Header(_) => &self.header,
             Target::Level(_) => &self.level,
@@ -270,21 +270,21 @@ impl Baseline {
 }
 
 /// One mode and target under test, with what all its trials share.
-struct Case<'a> {
-    m: &'a Modem,
+pub(crate) struct Case<'a> {
+    pub(crate) m: &'a Modem,
     mode: &'a str,
     target: Target,
     /// The level of the bursts sent.
-    level: u8,
+    pub(crate) level: u8,
     /// Codewords per burst: `CODEWORDS`, or fewer where the level's burst holds
     /// fewer; 1 for the header, whose bursts are kept short.
-    ncw: usize,
+    pub(crate) ncw: usize,
     /// Where preamble B lands, the same in every trial.
     truth: usize,
 }
 
 impl<'a> Case<'a> {
-    fn new(m: &'a Modem, mode: &'a str, target: Target) -> Self {
+    pub(crate) fn new(m: &'a Modem, mode: &'a str, target: Target) -> Self {
         let level = target.level();
         let ncw = match target {
             Target::Header(_) => 1,
@@ -297,21 +297,32 @@ impl<'a> Case<'a> {
     /// Failed decisions of trial `t` at `cnr` dB, from the true position: whether
     /// the header fails, or how many codewords do.
     fn errors(&self, cnr: f32, t: u32) -> u32 {
-        let (m, ncw) = (self.m, self.ncw);
-        let sent = trial_burst(self.level, ncw, t);
-        let rx = through_channel(m, self.mode, cnr, &sent, t);
+        let m = self.m;
         if let Target::Header(_) = self.target {
+            let sent = trial_burst(self.level, self.ncw, t);
+            let rx = through_channel(m, self.mode, cnr, &sent, t);
             return u32::from(header_at(m, &rx, self.truth) != Some(sent.header));
         }
-        // The sent header's carriers train the channel estimate, as in
-        // `Receiver::step` once the header has decoded.
-        let training = m.header_carriers(&sent.header);
-        let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(self.level);
-        let Some(frame) = m.ofdm.demodulate_known(&rx, self.truth, nsym, &training) else {
-            return ncw as u32;
+        let (sent, frame) = self.frame(cnr, t);
+        let Some(frame) = frame else {
+            return self.ncw as u32;
         };
         let got = m.decode_payload(&sent.header, &frame);
         got.iter().zip(&sent.payload).filter(|(g, w)| g.as_ref() != Some(*w)).count() as u32
+    }
+
+    /// The burst trial `t` sends at `cnr` dB, and its header and codewords
+    /// demodulated from the true position with the sent header's carriers training
+    /// the channel estimate, as `Receiver::step` does once the header has decoded.
+    /// The frame's `snr_db` is the SNR the receiver reports on that burst.
+    pub(crate) fn frame(&self, cnr: f32, t: u32) -> (Burst, Option<Frame>) {
+        let (m, ncw) = (self.m, self.ncw);
+        let sent = trial_burst(self.level, ncw, t);
+        let rx = through_channel(m, self.mode, cnr, &sent, t);
+        let training = m.header_carriers(&sent.header);
+        let nsym = m.header_symbols() + ncw * m.symbols_per_codeword(self.level);
+        let frame = m.ofdm.demodulate_known(&rx, self.truth, nsym, &training);
+        (sent, frame)
     }
 
     /// Trials and decisions for `bursts` bursts' worth: one per codeword of a level's
@@ -334,7 +345,7 @@ impl<'a> Case<'a> {
 
 /// The burst that trial `t` sends: `ncw` codewords of payload at `level`, under
 /// [`trial_header`].
-fn trial_burst(level: u8, ncw: usize, t: u32) -> Burst {
+pub(crate) fn trial_burst(level: u8, ncw: usize, t: u32) -> Burst {
     Burst { header: trial_header(level, ncw, t), ..burst(level, ncw, payload_seed(t)) }
 }
 
@@ -368,7 +379,7 @@ fn trial_header(level: u8, ncw: usize, t: u32) -> Header {
 /// `None` when the grid does not bracket the target. A waterfall bends down in log
 /// scale, so the chord lies below it and the crossing comes out slightly low; on
 /// the recorded grids the bias is well inside the gate's margin.
-fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
+pub(crate) fn crossing(grid: &[f32], rates: &[f32], target: f32) -> Option<f32> {
     let i = rates.windows(2).position(|w| w[0] >= target && w[1] < target)?;
     let (x0, x1, y0, y1) = (grid[i], grid[i + 1], rates[i], rates[i + 1]);
     let t =
@@ -431,7 +442,7 @@ fn rate_at(grid: &[f32], rates: &[f32], x: f32) -> f32 {
 /// The commit of the working tree, marked when tracked files have uncommitted
 /// changes other than recorded baselines; untracked files do not count. "unknown"
 /// without git or outside a repository.
-fn commit() -> String {
+pub(crate) fn commit() -> String {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
