@@ -327,10 +327,12 @@ fn main() {
             cfg.keyup_delay_s = keyup;
             let st = run_sim(&ofdm, m, modem.symbols, modem.txdelay, &cfg, frames);
             println!(
-                "mode={} mod={} cnr={} ppm={}  raw={:.0} bit/s",
+                "mode={} channel={} IF={} Hz mod={} cnr={} ppm={}  raw={:.0} bit/s",
                 modem.mode,
+                modem.channel.as_deref().unwrap_or("own"),
+                cfg.if_bandwidth_hz,
                 m.name(),
-                cnr.map_or("none".into(), |c| format!("{c} dB")),
+                cnr.map_or("none".into(), |c| format!("{c} dB (C/N0 {:.1} dB-Hz)", cfg.cn0_db(c))),
                 ppm,
                 raw_rate(&ofdm, m, modem.symbols)
             );

@@ -300,6 +300,13 @@ mod tests {
         assert_eq!((c.deviation_hz, c.if_bandwidth_hz, c.emphasis_us), (2000.0, 8000.0, None));
         let n = FmChannelConfig::parse_channel("mic-12k5").unwrap();
         assert_eq!((n.deviation_hz, n.if_bandwidth_hz), (2500.0, 11_000.0));
+        let w = FmChannelConfig::parse_channel("mic-25k").unwrap();
+        assert_eq!((w.deviation_hz, w.if_bandwidth_hz, w.emphasis_us), (5000.0, 15_000.0, n.emphasis_us));
+        let d = FmChannelConfig::parse_channel("data-12k5").unwrap();
+        assert_eq!((d.deviation_hz, d.if_bandwidth_hz, d.emphasis_us), (1500.0, 11_000.0, None));
+        // C/N0 is the CNR in the IF bandwidth plus 10 log10 of that bandwidth.
+        let ten_k = FmChannelConfig { if_bandwidth_hz: 10_000.0, ..n };
+        assert!((ten_k.cn0_db(0.0) - 40.0).abs() < 1e-4 && (ten_k.cn0_db(6.0) - 46.0).abs() < 1e-4);
         for bad in [
             "narrow",
             "mic-12k5:dev",

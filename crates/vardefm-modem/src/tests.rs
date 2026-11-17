@@ -125,12 +125,12 @@ fn level_table() {
     }
 }
 
-/// One mode's `level_table` over `channel`, named `name`.
+/// One mode's `level_table` over `channel`, labelled `name` (from `mode_on`).
 fn level_table_on(mode: &str, name: &str, channel: &FmChannelConfig) {
     let m = modem(mode);
-    println!("{mode} on {name}: net rates {:?}", (0..7).map(|l| m.net_rate(l) as u32).collect::<Vec<_>>());
+    println!("{name}: net rates {:?}", (0..7).map(|l| m.net_rate(l) as u32).collect::<Vec<_>>());
     for level in 0..LEVELS.len() as u8 {
-        let mut line = format!("{mode} on {name} L{level} {:>10}:", LEVELS[level as usize].name);
+        let mut line = format!("{name} L{level} {:>10}:", LEVELS[level as usize].name);
         for cnr in [6.0, 8.0, 10.0, 12.0, 14.0, 17.0, 20.0, 24.0, 28.0, 33.0, 40.0] {
             let (mut ok, mut total, mut snr, mut nf) = (0, 0, 0.0, 0);
             for t in 0..4 {
