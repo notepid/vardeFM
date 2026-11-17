@@ -1,6 +1,6 @@
 [source]
 what = "Median SNR the receiver reports, around each level's 10 % CER point, from the known position"
-commit = "6ff1c13"
+commit = "cc4081c"
 command = "WRITE=1 TRIALS=200 cargo test --release -p vardefm-modem snr_sweep -- --ignored"
 min_bursts = 200
 levels_commit = "eb35213"
@@ -25,11 +25,11 @@ name = "BPSK 1/2"
 drive = 0.3
 cnr_db = 3.04
 offset_db = 0.0
-snr_db = -3.924
-predicted_db = -3.924
-sigma_db = 0.883
-predicted_sigma_db = 0.883
-bursts = 319
+snr_db = -3.974
+predicted_db = -3.974
+sigma_db = 0.878
+predicted_sigma_db = 0.878
+bursts = 353
 
 [[point]]
 mode = "narrow"
@@ -38,11 +38,11 @@ name = "BPSK 1/2"
 drive = 0.3
 cnr_db = 3.04
 offset_db = 0.5
-snr_db = -2.473
-predicted_db = -2.473
-sigma_db = 0.8
-predicted_sigma_db = 0.8
-bursts = 246
+snr_db = -2.468
+predicted_db = -2.468
+sigma_db = 0.784
+predicted_sigma_db = 0.784
+bursts = 290
 
 [[point]]
 mode = "narrow"
@@ -64,11 +64,11 @@ name = "QPSK 1/2"
 drive = 0.3
 cnr_db = 4.17
 offset_db = -0.5
-snr_db = -2.072
-predicted_db = -2.114
-sigma_db = 0.873
-predicted_sigma_db = 0.79
-bursts = 334
+snr_db = -2.07
+predicted_db = -2.112
+sigma_db = 0.872
+predicted_sigma_db = 0.795
+bursts = 345
 
 [[point]]
 mode = "narrow"
@@ -714,11 +714,11 @@ name = "64QAM 5/6"
 drive = 0.3
 cnr_db = 24.18
 offset_db = 0.5
-snr_db = 17.557
-predicted_db = 17.393
-sigma_db = 0.25
-predicted_sigma_db = 0.88
-bursts = 323
+snr_db = 17.554
+predicted_db = 17.392
+sigma_db = 0.251
+predicted_sigma_db = 0.86
+bursts = 351
 
 [[point]]
 mode = "wide"
@@ -727,8 +727,8 @@ name = "64QAM 5/6"
 drive = 0.3
 cnr_db = 24.18
 offset_db = 1.0
-snr_db = 18.024
-predicted_db = 17.862
-sigma_db = 0.293
-predicted_sigma_db = 0.942
-bursts = 395
+snr_db = 18.017
+predicted_db = 17.863
+sigma_db = 0.289
+predicted_sigma_db = 0.965
+bursts = 422
