@@ -1,0 +1,1968 @@
+[source]
+what = "SNR the receiver reports, and predicts from level-0 bursts, around each level's 10 % CER point"
+commit = "d93f102"
+command = "WRITE=1 TRIALS=300 cargo test --release -p vardefm-modem snr_sweep -- --ignored"
+min_bursts = 300
+tail_bursts = 1000
+codewords = 4
+levels_commit = "eb35213"
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = -0.5
+snr_db = -5.336
+sigma_db = 0.905
+bursts = 375
+
+[point.from_data]
+median_db = -5.336
+q95_db = -4.009
+q99_db = -3.635
+sigma_db = 0.905
+median_share = 0.501
+q95_share = 0.051
+
+[point.from_short]
+median_db = -5.318
+q95_db = -3.553
+q99_db = -2.906
+sigma_db = 1.231
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -4.72
+q95_db = -1.511
+q99_db = -0.821
+sigma_db = 2.543
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = 0.0
+snr_db = -3.972
+sigma_db = 0.882
+bursts = 363
+
+[point.from_data]
+median_db = -3.972
+q95_db = -2.728
+q99_db = -2.083
+sigma_db = 0.882
+median_share = 0.501
+q95_share = 0.052
+
+[point.from_short]
+median_db = -3.845
+q95_db = -2.235
+q99_db = -1.832
+sigma_db = 1.21
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -3.273
+q95_db = -0.373
+q99_db = 0.44
+sigma_db = 2.306
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = 0.5
+snr_db = -2.463
+sigma_db = 0.784
+bursts = 300
+
+[point.from_data]
+median_db = -2.463
+q95_db = -1.435
+q99_db = -1.055
+sigma_db = 0.784
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = -2.456
+q95_db = -0.887
+q99_db = -0.455
+sigma_db = 1.19
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -1.787
+q95_db = 0.949
+q99_db = 1.926
+sigma_db = 2.009
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 0
+name = "BPSK 1/2"
+drive = 0.3
+cnr_db = 3.04
+offset_db = 1.0
+snr_db = -0.796
+sigma_db = 0.805
+bursts = 300
+
+[point.from_data]
+median_db = -0.796
+q95_db = 0.264
+q99_db = 0.451
+sigma_db = 0.805
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = -0.751
+q95_db = 0.532
+q99_db = 0.914
+sigma_db = 0.952
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -0.424
+q95_db = 2.125
+q99_db = 2.987
+sigma_db = 1.939
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = -0.5
+snr_db = -2.065
+sigma_db = 0.859
+bursts = 341
+
+[point.from_data]
+median_db = -2.15
+q95_db = -0.923
+q99_db = -0.496
+sigma_db = 0.813
+median_share = 0.501
+q95_share = 0.053
+
+[point.from_short]
+median_db = -1.966
+q95_db = -0.554
+q99_db = -0.066
+sigma_db = 1.085
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -1.685
+q95_db = 1.129
+q99_db = 1.867
+sigma_db = 2.094
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = 0.0
+snr_db = -0.352
+sigma_db = 0.618
+bursts = 300
+
+[point.from_data]
+median_db = -0.482
+q95_db = 0.561
+q99_db = 0.806
+sigma_db = 0.729
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = -0.352
+q95_db = 0.796
+q99_db = 1.235
+sigma_db = 0.944
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -0.011
+q95_db = 2.598
+q99_db = 3.658
+sigma_db = 1.917
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = 0.5
+snr_db = 1.348
+sigma_db = 0.641
+bursts = 300
+
+[point.from_data]
+median_db = 1.235
+q95_db = 2.059
+q99_db = 2.325
+sigma_db = 0.596
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 1.341
+q95_db = 2.394
+q99_db = 2.719
+sigma_db = 0.74
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 1.444
+q95_db = 3.799
+q99_db = 4.455
+sigma_db = 1.662
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 1
+name = "QPSK 1/2"
+drive = 0.3
+cnr_db = 4.17
+offset_db = 1.0
+snr_db = 2.955
+sigma_db = 0.482
+bursts = 300
+
+[point.from_data]
+median_db = 2.948
+q95_db = 3.651
+q99_db = 4.038
+sigma_db = 0.542
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 2.966
+q95_db = 3.886
+q99_db = 4.21
+sigma_db = 0.651
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 2.99
+q95_db = 5.389
+q99_db = 6.186
+sigma_db = 1.598
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = -0.5
+snr_db = 2.199
+sigma_db = 0.526
+bursts = 300
+
+[point.from_data]
+median_db = 2.171
+q95_db = 2.921
+q99_db = 3.164
+sigma_db = 0.513
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 2.141
+q95_db = 3.19
+q99_db = 3.546
+sigma_db = 0.681
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 2.353
+q95_db = 4.768
+q99_db = 5.788
+sigma_db = 1.591
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = 0.0
+snr_db = 3.709
+sigma_db = 0.453
+bursts = 300
+
+[point.from_data]
+median_db = 3.726
+q95_db = 4.42
+q99_db = 4.666
+sigma_db = 0.515
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 3.724
+q95_db = 4.688
+q99_db = 4.96
+sigma_db = 0.585
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 3.879
+q95_db = 6.186
+q99_db = 7.032
+sigma_db = 1.532
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = 0.5
+snr_db = 5.312
+sigma_db = 0.387
+bursts = 300
+
+[point.from_data]
+median_db = 5.304
+q95_db = 6.04
+q99_db = 6.345
+sigma_db = 0.406
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 5.308
+q95_db = 6.255
+q99_db = 6.589
+sigma_db = 0.535
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.394
+q95_db = 7.608
+q99_db = 8.574
+sigma_db = 1.44
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 2
+name = "QPSK 3/4"
+drive = 0.3
+cnr_db = 5.42
+offset_db = 1.0
+snr_db = 6.908
+sigma_db = 0.335
+bursts = 300
+
+[point.from_data]
+median_db = 6.836
+q95_db = 7.441
+q99_db = 7.651
+sigma_db = 0.35
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 6.864
+q95_db = 7.609
+q99_db = 7.922
+sigma_db = 0.518
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.899
+q95_db = 9.042
+q99_db = 9.668
+sigma_db = 1.375
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = -0.5
+snr_db = 4.872
+sigma_db = 0.575
+bursts = 300
+
+[point.from_data]
+median_db = 4.839
+q95_db = 5.529
+q99_db = 5.669
+sigma_db = 0.455
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 4.827
+q95_db = 5.741
+q99_db = 6.041
+sigma_db = 0.563
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 4.925
+q95_db = 7.193
+q99_db = 8.049
+sigma_db = 1.466
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = 0.0
+snr_db = 6.347
+sigma_db = 0.51
+bursts = 300
+
+[point.from_data]
+median_db = 6.372
+q95_db = 7.049
+q99_db = 7.292
+sigma_db = 0.415
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 6.394
+q95_db = 7.203
+q99_db = 7.492
+sigma_db = 0.508
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.428
+q95_db = 8.638
+q99_db = 9.52
+sigma_db = 1.456
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = 0.5
+snr_db = 7.718
+sigma_db = 0.462
+bursts = 300
+
+[point.from_data]
+median_db = 7.686
+q95_db = 8.149
+q99_db = 8.349
+sigma_db = 0.299
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 7.705
+q95_db = 8.385
+q99_db = 8.645
+sigma_db = 0.446
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 7.813
+q95_db = 9.629
+q99_db = 10.173
+sigma_db = 1.292
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 3
+name = "16QAM 1/2"
+drive = 0.3
+cnr_db = 6.26
+offset_db = 1.0
+snr_db = 8.792
+sigma_db = 0.444
+bursts = 300
+
+[point.from_data]
+median_db = 8.766
+q95_db = 9.202
+q99_db = 9.43
+sigma_db = 0.329
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 8.772
+q95_db = 9.408
+q99_db = 9.616
+sigma_db = 0.407
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 8.954
+q95_db = 10.545
+q99_db = 11.066
+sigma_db = 1.208
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = -0.5
+snr_db = 9.314
+sigma_db = 0.382
+bursts = 300
+
+[point.from_data]
+median_db = 9.355
+q95_db = 9.793
+q99_db = 9.919
+sigma_db = 0.281
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 9.34
+q95_db = 9.955
+q99_db = 10.241
+sigma_db = 0.406
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 9.556
+q95_db = 10.958
+q99_db = 11.429
+sigma_db = 1.105
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = 0.0
+snr_db = 10.221
+sigma_db = 0.365
+bursts = 300
+
+[point.from_data]
+median_db = 10.186
+q95_db = 10.605
+q99_db = 10.907
+sigma_db = 0.262
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 10.226
+q95_db = 10.816
+q99_db = 11.039
+sigma_db = 0.372
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 10.456
+q95_db = 11.566
+q99_db = 11.954
+sigma_db = 0.867
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = 0.5
+snr_db = 10.904
+sigma_db = 0.356
+bursts = 300
+
+[point.from_data]
+median_db = 10.882
+q95_db = 11.355
+q99_db = 11.434
+sigma_db = 0.261
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 10.936
+q95_db = 11.442
+q99_db = 11.589
+sigma_db = 0.336
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 11.154
+q95_db = 12.191
+q99_db = 12.691
+sigma_db = 0.677
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 4
+name = "16QAM 3/4"
+drive = 0.3
+cnr_db = 8.07
+offset_db = 1.0
+snr_db = 11.555
+sigma_db = 0.329
+bursts = 300
+
+[point.from_data]
+median_db = 11.547
+q95_db = 11.882
+q99_db = 11.986
+sigma_db = 0.206
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 11.579
+q95_db = 11.994
+q99_db = 12.153
+sigma_db = 0.282
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 11.676
+q95_db = 12.652
+q99_db = 13.081
+sigma_db = 0.628
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = -0.5
+snr_db = 13.784
+sigma_db = 0.239
+bursts = 300
+
+[point.from_data]
+median_db = 13.56
+q95_db = 13.898
+q99_db = 14.094
+sigma_db = 0.208
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 13.58
+q95_db = 14.011
+q99_db = 14.224
+sigma_db = 0.286
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 13.622
+q95_db = 14.849
+q99_db = 15.268
+sigma_db = 0.711
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = 0.0
+snr_db = 14.29
+sigma_db = 0.26
+bursts = 300
+
+[point.from_data]
+median_db = 14.076
+q95_db = 14.423
+q99_db = 14.586
+sigma_db = 0.218
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 14.067
+q95_db = 14.518
+q99_db = 14.748
+sigma_db = 0.271
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 14.125
+q95_db = 15.379
+q99_db = 15.927
+sigma_db = 0.762
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = 0.5
+snr_db = 14.751
+sigma_db = 0.248
+bursts = 300
+
+[point.from_data]
+median_db = 14.544
+q95_db = 14.869
+q99_db = 15.019
+sigma_db = 0.21
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 14.531
+q95_db = 15.044
+q99_db = 15.222
+sigma_db = 0.285
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 14.613
+q95_db = 15.87
+q99_db = 16.377
+sigma_db = 0.766
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 5
+name = "64QAM 2/3"
+drive = 0.25
+cnr_db = 12.73
+offset_db = 1.0
+snr_db = 15.244
+sigma_db = 0.218
+bursts = 300
+
+[point.from_data]
+median_db = 15.064
+q95_db = 15.416
+q99_db = 15.53
+sigma_db = 0.236
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 15.021
+q95_db = 15.56
+q99_db = 15.767
+sigma_db = 0.29
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 15.083
+q95_db = 16.426
+q99_db = 16.927
+sigma_db = 0.816
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = -0.5
+snr_db = 17.006
+sigma_db = 0.237
+bursts = 300
+
+[point.from_data]
+median_db = 16.807
+q95_db = 17.27
+q99_db = 17.405
+sigma_db = 0.24
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 16.803
+q95_db = 17.467
+q99_db = 17.657
+sigma_db = 0.38
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 16.892
+q95_db = 18.526
+q99_db = 19.044
+sigma_db = 0.897
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = 0.0
+snr_db = 17.395
+sigma_db = 0.267
+bursts = 300
+
+[point.from_data]
+median_db = 17.274
+q95_db = 17.7
+q99_db = 17.833
+sigma_db = 0.304
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 17.267
+q95_db = 17.903
+q99_db = 18.142
+sigma_db = 0.398
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.398
+q95_db = 18.998
+q99_db = 19.581
+sigma_db = 1.021
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = 0.5
+snr_db = 17.91
+sigma_db = 0.24
+bursts = 300
+
+[point.from_data]
+median_db = 17.713
+q95_db = 18.247
+q99_db = 18.458
+sigma_db = 0.307
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 17.717
+q95_db = 18.419
+q99_db = 18.748
+sigma_db = 0.423
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.838
+q95_db = 19.807
+q99_db = 20.533
+sigma_db = 1.135
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "narrow"
+level = 6
+name = "64QAM 5/6"
+drive = 0.25
+cnr_db = 16.13
+offset_db = 1.0
+snr_db = 18.335
+sigma_db = 0.252
+bursts = 300
+
+[point.from_data]
+median_db = 18.175
+q95_db = 18.729
+q99_db = 18.921
+sigma_db = 0.311
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 18.133
+q95_db = 18.902
+q99_db = 19.341
+sigma_db = 0.45
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 18.25
+q95_db = 20.397
+q99_db = 21.446
+sigma_db = 1.167
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = -0.5
+snr_db = -4.274
+sigma_db = 0.632
+bursts = 300
+
+[point.from_data]
+median_db = -4.274
+q95_db = -3.417
+q99_db = -3.175
+sigma_db = 0.632
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = -4.079
+q95_db = -2.727
+q99_db = -2.212
+sigma_db = 1.002
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -3.861
+q95_db = -1.043
+q99_db = -0.207
+sigma_db = 2.266
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = 0.0
+snr_db = -2.715
+sigma_db = 0.518
+bursts = 300
+
+[point.from_data]
+median_db = -2.715
+q95_db = -1.991
+q99_db = -1.739
+sigma_db = 0.518
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = -2.635
+q95_db = -1.412
+q99_db = -1.064
+sigma_db = 0.932
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -2.545
+q95_db = 0.074
+q99_db = 1.154
+sigma_db = 1.973
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = 0.5
+snr_db = -1.266
+sigma_db = 0.4
+bursts = 300
+
+[point.from_data]
+median_db = -1.266
+q95_db = -0.646
+q99_db = -0.493
+sigma_db = 0.4
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = -1.223
+q95_db = -0.181
+q99_db = 0.179
+sigma_db = 0.752
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -1.212
+q95_db = 1.309
+q99_db = 2.226
+sigma_db = 1.719
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 0
+name = "BPSK 1/2"
+drive = 0.5
+cnr_db = 4.86
+offset_db = 1.0
+snr_db = 0.079
+sigma_db = 0.291
+bursts = 300
+
+[point.from_data]
+median_db = 0.079
+q95_db = 0.555
+q99_db = 0.714
+sigma_db = 0.291
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 0.06
+q95_db = 0.995
+q99_db = 1.369
+sigma_db = 0.606
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 0.091
+q95_db = 2.377
+q99_db = 3.108
+sigma_db = 1.608
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = -0.5
+snr_db = -0.403
+sigma_db = 0.477
+bursts = 300
+
+[point.from_data]
+median_db = -0.48
+q95_db = 0.065
+q99_db = 0.158
+sigma_db = 0.378
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = -0.403
+q95_db = 0.534
+q99_db = 0.851
+sigma_db = 0.623
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -0.466
+q95_db = 1.968
+q99_db = 2.833
+sigma_db = 1.666
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = 0.0
+snr_db = 0.753
+sigma_db = 0.433
+bursts = 300
+
+[point.from_data]
+median_db = 0.748
+q95_db = 1.181
+q99_db = 1.355
+sigma_db = 0.299
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 0.719
+q95_db = 1.551
+q99_db = 1.865
+sigma_db = 0.553
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 0.723
+q95_db = 2.934
+q99_db = 3.652
+sigma_db = 1.57
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = 0.5
+snr_db = 1.709
+sigma_db = 0.372
+bursts = 300
+
+[point.from_data]
+median_db = 1.711
+q95_db = 2.081
+q99_db = 2.159
+sigma_db = 0.257
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 1.72
+q95_db = 2.427
+q99_db = 2.718
+sigma_db = 0.466
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 1.69
+q95_db = 3.663
+q99_db = 4.222
+sigma_db = 1.479
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 1
+name = "QPSK 1/2"
+drive = 0.5
+cnr_db = 6.15
+offset_db = 1.0
+snr_db = 2.531
+sigma_db = 0.344
+bursts = 300
+
+[point.from_data]
+median_db = 2.528
+q95_db = 2.916
+q99_db = 3.059
+sigma_db = 0.234
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 2.527
+q95_db = 3.299
+q99_db = 3.572
+sigma_db = 0.47
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 2.715
+q95_db = 4.379
+q99_db = 5.133
+sigma_db = 1.263
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = -0.5
+snr_db = 3.129
+sigma_db = 0.314
+bursts = 300
+
+[point.from_data]
+median_db = 3.128
+q95_db = 3.482
+q99_db = 3.637
+sigma_db = 0.244
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 3.119
+q95_db = 3.852
+q99_db = 4.149
+sigma_db = 0.458
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 3.32
+q95_db = 4.895
+q99_db = 5.414
+sigma_db = 1.057
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = 0.0
+snr_db = 3.872
+sigma_db = 0.338
+bursts = 300
+
+[point.from_data]
+median_db = 3.882
+q95_db = 4.243
+q99_db = 4.377
+sigma_db = 0.231
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 3.884
+q95_db = 4.589
+q99_db = 4.864
+sigma_db = 0.439
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 3.97
+q95_db = 5.521
+q99_db = 6.011
+sigma_db = 1.01
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = 0.5
+snr_db = 4.586
+sigma_db = 0.267
+bursts = 300
+
+[point.from_data]
+median_db = 4.546
+q95_db = 4.897
+q99_db = 5.003
+sigma_db = 0.209
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 4.579
+q95_db = 5.178
+q99_db = 5.402
+sigma_db = 0.406
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 4.689
+q95_db = 6.025
+q99_db = 6.624
+sigma_db = 0.92
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 2
+name = "QPSK 3/4"
+drive = 0.5
+cnr_db = 8.01
+offset_db = 1.0
+snr_db = 5.208
+sigma_db = 0.256
+bursts = 300
+
+[point.from_data]
+median_db = 5.201
+q95_db = 5.517
+q99_db = 5.589
+sigma_db = 0.187
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 5.191
+q95_db = 5.773
+q99_db = 5.972
+sigma_db = 0.358
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.287
+q95_db = 6.591
+q99_db = 6.994
+sigma_db = 0.797
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = -0.5
+snr_db = 5.397
+sigma_db = 0.303
+bursts = 300
+
+[point.from_data]
+median_db = 5.05
+q95_db = 5.332
+q99_db = 5.372
+sigma_db = 0.155
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 5.044
+q95_db = 5.547
+q99_db = 5.737
+sigma_db = 0.319
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.108
+q95_db = 6.325
+q99_db = 7.015
+sigma_db = 0.796
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = 0.0
+snr_db = 5.944
+sigma_db = 0.315
+bursts = 300
+
+[point.from_data]
+median_db = 5.579
+q95_db = 5.829
+q99_db = 5.926
+sigma_db = 0.144
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 5.591
+q95_db = 6.053
+q99_db = 6.268
+sigma_db = 0.274
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.562
+q95_db = 6.915
+q99_db = 7.536
+sigma_db = 0.819
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = 0.5
+snr_db = 6.432
+sigma_db = 0.271
+bursts = 300
+
+[point.from_data]
+median_db = 6.105
+q95_db = 6.376
+q99_db = 6.449
+sigma_db = 0.151
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 6.082
+q95_db = 6.572
+q99_db = 6.783
+sigma_db = 0.295
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.112
+q95_db = 7.441
+q99_db = 8.046
+sigma_db = 0.819
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 3
+name = "16QAM 1/2"
+drive = 0.4
+cnr_db = 10.91
+offset_db = 1.0
+snr_db = 6.976
+sigma_db = 0.268
+bursts = 300
+
+[point.from_data]
+median_db = 6.623
+q95_db = 6.867
+q99_db = 7.003
+sigma_db = 0.181
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 6.609
+q95_db = 7.119
+q99_db = 7.419
+sigma_db = 0.296
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.638
+q95_db = 7.867
+q99_db = 8.35
+sigma_db = 0.73
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = -0.5
+snr_db = 9.563
+sigma_db = 0.253
+bursts = 300
+
+[point.from_data]
+median_db = 9.193
+q95_db = 9.453
+q99_db = 9.595
+sigma_db = 0.167
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 9.182
+q95_db = 9.724
+q99_db = 9.98
+sigma_db = 0.325
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 9.197
+q95_db = 10.686
+q99_db = 11.205
+sigma_db = 0.865
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = 0.0
+snr_db = 10.028
+sigma_db = 0.234
+bursts = 300
+
+[point.from_data]
+median_db = 9.681
+q95_db = 9.924
+q99_db = 10.042
+sigma_db = 0.154
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 9.686
+q95_db = 10.207
+q99_db = 10.466
+sigma_db = 0.329
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 9.726
+q95_db = 11.244
+q99_db = 11.779
+sigma_db = 0.794
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = 0.5
+snr_db = 10.536
+sigma_db = 0.238
+bursts = 300
+
+[point.from_data]
+median_db = 10.181
+q95_db = 10.428
+q99_db = 10.517
+sigma_db = 0.158
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 10.203
+q95_db = 10.753
+q99_db = 11.03
+sigma_db = 0.325
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 10.204
+q95_db = 11.636
+q99_db = 12.062
+sigma_db = 0.836
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 4
+name = "16QAM 3/4"
+drive = 0.4
+cnr_db = 14.95
+offset_db = 1.0
+snr_db = 11.002
+sigma_db = 0.258
+bursts = 300
+
+[point.from_data]
+median_db = 10.667
+q95_db = 10.975
+q99_db = 11.092
+sigma_db = 0.171
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 10.663
+q95_db = 11.239
+q99_db = 11.445
+sigma_db = 0.323
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 10.665
+q95_db = 12.153
+q99_db = 12.734
+sigma_db = 0.894
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = -0.5
+snr_db = 13.062
+sigma_db = 0.282
+bursts = 300
+
+[point.from_data]
+median_db = 12.603
+q95_db = 13.114
+q99_db = 13.248
+sigma_db = 0.31
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 12.602
+q95_db = 13.616
+q99_db = 14.117
+sigma_db = 0.61
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 12.73
+q95_db = 15.721
+q99_db = 17.976
+sigma_db = 1.554
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = 0.0
+snr_db = 13.558
+sigma_db = 0.271
+bursts = 300
+
+[point.from_data]
+median_db = 13.137
+q95_db = 13.717
+q99_db = 13.988
+sigma_db = 0.337
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 13.131
+q95_db = 14.206
+q99_db = 14.803
+sigma_db = 0.629
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 13.211
+q95_db = 16.724
+q99_db = 18.789
+sigma_db = 1.67
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = 0.5
+snr_db = 14.034
+sigma_db = 0.302
+bursts = 300
+
+[point.from_data]
+median_db = 13.668
+q95_db = 14.241
+q99_db = 14.423
+sigma_db = 0.41
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 13.609
+q95_db = 14.892
+q99_db = 15.605
+sigma_db = 0.71
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 13.77
+q95_db = 17.81
+q99_db = 20.555
+sigma_db = 1.861
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 5
+name = "64QAM 2/3"
+drive = 0.3
+cnr_db = 20.61
+offset_db = 1.0
+snr_db = 14.523
+sigma_db = 0.315
+bursts = 300
+
+[point.from_data]
+median_db = 14.134
+q95_db = 14.77
+q99_db = 15.048
+sigma_db = 0.391
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 14.135
+q95_db = 15.544
+q99_db = 16.378
+sigma_db = 0.786
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 14.242
+q95_db = 18.94
+q99_db = 22.545
+sigma_db = 2.171
+median_share = 0.5
+q95_share = 0.051
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = -0.5
+snr_db = 16.519
+sigma_db = 0.265
+bursts = 300
+
+[point.from_data]
+median_db = 16.295
+q95_db = 17.436
+q99_db = 17.732
+sigma_db = 0.64
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 16.257
+q95_db = 18.741
+q99_db = 20.212
+sigma_db = 1.173
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 16.42
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 3.296
+median_share = 0.5
+q95_share = 0.066
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = 0.0
+snr_db = 17.06
+sigma_db = 0.286
+bursts = 300
+
+[point.from_data]
+median_db = 16.881
+q95_db = 18.046
+q99_db = 18.414
+sigma_db = 0.725
+median_share = 0.5
+q95_share = 0.053
+
+[point.from_short]
+median_db = 16.767
+q95_db = 19.641
+q99_db = 21.539
+sigma_db = 1.36
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.099
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 3.76
+median_share = 0.5
+q95_share = 0.101
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = 0.5
+snr_db = 17.554
+sigma_db = 0.25
+bursts = 346
+
+[point.from_data]
+median_db = 17.396
+q95_db = 18.841
+q99_db = 19.393
+sigma_db = 0.874
+median_share = 0.5
+q95_share = 0.052
+
+[point.from_short]
+median_db = 17.297
+q95_db = 20.601
+q99_db = 23.225
+sigma_db = 1.475
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.402
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 4.025
+median_share = 0.5
+q95_share = 0.134
+
+[[point]]
+mode = "wide"
+level = 6
+name = "64QAM 5/6"
+drive = 0.3
+cnr_db = 24.18
+offset_db = 1.0
+snr_db = 18.017
+sigma_db = 0.289
+bursts = 422
+
+[point.from_data]
+median_db = 17.863
+q95_db = 19.515
+q99_db = 20.148
+sigma_db = 0.965
+median_share = 0.5
+q95_share = 0.052
+
+[point.from_short]
+median_db = 17.948
+q95_db = 22.111
+q99_db = 25.344
+sigma_db = 1.759
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 18.115
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 4.593
+median_share = 0.5
+q95_share = 0.163

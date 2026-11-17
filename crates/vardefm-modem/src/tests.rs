@@ -28,7 +28,7 @@ fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
 }
 
 /// Push audio in 10 ms chunks, like a sound card would deliver it.
-fn receive(rx: &mut Receiver, audio: &[f32]) -> Vec<RxBurst> {
+pub(crate) fn receive(rx: &mut Receiver, audio: &[f32]) -> Vec<RxBurst> {
     let mut out = Vec::new();
     for chunk in audio.chunks(480) {
         out.extend(rx.push(chunk));
@@ -90,7 +90,8 @@ fn decodes_through_noisy_radio() {
 }
 
 /// Prints, per level, the codeword success rate and estimated SNR across CNR.
-/// Used to set the rate-adaptation thresholds in vardefm-link.
+/// Used to set the rate-adaptation thresholds in vardefm-link. It asserts nothing:
+/// `snr_gate` (`snr_eval`) gates the SNR estimate.
 /// `cargo test --release -p vardefm-modem level_table -- --ignored --nocapture`
 #[test]
 #[ignore]

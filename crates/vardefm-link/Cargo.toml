@@ -8,3 +8,7 @@ license.workspace = true
 [dependencies]
 vardefm-dsp.workspace = true
 vardefm-modem.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+toml.workspace = true

@@ -6,6 +6,17 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Added
+- **SNR gate.** `snr_gate` fails when the SNR the receiver reports has moved by more
+  than 0.25 dB around each level's 10 % codeword error point
+  (`crates/vardefm-modem/perf/snr.toml`, recorded by `snr_sweep`). It also gates the SNR
+  predicted for each level from level-0 bursts: from data bursts the median within
+  0.25 dB; from connect requests and header-only bursts the share of bursts at or above
+  the recorded median and 95th percentile, within 3 sigma of binomial noise. A fast test in
+  vardefm-link checks that each rate threshold plus its 1 dB margin lies 0.5 to 2 dB
+  above the recorded median SNR at which its level reaches 1 % codeword errors, where it
+  lies nearest.
+
 ## [0.3.2] - 2026-11-16
 
 On-air compatible with 0.3.0 and 0.3.1 for direct sessions. Digipeating is new and
