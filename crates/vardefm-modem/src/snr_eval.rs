@@ -8,12 +8,16 @@
 //!
 //! Per mode and level, this measures at CNR points around the level's 10 % codeword
 //! error point (`perf/levels.toml`), `SNR_OFFSETS_DB` from it:
-//! - `snr_db`: the mean SNR the receiver reports on the level's bursts, from the
+//! - `snr_db`: the median SNR the receiver reports on the level's bursts, from the
 //!   header and codewords demodulated with the sent header as training, as
 //!   `Receiver::step` does (`level_eval::Case::frame`);
-//! - `predicted_db`: the mean of `Modem::predict_snr_db` from the SNR of a level-0
+//! - `predicted_db`: the median of `Modem::predict_snr_db` from the SNR of a level-0
 //!   burst over the same channel to the level, which covers the per-level drive
 //!   normalisation. `snr_prediction_matches_measurement` holds it near `snr_db`.
+//!
+//! Medians, not means: at narrow level 0's point the mean over 312 bursts moved by
+//! 0.27 dB between two samples, 3.4 times its standard error, so the per-burst
+//! estimate is far from normal there. The median is less sensitive to its tails.
 //!
 //! What the gate does not cover:
 //! - Bursts without codewords (acks, polls): `Receiver::step` measures their SNR on
@@ -28,8 +32,8 @@
 //! `perf/snr.toml` holds the points. `snr_gate` measures `snr_db` and `predicted_db`
 //! at `GATE_OFFSETS_DB` on fresh bursts and fails when either has moved from the
 //! recorded value by more than `SNR_GATE_MARGIN_DB`. Each point is recorded and gated
-//! over enough bursts that the noise of both means stays inside that margin at 3
-//! sigma (`bursts_for`): a few hundred at the low levels, where the per-burst
+//! over enough bursts that the noise of both medians stays inside that margin at 3
+//! sigma (`bursts_for`): several hundred at the low levels, where the per-burst
 //! estimate scatters by about a dB. The link's thresholds are checked
 //! against the recorded points by `thresholds_lie_above_recorded_snr` in vardefm-link.
 //!
@@ -55,7 +59,7 @@ const SNR_OFFSETS_DB: [f32; 4] = [-0.5, 0.0, 0.5, 1.0];
 /// CNRs the gate measures, of `SNR_OFFSETS_DB`. They bracket every level's 1 % CER
 /// point (+0.1 to +0.45 dB in the recorded grids).
 const GATE_OFFSETS_DB: [f32; 2] = [0.0, 0.5];
-/// How far a measured mean may lie from the recorded one, dB. The same unit as the
+/// How far a measured median may lie from the recorded one, dB. The same unit as the
 /// link's thresholds; a quarter dB is the margin the decoding gate allows a CNR point.
 const SNR_GATE_MARGIN_DB: f32 = 0.25;
 /// How far `predicted_db` may lie from `snr_db` at a recorded point, dB. Without
@@ -105,15 +109,16 @@ struct SnrPoint {
     cnr_db: f32,
     /// Where the point is measured, relative to `cnr_db`, dB.
     offset_db: f32,
-    /// Mean SNR the receiver reports on the level's bursts, dB.
+    /// Median SNR the receiver reports on the level's bursts, dB.
     snr_db: f32,
-    /// Mean SNR predicted for the level from a level-0 burst's, dB.
+    /// Median SNR predicted for the level from a level-0 burst's, dB.
     predicted_db: f32,
-    /// Standard deviation of one burst's `snr_db`, dB.
+    /// Scatter of one burst's SNR, dB: 1.4826 times the median absolute deviation,
+    /// the standard deviation for a normal distribution.
     sigma_db: f32,
     /// ... and of one burst's predicted SNR, dB.
     predicted_sigma_db: f32,
-    /// Bursts the means are taken over.
+    /// Bursts the medians are taken over.
     bursts: u32,
 }
 
@@ -129,7 +134,7 @@ impl SnrBaseline {
     }
 }
 
-/// Means and standard deviations over the bursts of one point.
+/// Medians and scatters over the bursts of one point.
 struct Stats {
     snr_db: f32,
     predicted_db: f32,
@@ -137,12 +142,20 @@ struct Stats {
     predicted_sigma_db: f32,
 }
 
-/// Mean and standard deviation of `x`.
-fn mean_sigma(x: &[f32]) -> (f32, f32) {
-    let n = x.len() as f64;
-    let mean = x.iter().map(|&v| v as f64).sum::<f64>() / n;
-    let var = x.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
-    (mean as f32, var.sqrt() as f32)
+/// Median of `x`, and its scatter: 1.4826 times the median absolute deviation.
+fn median_sigma(x: &[f32]) -> (f32, f32) {
+    let median = |v: &mut Vec<f32>| {
+        v.sort_by(f32::total_cmp);
+        let n = v.len();
+        if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            0.5 * (v[n / 2 - 1] + v[n / 2])
+        }
+    };
+    let m = median(&mut x.to_vec());
+    let mad = median(&mut x.iter().map(|v| (v - m).abs()).collect());
+    (m, 1.4826 * mad)
 }
 
 /// The SNR the receiver reports on trial `t` of `case` at `cnr` dB.
@@ -160,17 +173,18 @@ fn measure(level: &Case, source: &Case, cnr: f32, first: u32, bursts: u32) -> St
         (s, level.m.predict_snr_db(from, source.level, level.level))
     });
     let (s, p): (Vec<f32>, Vec<f32>) = pairs.into_iter().unzip();
-    let ((snr_db, sigma_db), (predicted_db, predicted_sigma_db)) = (mean_sigma(&s), mean_sigma(&p));
+    let ((snr_db, sigma_db), (predicted_db, predicted_sigma_db)) = (median_sigma(&s), median_sigma(&p));
     Stats { snr_db, predicted_db, sigma_db, predicted_sigma_db }
 }
 
-/// Bursts for a mean of a per-burst scatter `sigma` dB to stay within
-/// `SNR_GATE_MARGIN_DB` of another mean over as many bursts at 3 sigma:
-/// `3 sigma sqrt(2 / n) <= margin`. The sweep records over this many and the gate
-/// measures over as many, so the margin holds the noise of both. At least `min`.
+/// Bursts for a median of a per-burst scatter `sigma` dB to stay within
+/// `SNR_GATE_MARGIN_DB` of another median over as many bursts at 3 sigma. A median
+/// over n bursts has a variance of about pi/2 sigma^2 / n, so the difference of two
+/// has pi sigma^2 / n: `3 sigma sqrt(pi / n) <= margin`. The sweep records over this
+/// many and the gate measures over as many. At least `min`.
 fn bursts_for(sigma: f32, min: u32) -> u32 {
     let k = (3.0 * sigma / SNR_GATE_MARGIN_DB).powi(2);
-    let n = ((2.0 * k).ceil() as u32).max(min);
+    let n = ((std::f32::consts::PI * k).ceil() as u32).max(min);
     assert!(n <= MAX_BURSTS, "a per-burst SNR scatter of {sigma:.2} dB needs {n} bursts per point");
     n
 }
@@ -244,7 +258,7 @@ fn snr_sweep() {
     if write {
         let b = SnrBaseline {
             source: SnrSource {
-                what: "Mean SNR the receiver reports, around each level's 10 % CER point, from the known position"
+                what: "Median SNR the receiver reports, around each level's 10 % CER point, from the known position"
                     .into(),
                 commit,
                 command: format!(
@@ -260,7 +274,7 @@ fn snr_sweep() {
     }
 }
 
-/// Fails when the mean SNR the receiver reports, or the SNR predicted from a level-0
+/// Fails when the median SNR the receiver reports, or the SNR predicted from a level-0
 /// burst, has moved from `perf/snr.toml` by more than `SNR_GATE_MARGIN_DB`. Each point
 /// is measured over as many fresh bursts as it was recorded over, or `TRIALS` if more.
 #[test]
@@ -400,13 +414,21 @@ fn snr_prediction_matches_measurement() {
 }
 
 #[test]
-fn bursts_cover_both_means() {
-    // Three sigma of the difference of two means over n bursts each fits the margin.
+fn bursts_cover_both_medians() {
+    // Three sigma of the difference of two medians over n bursts each fits the margin.
     for sigma in [0.2, 0.5, 1.0, 1.3] {
         let n = bursts_for(sigma, 1) as f32;
-        assert!(3.0 * sigma * (2.0 / n).sqrt() <= SNR_GATE_MARGIN_DB, "{sigma}: {n}");
+        assert!(3.0 * sigma * (std::f32::consts::PI / n).sqrt() <= SNR_GATE_MARGIN_DB, "{sigma}: {n}");
     }
     assert_eq!(bursts_for(0.1, 200), 200);
+}
+
+#[test]
+fn median_sigma_ignores_outliers() {
+    let (m, s) = median_sigma(&[1.0, 2.0, 3.0, 4.0, -40.0]);
+    assert_eq!(m, 2.0);
+    assert!((s - 1.4826).abs() < 1e-4, "{s}");
+    assert_eq!(median_sigma(&[1.0, 3.0]).0, 2.0);
 }
 
 #[test]
