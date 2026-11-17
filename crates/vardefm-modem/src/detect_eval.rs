@@ -144,8 +144,12 @@ pub(crate) fn received(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, t
 /// The audio the receiver gets when trial `t` sends `sent` over the `mode` channel
 /// at `cnr` dB.
 pub(crate) fn through_channel(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: u32) -> Vec<f32> {
-    let cfg =
-        FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..FmChannelConfig::by_name(mode).unwrap() };
+    through(m, &FmChannelConfig::by_name(mode).unwrap(), cnr, sent, t)
+}
+
+/// As [`through_channel`], over channel `channel` at `cnr` dB instead of the mode's.
+pub(crate) fn through(m: &Modem, channel: &FmChannelConfig, cnr: f32, sent: &Burst, t: u32) -> Vec<f32> {
+    let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..channel.clone() };
     transmit(&cfg, &m.modulate(sent))
 }
 
@@ -167,7 +171,12 @@ fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t
 /// The channel's delays depend neither on its noise nor on the payload (the burst
 /// layout is fixed by level and size), so one noiseless copy gives it for every trial.
 pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
-    let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+    true_position_on(m, &FmChannelConfig::by_name(mode).unwrap(), level, ncw)
+}
+
+/// As [`true_position`], over channel `channel`.
+pub(crate) fn true_position_on(m: &Modem, channel: &FmChannelConfig, level: u8, ncw: usize) -> usize {
+    let clean = FmChannelConfig { cnr_db: None, ..channel.clone() };
     let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
     m.ofdm.detect(&transmit(&clean, &tx), 0).expect("burst not found on a clean channel")
 }
@@ -236,6 +245,17 @@ pub(crate) fn env_modes(default: &str) -> Vec<String> {
         assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
     }
     modes
+}
+
+/// `CHANNELS` as a list of channel specs (`FmChannelConfig::parse_channel`), each
+/// checked up front; empty when unset, which means each mode's own channel. An
+/// unknown channel stops the run rather than falling back to a default.
+pub(crate) fn env_channels() -> Vec<(String, FmChannelConfig)> {
+    let Ok(v) = std::env::var("CHANNELS") else {
+        return Vec::new();
+    };
+    let parse = |s: &str| FmChannelConfig::parse_channel(s).unwrap_or_else(|e| panic!("CHANNELS: {e}"));
+    v.split(',').map(str::trim).map(|s| (s.to_string(), parse(s))).collect()
 }
 
 /// Environment variable `name` as a switch: unset, `0` or `false` is off, `1` or

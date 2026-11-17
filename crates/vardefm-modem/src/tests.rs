@@ -92,35 +92,48 @@ fn decodes_through_noisy_radio() {
 /// Prints, per level, the codeword success rate and estimated SNR across CNR.
 /// Used to set the rate-adaptation thresholds in vardefm-link.
 /// `cargo test --release -p vardefm-modem level_table -- --ignored --nocapture`
+///
+/// Environment: `MODES` (narrow,wide), `CHANNELS` (channel specs as in
+/// `FmChannelConfig::parse_channel`; unset, each mode on its own channel).
 #[test]
 #[ignore]
 fn level_table() {
-    for mode in ["narrow", "wide"] {
-        let m = modem(mode);
-        println!("{mode}: net rates {:?}", (0..7).map(|l| m.net_rate(l) as u32).collect::<Vec<_>>());
-        for level in 0..LEVELS.len() as u8 {
-            let mut line = format!("{mode} L{level} {:>10}:", LEVELS[level as usize].name);
-            for cnr in [6.0, 8.0, 10.0, 12.0, 14.0, 17.0, 20.0, 24.0, 28.0, 33.0, 40.0] {
-                let (mut ok, mut total, mut snr, mut nf) = (0, 0, 0.0, 0);
-                for t in 0..4 {
-                    let b = burst(level, m.max_ncw(level).min(4), 100 + t);
-                    let cfg = FmChannelConfig {
-                        cnr_db: Some(cnr),
-                        seed: t as u64 + 1,
-                        ..FmChannelConfig::by_name(mode).unwrap()
-                    };
-                    let got = receive(&mut Receiver::new(m.clone()), &transmit(&cfg, &m.modulate(&b)));
-                    total += b.payload.len();
-                    if let Some(g) = got.first() {
-                        ok += g.payload.iter().filter(|p| p.is_some()).count();
-                        snr += g.snr_db;
-                        nf += 1;
-                    }
-                }
-                line += &format!(" {cnr}:{:.0}%/{:.1}", 100.0 * ok as f32 / total as f32, snr / nf.max(1) as f32);
-            }
-            println!("{line}");
+    let channels = crate::detect_eval::env_channels();
+    for mode in crate::detect_eval::env_modes("narrow,wide") {
+        let mode = mode.as_str();
+        let on = if channels.is_empty() {
+            vec![(mode.to_string(), FmChannelConfig::by_name(mode).unwrap())]
+        } else {
+            channels.clone()
+        };
+        for (name, channel) in &on {
+            level_table_on(mode, name, channel);
         }
+    }
+}
+
+/// One mode's `level_table` over `channel`, named `name`.
+fn level_table_on(mode: &str, name: &str, channel: &FmChannelConfig) {
+    let m = modem(mode);
+    println!("{mode} on {name}: net rates {:?}", (0..7).map(|l| m.net_rate(l) as u32).collect::<Vec<_>>());
+    for level in 0..LEVELS.len() as u8 {
+        let mut line = format!("{mode} on {name} L{level} {:>10}:", LEVELS[level as usize].name);
+        for cnr in [6.0, 8.0, 10.0, 12.0, 14.0, 17.0, 20.0, 24.0, 28.0, 33.0, 40.0] {
+            let (mut ok, mut total, mut snr, mut nf) = (0, 0, 0.0, 0);
+            for t in 0..4 {
+                let b = burst(level, m.max_ncw(level).min(4), 100 + t);
+                let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: t as u64 + 1, ..channel.clone() };
+                let got = receive(&mut Receiver::new(m.clone()), &transmit(&cfg, &m.modulate(&b)));
+                total += b.payload.len();
+                if let Some(g) = got.first() {
+                    ok += g.payload.iter().filter(|p| p.is_some()).count();
+                    snr += g.snr_db;
+                    nf += 1;
+                }
+            }
+            line += &format!(" {cnr}:{:.0}%/{:.1}", 100.0 * ok as f32 / total as f32, snr / nf.max(1) as f32);
+        }
+        println!("{line}");
     }
 }
 

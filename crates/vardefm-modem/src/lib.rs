@@ -318,3 +318,6 @@ mod detect_eval;
 
 #[cfg(test)]
 mod level_eval;
+
+#[cfg(test)]
+mod spectrum_eval;

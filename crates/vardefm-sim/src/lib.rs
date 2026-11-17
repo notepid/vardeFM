@@ -12,6 +12,8 @@ use rand_distr::{Distribution, Normal};
 use std::f32::consts::PI;
 use vardefm_dsp::filter::{design_lowpass_fir, fir_complex, resample_cubic, Chain, FirstOrder};
 
+pub mod spectrum;
+
 #[derive(Clone, Debug)]
 pub struct FmChannelConfig {
     pub fs: f32,
@@ -80,15 +82,94 @@ impl FmChannelConfig {
             _ => None,
         }
     }
+
+    /// Mic/speaker path of a radio set to 25 kHz channels: the radio scales the
+    /// deviation after its limiter and opens the IF filter, so the audio chain and
+    /// `clip_level` stay as in [`Self::narrow`].
+    pub fn mic_25k() -> Self {
+        Self { deviation_hz: 5_000.0, if_bandwidth_hz: 15_000.0, ..Self::narrow() }
+    }
+
+    /// Flat data port of a radio set to 12.5 kHz channels. The deviation is the
+    /// [`Self::wide`] setting halved, as a radio switched to narrow typically does;
+    /// what a given radio does varies, so sweep it.
+    pub fn data_12k5() -> Self {
+        Self { deviation_hz: 1_500.0, if_bandwidth_hz: 11_000.0, ..Self::wide() }
+    }
+
+    /// A channel by radio path and channel spacing, independent of the waveform:
+    /// one of [`CHANNELS`]. `mic-12k5` is [`Self::narrow`] and `data-25k` is
+    /// [`Self::wide`].
+    pub fn by_channel(name: &str) -> Option<Self> {
+        match name {
+            "mic-12k5" => Some(Self::narrow()),
+            "mic-25k" => Some(Self::mic_25k()),
+            "data-25k" => Some(Self::wide()),
+            "data-12k5" => Some(Self::data_12k5()),
+            _ => None,
+        }
+    }
+
+    /// A channel from `name[:dev=HZ][:if=HZ]`: a [`CHANNELS`] preset with its peak
+    /// deviation or IF bandwidth overridden, for sweeps. Rejects unknown names and
+    /// keys, and an RF signal the sample rate cannot hold.
+    pub fn parse_channel(spec: &str) -> Result<Self, String> {
+        let mut parts = spec.split(':');
+        let name = parts.next().unwrap_or_default().trim();
+        let mut cfg = Self::by_channel(name)
+            .ok_or_else(|| format!("unknown channel {name:?} in {spec:?} (one of {})", CHANNELS.join(", ")))?;
+        for part in parts {
+            let (key, value) = part.split_once('=').ok_or_else(|| format!("{spec:?}: {part:?} is not key=value"))?;
+            let hz: f32 = value.trim().parse().map_err(|_| format!("{spec:?}: {value:?} is not a number"))?;
+            if !(hz.is_finite() && hz > 0.0) {
+                return Err(format!("{spec:?}: {key} must be above 0 Hz"));
+            }
+            match key.trim() {
+                "dev" => cfg.deviation_hz = hz,
+                "if" => cfg.if_bandwidth_hz = hz,
+                k => return Err(format!("{spec:?}: unknown key {k:?} (dev or if)")),
+            }
+        }
+        // The complex baseband spans fs; keep Carson's bandwidth and the IF filter
+        // well inside it, so aliased sidebands cannot reach the receiver.
+        let carson = 2.0 * (cfg.deviation_hz + cfg.tx_band.1);
+        if carson > cfg.fs / 2.0 || cfg.if_bandwidth_hz > cfg.fs / 2.0 {
+            return Err(format!("{spec:?}: Carson bandwidth {carson} Hz or IF too wide for fs {} Hz", cfg.fs));
+        }
+        Ok(cfg)
+    }
+
+    /// Carrier-to-noise density in dB-Hz for a carrier-to-noise ratio of `cnr_db`
+    /// in this channel's IF bandwidth: the same received signal strength gives the
+    /// same C/N0 whatever the IF.
+    pub fn cn0_db(&self, cnr_db: f32) -> f32 {
+        cnr_db + 10.0 * self.if_bandwidth_hz.log10()
+    }
+}
+
+/// The channel presets of [`FmChannelConfig::by_channel`]: radio path (`mic` for
+/// mic/speaker audio, `data` for the flat data port) and channel spacing.
+pub const CHANNELS: [&str; 4] = ["mic-12k5", "mic-25k", "data-25k", "data-12k5"];
+
+/// One transmission on the air: complex baseband at `fs`, before noise.
+pub struct Rf {
+    pub samples: Vec<Complex32>,
+    /// The samples while the carrier is up.
+    pub carrier: std::ops::Range<usize>,
 }
 
 /// Pass one transmission (audio at `cfg.fs`, full scale = peak deviation) through the channel.
 pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
+    receive(cfg, &modulate(cfg, audio))
+}
+
+/// The transmitter: audio chain, deviation limiter and FM modulator. The carrier
+/// is up for `audio`, with `cfg.lead_silence_s` before and `cfg.trail_silence_s`
+/// after.
+pub fn modulate(cfg: &FmChannelConfig, audio: &[f32]) -> Rf {
     let fs = cfg.fs;
     let lead = (cfg.lead_silence_s * fs) as usize;
     let trail = (cfg.trail_silence_s * fs) as usize;
-    let keyup = (cfg.keyup_delay_s * fs) as usize;
-    let tail = (cfg.squelch_tail_s * fs) as usize;
     let total = lead + audio.len() + trail;
     let carrier = lead..lead + audio.len();
 
@@ -105,20 +186,38 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
         tx_audio[lead + i] = tx_chain.process(v);
     }
 
-    // --- FM modulator + RF noise ---
-    let mut rng = StdRng::seed_from_u64(cfg.seed);
-    let sigma = cfg.cnr_db.map(|c| (10f32.powf(-c / 10.0) * fs / cfg.if_bandwidth_hz / 2.0).sqrt());
-    let normal = Normal::new(0.0f32, 1.0).unwrap();
+    // --- FM modulator ---
     let mut phase = 0f32;
     let k = 2.0 * PI * cfg.deviation_hz / fs;
-    let rf: Vec<Complex32> = (0..total)
+    let samples = (0..total)
         .map(|i| {
-            let mut z = if carrier.contains(&i) {
+            if carrier.contains(&i) {
                 phase = (phase + k * tx_audio[i]) % (2.0 * PI);
                 Complex32::from_polar(1.0, phase)
             } else {
                 Complex32::new(0.0, 0.0)
-            };
+            }
+        })
+        .collect();
+    Rf { samples, carrier }
+}
+
+/// The receiver: RF noise at `cfg.cnr_db`, IF filter, discriminator, de-emphasis,
+/// audio filter, squelch and sound-card clock.
+pub fn receive(cfg: &FmChannelConfig, rf: &Rf) -> Vec<f32> {
+    let fs = cfg.fs;
+    let keyup = (cfg.keyup_delay_s * fs) as usize;
+    let tail = (cfg.squelch_tail_s * fs) as usize;
+    let total = rf.samples.len();
+    let carrier = rf.carrier.clone();
+
+    // --- RF noise ---
+    let mut rng = StdRng::seed_from_u64(cfg.seed);
+    let sigma = cfg.cnr_db.map(|c| (10f32.powf(-c / 10.0) * fs / cfg.if_bandwidth_hz / 2.0).sqrt());
+    let normal = Normal::new(0.0f32, 1.0).unwrap();
+    let rf: Vec<Complex32> = (0..total)
+        .map(|i| {
+            let mut z = rf.samples[i];
             if let Some(s) = sigma {
                 z += Complex32::new(normal.sample(&mut rng), normal.sample(&mut rng)) * s;
             } else if !carrier.contains(&i) {
@@ -173,6 +272,24 @@ mod tests {
         let out = transmit(&cfg, &tone);
         let peak = out[24_000..40_000].iter().fold(0f32, |m, v| m.max(v.abs()));
         assert!((peak - 0.3).abs() < 0.05, "peak {peak}");
+    }
+
+    /// Every listed channel parses; overrides apply; anything unknown or out of
+    /// range is refused rather than replaced by a default.
+    #[test]
+    fn channels_parse_and_refuse_what_they_do_not_know() {
+        for name in CHANNELS {
+            assert!(FmChannelConfig::parse_channel(name).is_ok(), "{name}");
+        }
+        let c = FmChannelConfig::parse_channel("data-12k5:dev=2000:if=8000").unwrap();
+        assert_eq!((c.deviation_hz, c.if_bandwidth_hz, c.emphasis_us), (2000.0, 8000.0, None));
+        let n = FmChannelConfig::parse_channel("mic-12k5").unwrap();
+        assert_eq!((n.deviation_hz, n.if_bandwidth_hz), (2500.0, 11_000.0));
+        for bad in
+            ["narrow", "mic-12k5:dev", "mic-12k5:dev=x", "mic-12k5:dev=-1", "mic-12k5:bw=9000", "data-25k:dev=9000"]
+        {
+            assert!(FmChannelConfig::parse_channel(bad).is_err(), "{bad} parsed");
+        }
     }
 }
 

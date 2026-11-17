@@ -1219,6 +1219,7 @@ dependencies = [
  "num-complex",
  "rand",
  "rand_distr",
+ "rustfft",
  "vardefm-dsp",
 ]
 
