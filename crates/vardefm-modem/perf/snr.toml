@@ -1,6 +1,6 @@
 [source]
-what = "Median SNR the receiver reports, around each level's 10 % CER point, from the known position"
-commit = "cc4081c"
+what = "SNR the receiver reports, and predicts from level-0 bursts, around each level's 10 % CER point"
+commit = "73edc11"
 command = "WRITE=1 TRIALS=200 cargo test --release -p vardefm-modem snr_sweep -- --ignored"
 min_bursts = 200
 levels_commit = "eb35213"
@@ -13,10 +13,32 @@ drive = 0.3
 cnr_db = 3.04
 offset_db = -0.5
 snr_db = -5.338
-predicted_db = -5.338
 sigma_db = 0.9
-predicted_sigma_db = 0.9
 bursts = 382
+
+[point.from_data]
+median_db = -5.338
+q95_db = -4.018
+q99_db = -3.635
+sigma_db = 0.9
+median_share = 0.5
+q95_share = 0.052
+
+[point.from_short]
+median_db = -5.318
+q95_db = -3.553
+q99_db = -2.906
+sigma_db = 1.231
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -4.72
+q95_db = -1.511
+q99_db = -0.821
+sigma_db = 2.543
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -26,10 +48,32 @@ drive = 0.3
 cnr_db = 3.04
 offset_db = 0.0
 snr_db = -3.974
-predicted_db = -3.974
 sigma_db = 0.878
-predicted_sigma_db = 0.878
 bursts = 353
+
+[point.from_data]
+median_db = -3.974
+q95_db = -2.734
+q99_db = -2.083
+sigma_db = 0.878
+median_share = 0.501
+q95_share = 0.051
+
+[point.from_short]
+median_db = -3.845
+q95_db = -2.235
+q99_db = -1.832
+sigma_db = 1.21
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -3.273
+q95_db = -0.373
+q99_db = 0.44
+sigma_db = 2.306
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -39,10 +83,32 @@ drive = 0.3
 cnr_db = 3.04
 offset_db = 0.5
 snr_db = -2.468
-predicted_db = -2.468
 sigma_db = 0.784
-predicted_sigma_db = 0.784
 bursts = 290
+
+[point.from_data]
+median_db = -2.468
+q95_db = -1.435
+q99_db = -0.951
+sigma_db = 0.784
+median_share = 0.5
+q95_share = 0.052
+
+[point.from_short]
+median_db = -2.456
+q95_db = -0.887
+q99_db = -0.455
+sigma_db = 1.19
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -1.787
+q95_db = 0.949
+q99_db = 1.926
+sigma_db = 2.009
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -52,10 +118,32 @@ drive = 0.3
 cnr_db = 3.04
 offset_db = 1.0
 snr_db = -0.79
-predicted_db = -0.79
 sigma_db = 0.802
-predicted_sigma_db = 0.802
 bursts = 297
+
+[point.from_data]
+median_db = -0.79
+q95_db = 0.293
+q99_db = 0.471
+sigma_db = 0.802
+median_share = 0.502
+q95_share = 0.051
+
+[point.from_short]
+median_db = -0.751
+q95_db = 0.532
+q99_db = 0.914
+sigma_db = 0.952
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -0.424
+q95_db = 2.125
+q99_db = 2.987
+sigma_db = 1.939
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -65,10 +153,32 @@ drive = 0.3
 cnr_db = 4.17
 offset_db = -0.5
 snr_db = -2.07
-predicted_db = -2.112
 sigma_db = 0.872
-predicted_sigma_db = 0.795
 bursts = 345
+
+[point.from_data]
+median_db = -2.112
+q95_db = -0.923
+q99_db = -0.496
+sigma_db = 0.795
+median_share = 0.501
+q95_share = 0.052
+
+[point.from_short]
+median_db = -1.966
+q95_db = -0.554
+q99_db = -0.066
+sigma_db = 1.085
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -1.685
+q95_db = 1.129
+q99_db = 1.867
+sigma_db = 2.094
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -78,10 +188,32 @@ drive = 0.3
 cnr_db = 4.17
 offset_db = 0.0
 snr_db = -0.351
-predicted_db = -0.429
 sigma_db = 0.58
-predicted_sigma_db = 0.663
 bursts = 200
+
+[point.from_data]
+median_db = -0.429
+q95_db = 0.582
+q99_db = 0.943
+sigma_db = 0.663
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = -0.352
+q95_db = 0.796
+q99_db = 1.235
+sigma_db = 0.944
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -0.011
+q95_db = 2.598
+q99_db = 3.658
+sigma_db = 1.917
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -91,10 +223,32 @@ drive = 0.3
 cnr_db = 4.17
 offset_db = 0.5
 snr_db = 1.352
-predicted_db = 1.285
 sigma_db = 0.627
-predicted_sigma_db = 0.563
 bursts = 200
+
+[point.from_data]
+median_db = 1.285
+q95_db = 2.063
+q99_db = 2.422
+sigma_db = 0.563
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 1.341
+q95_db = 2.394
+q99_db = 2.719
+sigma_db = 0.74
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 1.444
+q95_db = 3.799
+q99_db = 4.455
+sigma_db = 1.662
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -104,10 +258,32 @@ drive = 0.3
 cnr_db = 4.17
 offset_db = 1.0
 snr_db = 2.922
-predicted_db = 2.954
 sigma_db = 0.537
-predicted_sigma_db = 0.538
 bursts = 200
+
+[point.from_data]
+median_db = 2.954
+q95_db = 3.639
+q99_db = 3.849
+sigma_db = 0.538
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 2.966
+q95_db = 3.886
+q99_db = 4.21
+sigma_db = 0.651
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 2.99
+q95_db = 5.389
+q99_db = 6.186
+sigma_db = 1.598
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -117,10 +293,32 @@ drive = 0.3
 cnr_db = 5.42
 offset_db = -0.5
 snr_db = 2.199
-predicted_db = 2.178
 sigma_db = 0.518
-predicted_sigma_db = 0.531
 bursts = 200
+
+[point.from_data]
+median_db = 2.178
+q95_db = 2.859
+q99_db = 3.164
+sigma_db = 0.531
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 2.141
+q95_db = 3.19
+q99_db = 3.546
+sigma_db = 0.681
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 2.353
+q95_db = 4.768
+q99_db = 5.788
+sigma_db = 1.591
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -130,10 +328,32 @@ drive = 0.3
 cnr_db = 5.42
 offset_db = 0.0
 snr_db = 3.703
-predicted_db = 3.719
 sigma_db = 0.474
-predicted_sigma_db = 0.527
 bursts = 200
+
+[point.from_data]
+median_db = 3.719
+q95_db = 4.424
+q99_db = 4.676
+sigma_db = 0.527
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 3.724
+q95_db = 4.688
+q99_db = 4.96
+sigma_db = 0.585
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 3.879
+q95_db = 6.186
+q99_db = 7.032
+sigma_db = 1.532
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -143,10 +363,32 @@ drive = 0.3
 cnr_db = 5.42
 offset_db = 0.5
 snr_db = 5.31
-predicted_db = 5.296
 sigma_db = 0.383
-predicted_sigma_db = 0.396
 bursts = 200
+
+[point.from_data]
+median_db = 5.296
+q95_db = 6.021
+q99_db = 6.345
+sigma_db = 0.396
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 5.308
+q95_db = 6.255
+q99_db = 6.589
+sigma_db = 0.535
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.394
+q95_db = 7.608
+q99_db = 8.574
+sigma_db = 1.44
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -156,10 +398,32 @@ drive = 0.3
 cnr_db = 5.42
 offset_db = 1.0
 snr_db = 6.962
-predicted_db = 6.847
 sigma_db = 0.333
-predicted_sigma_db = 0.377
 bursts = 200
+
+[point.from_data]
+median_db = 6.847
+q95_db = 7.451
+q99_db = 7.67
+sigma_db = 0.377
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 6.864
+q95_db = 7.609
+q99_db = 7.922
+sigma_db = 0.518
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.899
+q95_db = 9.042
+q99_db = 9.668
+sigma_db = 1.375
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -169,10 +433,32 @@ drive = 0.3
 cnr_db = 6.26
 offset_db = -0.5
 snr_db = 4.878
-predicted_db = 4.894
 sigma_db = 0.592
-predicted_sigma_db = 0.434
 bursts = 200
+
+[point.from_data]
+median_db = 4.894
+q95_db = 5.545
+q99_db = 5.686
+sigma_db = 0.434
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 4.827
+q95_db = 5.741
+q99_db = 6.041
+sigma_db = 0.563
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 4.925
+q95_db = 7.193
+q99_db = 8.049
+sigma_db = 1.466
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -182,10 +468,32 @@ drive = 0.3
 cnr_db = 6.26
 offset_db = 0.0
 snr_db = 6.334
-predicted_db = 6.358
 sigma_db = 0.473
-predicted_sigma_db = 0.439
 bursts = 200
+
+[point.from_data]
+median_db = 6.358
+q95_db = 7.076
+q99_db = 7.201
+sigma_db = 0.439
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 6.394
+q95_db = 7.203
+q99_db = 7.492
+sigma_db = 0.508
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.428
+q95_db = 8.638
+q99_db = 9.52
+sigma_db = 1.456
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -195,10 +503,32 @@ drive = 0.3
 cnr_db = 6.26
 offset_db = 0.5
 snr_db = 7.714
-predicted_db = 7.722
 sigma_db = 0.424
-predicted_sigma_db = 0.313
 bursts = 200
+
+[point.from_data]
+median_db = 7.722
+q95_db = 8.149
+q99_db = 8.366
+sigma_db = 0.313
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 7.705
+q95_db = 8.385
+q99_db = 8.645
+sigma_db = 0.446
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 7.813
+q95_db = 9.629
+q99_db = 10.173
+sigma_db = 1.292
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -208,10 +538,32 @@ drive = 0.3
 cnr_db = 6.26
 offset_db = 1.0
 snr_db = 8.755
-predicted_db = 8.774
 sigma_db = 0.419
-predicted_sigma_db = 0.309
 bursts = 200
+
+[point.from_data]
+median_db = 8.774
+q95_db = 9.214
+q99_db = 9.43
+sigma_db = 0.309
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 8.772
+q95_db = 9.408
+q99_db = 9.616
+sigma_db = 0.407
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 8.954
+q95_db = 10.545
+q99_db = 11.066
+sigma_db = 1.208
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -221,10 +573,32 @@ drive = 0.3
 cnr_db = 8.07
 offset_db = -0.5
 snr_db = 9.32
-predicted_db = 9.344
 sigma_db = 0.38
-predicted_sigma_db = 0.273
 bursts = 200
+
+[point.from_data]
+median_db = 9.344
+q95_db = 9.793
+q99_db = 9.933
+sigma_db = 0.273
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 9.34
+q95_db = 9.955
+q99_db = 10.241
+sigma_db = 0.406
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 9.556
+q95_db = 10.958
+q99_db = 11.429
+sigma_db = 1.105
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -234,10 +608,32 @@ drive = 0.3
 cnr_db = 8.07
 offset_db = 0.0
 snr_db = 10.23
-predicted_db = 10.182
 sigma_db = 0.347
-predicted_sigma_db = 0.242
 bursts = 200
+
+[point.from_data]
+median_db = 10.182
+q95_db = 10.564
+q99_db = 10.778
+sigma_db = 0.242
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 10.226
+q95_db = 10.816
+q99_db = 11.039
+sigma_db = 0.372
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 10.456
+q95_db = 11.566
+q99_db = 11.954
+sigma_db = 0.867
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -247,10 +643,32 @@ drive = 0.3
 cnr_db = 8.07
 offset_db = 0.5
 snr_db = 10.897
-predicted_db = 10.888
 sigma_db = 0.371
-predicted_sigma_db = 0.267
 bursts = 200
+
+[point.from_data]
+median_db = 10.888
+q95_db = 11.357
+q99_db = 11.434
+sigma_db = 0.267
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 10.936
+q95_db = 11.442
+q99_db = 11.589
+sigma_db = 0.336
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 11.154
+q95_db = 12.191
+q99_db = 12.691
+sigma_db = 0.677
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -260,10 +678,32 @@ drive = 0.3
 cnr_db = 8.07
 offset_db = 1.0
 snr_db = 11.553
-predicted_db = 11.568
 sigma_db = 0.345
-predicted_sigma_db = 0.206
 bursts = 200
+
+[point.from_data]
+median_db = 11.568
+q95_db = 11.917
+q99_db = 11.986
+sigma_db = 0.206
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 11.579
+q95_db = 11.994
+q99_db = 12.153
+sigma_db = 0.282
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 11.676
+q95_db = 12.652
+q99_db = 13.081
+sigma_db = 0.628
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -273,10 +713,32 @@ drive = 0.25
 cnr_db = 12.73
 offset_db = -0.5
 snr_db = 13.787
-predicted_db = 13.573
 sigma_db = 0.24
-predicted_sigma_db = 0.189
 bursts = 200
+
+[point.from_data]
+median_db = 13.573
+q95_db = 13.908
+q99_db = 14.094
+sigma_db = 0.189
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 13.58
+q95_db = 14.011
+q99_db = 14.224
+sigma_db = 0.286
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 13.622
+q95_db = 14.849
+q99_db = 15.268
+sigma_db = 0.711
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -286,10 +748,32 @@ drive = 0.25
 cnr_db = 12.73
 offset_db = 0.0
 snr_db = 14.293
-predicted_db = 14.105
 sigma_db = 0.255
-predicted_sigma_db = 0.226
 bursts = 200
+
+[point.from_data]
+median_db = 14.105
+q95_db = 14.423
+q99_db = 14.496
+sigma_db = 0.226
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 14.067
+q95_db = 14.518
+q99_db = 14.748
+sigma_db = 0.271
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 14.125
+q95_db = 15.379
+q99_db = 15.927
+sigma_db = 0.762
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -299,10 +783,32 @@ drive = 0.25
 cnr_db = 12.73
 offset_db = 0.5
 snr_db = 14.782
-predicted_db = 14.557
 sigma_db = 0.254
-predicted_sigma_db = 0.188
 bursts = 200
+
+[point.from_data]
+median_db = 14.557
+q95_db = 14.868
+q99_db = 15.011
+sigma_db = 0.188
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 14.531
+q95_db = 15.044
+q99_db = 15.222
+sigma_db = 0.285
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 14.613
+q95_db = 15.87
+q99_db = 16.377
+sigma_db = 0.766
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -312,10 +818,32 @@ drive = 0.25
 cnr_db = 12.73
 offset_db = 1.0
 snr_db = 15.257
-predicted_db = 15.069
 sigma_db = 0.227
-predicted_sigma_db = 0.246
 bursts = 200
+
+[point.from_data]
+median_db = 15.069
+q95_db = 15.416
+q99_db = 15.519
+sigma_db = 0.246
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 15.021
+q95_db = 15.56
+q99_db = 15.767
+sigma_db = 0.29
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 15.083
+q95_db = 16.426
+q99_db = 16.927
+sigma_db = 0.816
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -325,10 +853,32 @@ drive = 0.25
 cnr_db = 16.13
 offset_db = -0.5
 snr_db = 17.005
-predicted_db = 16.815
 sigma_db = 0.23
-predicted_sigma_db = 0.242
 bursts = 200
+
+[point.from_data]
+median_db = 16.815
+q95_db = 17.27
+q99_db = 17.405
+sigma_db = 0.242
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 16.803
+q95_db = 17.467
+q99_db = 17.657
+sigma_db = 0.38
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 16.892
+q95_db = 18.526
+q99_db = 19.044
+sigma_db = 0.897
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -338,10 +888,32 @@ drive = 0.25
 cnr_db = 16.13
 offset_db = 0.0
 snr_db = 17.377
-predicted_db = 17.271
 sigma_db = 0.289
-predicted_sigma_db = 0.31
 bursts = 200
+
+[point.from_data]
+median_db = 17.271
+q95_db = 17.7
+q99_db = 17.803
+sigma_db = 0.31
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 17.267
+q95_db = 17.903
+q99_db = 18.142
+sigma_db = 0.398
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.398
+q95_db = 18.998
+q99_db = 19.581
+sigma_db = 1.021
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -351,10 +923,32 @@ drive = 0.25
 cnr_db = 16.13
 offset_db = 0.5
 snr_db = 17.899
-predicted_db = 17.722
 sigma_db = 0.235
-predicted_sigma_db = 0.31
 bursts = 200
+
+[point.from_data]
+median_db = 17.722
+q95_db = 18.26
+q99_db = 18.458
+sigma_db = 0.31
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 17.717
+q95_db = 18.419
+q99_db = 18.748
+sigma_db = 0.423
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.838
+q95_db = 19.807
+q99_db = 20.533
+sigma_db = 1.135
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "narrow"
@@ -364,10 +958,32 @@ drive = 0.25
 cnr_db = 16.13
 offset_db = 1.0
 snr_db = 18.32
-predicted_db = 18.18
 sigma_db = 0.25
-predicted_sigma_db = 0.31
 bursts = 200
+
+[point.from_data]
+median_db = 18.18
+q95_db = 18.665
+q99_db = 18.834
+sigma_db = 0.31
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 18.133
+q95_db = 18.902
+q99_db = 19.341
+sigma_db = 0.45
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 18.25
+q95_db = 20.397
+q99_db = 21.446
+sigma_db = 1.167
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -377,10 +993,32 @@ drive = 0.5
 cnr_db = 4.86
 offset_db = -0.5
 snr_db = -4.268
-predicted_db = -4.268
 sigma_db = 0.624
-predicted_sigma_db = 0.624
 bursts = 200
+
+[point.from_data]
+median_db = -4.268
+q95_db = -3.443
+q99_db = -3.141
+sigma_db = 0.624
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = -4.079
+q95_db = -2.727
+q99_db = -2.212
+sigma_db = 1.002
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -3.861
+q95_db = -1.043
+q99_db = -0.207
+sigma_db = 2.266
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -390,10 +1028,32 @@ drive = 0.5
 cnr_db = 4.86
 offset_db = 0.0
 snr_db = -2.713
-predicted_db = -2.713
 sigma_db = 0.509
-predicted_sigma_db = 0.509
 bursts = 200
+
+[point.from_data]
+median_db = -2.713
+q95_db = -1.984
+q99_db = -1.744
+sigma_db = 0.509
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = -2.635
+q95_db = -1.412
+q99_db = -1.064
+sigma_db = 0.932
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -2.545
+q95_db = 0.074
+q99_db = 1.154
+sigma_db = 1.973
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -403,10 +1063,32 @@ drive = 0.5
 cnr_db = 4.86
 offset_db = 0.5
 snr_db = -1.233
-predicted_db = -1.233
 sigma_db = 0.445
-predicted_sigma_db = 0.445
 bursts = 200
+
+[point.from_data]
+median_db = -1.233
+q95_db = -0.639
+q99_db = -0.493
+sigma_db = 0.445
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = -1.223
+q95_db = -0.181
+q99_db = 0.179
+sigma_db = 0.752
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -1.212
+q95_db = 1.309
+q99_db = 2.226
+sigma_db = 1.719
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -416,10 +1098,32 @@ drive = 0.5
 cnr_db = 4.86
 offset_db = 1.0
 snr_db = 0.074
-predicted_db = 0.074
 sigma_db = 0.286
-predicted_sigma_db = 0.286
 bursts = 200
+
+[point.from_data]
+median_db = 0.074
+q95_db = 0.536
+q99_db = 0.71
+sigma_db = 0.286
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 0.06
+q95_db = 0.995
+q99_db = 1.369
+sigma_db = 0.606
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 0.091
+q95_db = 2.377
+q99_db = 3.108
+sigma_db = 1.608
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -429,10 +1133,32 @@ drive = 0.5
 cnr_db = 6.15
 offset_db = -0.5
 snr_db = -0.438
-predicted_db = -0.49
 sigma_db = 0.471
-predicted_sigma_db = 0.381
 bursts = 200
+
+[point.from_data]
+median_db = -0.49
+q95_db = 0.018
+q99_db = 0.104
+sigma_db = 0.381
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = -0.403
+q95_db = 0.534
+q99_db = 0.851
+sigma_db = 0.623
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = -0.466
+q95_db = 1.968
+q99_db = 2.833
+sigma_db = 1.666
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -442,10 +1168,32 @@ drive = 0.5
 cnr_db = 6.15
 offset_db = 0.0
 snr_db = 0.724
-predicted_db = 0.736
 sigma_db = 0.435
-predicted_sigma_db = 0.303
 bursts = 200
+
+[point.from_data]
+median_db = 0.736
+q95_db = 1.175
+q99_db = 1.402
+sigma_db = 0.303
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 0.719
+q95_db = 1.551
+q99_db = 1.865
+sigma_db = 0.553
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 0.723
+q95_db = 2.934
+q99_db = 3.652
+sigma_db = 1.57
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -455,10 +1203,32 @@ drive = 0.5
 cnr_db = 6.15
 offset_db = 0.5
 snr_db = 1.693
-predicted_db = 1.718
 sigma_db = 0.367
-predicted_sigma_db = 0.248
 bursts = 200
+
+[point.from_data]
+median_db = 1.718
+q95_db = 2.081
+q99_db = 2.146
+sigma_db = 0.248
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 1.72
+q95_db = 2.427
+q99_db = 2.718
+sigma_db = 0.466
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 1.69
+q95_db = 3.663
+q99_db = 4.222
+sigma_db = 1.479
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -468,10 +1238,32 @@ drive = 0.5
 cnr_db = 6.15
 offset_db = 1.0
 snr_db = 2.533
-predicted_db = 2.504
 sigma_db = 0.355
-predicted_sigma_db = 0.256
 bursts = 200
+
+[point.from_data]
+median_db = 2.504
+q95_db = 2.889
+q99_db = 3.059
+sigma_db = 0.256
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 2.527
+q95_db = 3.299
+q99_db = 3.572
+sigma_db = 0.47
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 2.715
+q95_db = 4.379
+q99_db = 5.133
+sigma_db = 1.263
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -481,10 +1273,32 @@ drive = 0.5
 cnr_db = 8.01
 offset_db = -0.5
 snr_db = 3.153
-predicted_db = 3.108
 sigma_db = 0.307
-predicted_sigma_db = 0.271
 bursts = 200
+
+[point.from_data]
+median_db = 3.108
+q95_db = 3.499
+q99_db = 3.637
+sigma_db = 0.271
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 3.119
+q95_db = 3.852
+q99_db = 4.149
+sigma_db = 0.458
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 3.32
+q95_db = 4.895
+q99_db = 5.414
+sigma_db = 1.057
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -494,10 +1308,32 @@ drive = 0.5
 cnr_db = 8.01
 offset_db = 0.0
 snr_db = 3.875
-predicted_db = 3.888
 sigma_db = 0.32
-predicted_sigma_db = 0.241
 bursts = 200
+
+[point.from_data]
+median_db = 3.888
+q95_db = 4.24
+q99_db = 4.362
+sigma_db = 0.241
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 3.884
+q95_db = 4.589
+q99_db = 4.864
+sigma_db = 0.439
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 3.97
+q95_db = 5.521
+q99_db = 6.011
+sigma_db = 1.01
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -507,10 +1343,32 @@ drive = 0.5
 cnr_db = 8.01
 offset_db = 0.5
 snr_db = 4.591
-predicted_db = 4.549
 sigma_db = 0.255
-predicted_sigma_db = 0.219
 bursts = 200
+
+[point.from_data]
+median_db = 4.549
+q95_db = 4.905
+q99_db = 5.003
+sigma_db = 0.219
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 4.579
+q95_db = 5.178
+q99_db = 5.402
+sigma_db = 0.406
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 4.689
+q95_db = 6.025
+q99_db = 6.624
+sigma_db = 0.92
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -520,10 +1378,32 @@ drive = 0.5
 cnr_db = 8.01
 offset_db = 1.0
 snr_db = 5.212
-predicted_db = 5.187
 sigma_db = 0.241
-predicted_sigma_db = 0.185
 bursts = 200
+
+[point.from_data]
+median_db = 5.187
+q95_db = 5.517
+q99_db = 5.61
+sigma_db = 0.185
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 5.191
+q95_db = 5.773
+q99_db = 5.972
+sigma_db = 0.358
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.287
+q95_db = 6.591
+q99_db = 6.994
+sigma_db = 0.797
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -533,10 +1413,32 @@ drive = 0.4
 cnr_db = 10.91
 offset_db = -0.5
 snr_db = 5.419
-predicted_db = 5.05
 sigma_db = 0.26
-predicted_sigma_db = 0.152
 bursts = 200
+
+[point.from_data]
+median_db = 5.05
+q95_db = 5.339
+q99_db = 5.379
+sigma_db = 0.152
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 5.044
+q95_db = 5.547
+q99_db = 5.737
+sigma_db = 0.319
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.108
+q95_db = 6.325
+q99_db = 7.015
+sigma_db = 0.796
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -546,10 +1448,32 @@ drive = 0.4
 cnr_db = 10.91
 offset_db = 0.0
 snr_db = 5.916
-predicted_db = 5.557
 sigma_db = 0.301
-predicted_sigma_db = 0.163
 bursts = 200
+
+[point.from_data]
+median_db = 5.557
+q95_db = 5.847
+q99_db = 5.936
+sigma_db = 0.163
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 5.591
+q95_db = 6.053
+q99_db = 6.268
+sigma_db = 0.274
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 5.562
+q95_db = 6.915
+q99_db = 7.536
+sigma_db = 0.819
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -559,10 +1483,32 @@ drive = 0.4
 cnr_db = 10.91
 offset_db = 0.5
 snr_db = 6.432
-predicted_db = 6.107
 sigma_db = 0.294
-predicted_sigma_db = 0.173
 bursts = 200
+
+[point.from_data]
+median_db = 6.107
+q95_db = 6.344
+q99_db = 6.431
+sigma_db = 0.173
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 6.082
+q95_db = 6.572
+q99_db = 6.783
+sigma_db = 0.295
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.112
+q95_db = 7.441
+q99_db = 8.046
+sigma_db = 0.819
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -572,10 +1518,32 @@ drive = 0.4
 cnr_db = 10.91
 offset_db = 1.0
 snr_db = 6.972
-predicted_db = 6.623
 sigma_db = 0.256
-predicted_sigma_db = 0.174
 bursts = 200
+
+[point.from_data]
+median_db = 6.623
+q95_db = 6.859
+q99_db = 6.98
+sigma_db = 0.174
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 6.609
+q95_db = 7.119
+q99_db = 7.419
+sigma_db = 0.296
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 6.638
+q95_db = 7.867
+q99_db = 8.35
+sigma_db = 0.73
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -585,10 +1553,32 @@ drive = 0.4
 cnr_db = 14.95
 offset_db = -0.5
 snr_db = 9.546
-predicted_db = 9.187
 sigma_db = 0.263
-predicted_sigma_db = 0.167
 bursts = 200
+
+[point.from_data]
+median_db = 9.187
+q95_db = 9.447
+q99_db = 9.526
+sigma_db = 0.167
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 9.182
+q95_db = 9.724
+q99_db = 9.98
+sigma_db = 0.325
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 9.197
+q95_db = 10.686
+q99_db = 11.205
+sigma_db = 0.865
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -598,10 +1588,32 @@ drive = 0.4
 cnr_db = 14.95
 offset_db = 0.0
 snr_db = 10.028
-predicted_db = 9.67
 sigma_db = 0.224
-predicted_sigma_db = 0.161
 bursts = 200
+
+[point.from_data]
+median_db = 9.67
+q95_db = 9.936
+q99_db = 9.997
+sigma_db = 0.161
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 9.686
+q95_db = 10.207
+q99_db = 10.466
+sigma_db = 0.329
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 9.726
+q95_db = 11.244
+q99_db = 11.779
+sigma_db = 0.794
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -611,10 +1623,32 @@ drive = 0.4
 cnr_db = 14.95
 offset_db = 0.5
 snr_db = 10.543
-predicted_db = 10.176
 sigma_db = 0.236
-predicted_sigma_db = 0.155
 bursts = 200
+
+[point.from_data]
+median_db = 10.176
+q95_db = 10.429
+q99_db = 10.588
+sigma_db = 0.155
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 10.203
+q95_db = 10.753
+q99_db = 11.03
+sigma_db = 0.325
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 10.204
+q95_db = 11.636
+q99_db = 12.062
+sigma_db = 0.836
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -624,10 +1658,32 @@ drive = 0.4
 cnr_db = 14.95
 offset_db = 1.0
 snr_db = 11.002
-predicted_db = 10.678
 sigma_db = 0.261
-predicted_sigma_db = 0.17
 bursts = 200
+
+[point.from_data]
+median_db = 10.678
+q95_db = 10.975
+q99_db = 11.115
+sigma_db = 0.17
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 10.663
+q95_db = 11.239
+q99_db = 11.445
+sigma_db = 0.323
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 10.665
+q95_db = 12.153
+q99_db = 12.734
+sigma_db = 0.894
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -637,10 +1693,32 @@ drive = 0.3
 cnr_db = 20.61
 offset_db = -0.5
 snr_db = 13.034
-predicted_db = 12.587
 sigma_db = 0.286
-predicted_sigma_db = 0.305
 bursts = 200
+
+[point.from_data]
+median_db = 12.587
+q95_db = 13.102
+q99_db = 13.213
+sigma_db = 0.305
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 12.602
+q95_db = 13.616
+q99_db = 14.117
+sigma_db = 0.61
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 12.73
+q95_db = 15.721
+q99_db = 17.976
+sigma_db = 1.554
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -650,10 +1728,32 @@ drive = 0.3
 cnr_db = 20.61
 offset_db = 0.0
 snr_db = 13.499
-predicted_db = 13.133
 sigma_db = 0.277
-predicted_sigma_db = 0.342
 bursts = 200
+
+[point.from_data]
+median_db = 13.133
+q95_db = 13.717
+q99_db = 13.86
+sigma_db = 0.342
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 13.131
+q95_db = 14.206
+q99_db = 14.803
+sigma_db = 0.629
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 13.211
+q95_db = 16.724
+q99_db = 18.789
+sigma_db = 1.67
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -663,10 +1763,32 @@ drive = 0.3
 cnr_db = 20.61
 offset_db = 0.5
 snr_db = 14.048
-predicted_db = 13.671
 sigma_db = 0.319
-predicted_sigma_db = 0.417
 bursts = 200
+
+[point.from_data]
+median_db = 13.671
+q95_db = 14.217
+q99_db = 14.344
+sigma_db = 0.417
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 13.609
+q95_db = 14.892
+q99_db = 15.605
+sigma_db = 0.71
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 13.77
+q95_db = 17.81
+q99_db = 20.555
+sigma_db = 1.861
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -676,10 +1798,32 @@ drive = 0.3
 cnr_db = 20.61
 offset_db = 1.0
 snr_db = 14.559
-predicted_db = 14.144
 sigma_db = 0.308
-predicted_sigma_db = 0.403
 bursts = 200
+
+[point.from_data]
+median_db = 14.144
+q95_db = 14.706
+q99_db = 14.838
+sigma_db = 0.403
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 14.135
+q95_db = 15.544
+q99_db = 16.378
+sigma_db = 0.786
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 14.242
+q95_db = 18.94
+q99_db = 22.545
+sigma_db = 2.171
+median_share = 0.5
+q95_share = 0.051
 
 [[point]]
 mode = "wide"
@@ -689,10 +1833,32 @@ drive = 0.3
 cnr_db = 24.18
 offset_db = -0.5
 snr_db = 16.532
-predicted_db = 16.27
 sigma_db = 0.256
-predicted_sigma_db = 0.659
 bursts = 200
+
+[point.from_data]
+median_db = 16.27
+q95_db = 17.389
+q99_db = 17.684
+sigma_db = 0.659
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 16.257
+q95_db = 18.741
+q99_db = 20.212
+sigma_db = 1.173
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 16.42
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 3.296
+median_share = 0.5
+q95_share = 0.066
 
 [[point]]
 mode = "wide"
@@ -702,10 +1868,32 @@ drive = 0.3
 cnr_db = 24.18
 offset_db = 0.0
 snr_db = 17.036
-predicted_db = 16.846
 sigma_db = 0.303
-predicted_sigma_db = 0.664
 bursts = 200
+
+[point.from_data]
+median_db = 16.846
+q95_db = 17.992
+q99_db = 18.414
+sigma_db = 0.664
+median_share = 0.5
+q95_share = 0.055
+
+[point.from_short]
+median_db = 16.767
+q95_db = 19.641
+q99_db = 21.539
+sigma_db = 1.36
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.099
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 3.76
+median_share = 0.5
+q95_share = 0.101
 
 [[point]]
 mode = "wide"
@@ -715,10 +1903,32 @@ drive = 0.3
 cnr_db = 24.18
 offset_db = 0.5
 snr_db = 17.554
-predicted_db = 17.392
 sigma_db = 0.251
-predicted_sigma_db = 0.86
 bursts = 351
+
+[point.from_data]
+median_db = 17.392
+q95_db = 18.841
+q99_db = 19.393
+sigma_db = 0.86
+median_share = 0.501
+q95_share = 0.051
+
+[point.from_short]
+median_db = 17.297
+q95_db = 20.601
+q99_db = 23.225
+sigma_db = 1.475
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 17.402
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 4.025
+median_share = 0.5
+q95_share = 0.134
 
 [[point]]
 mode = "wide"
@@ -728,7 +1938,29 @@ drive = 0.3
 cnr_db = 24.18
 offset_db = 1.0
 snr_db = 18.017
-predicted_db = 17.863
 sigma_db = 0.289
-predicted_sigma_db = 0.965
 bursts = 422
+
+[point.from_data]
+median_db = 17.863
+q95_db = 19.515
+q99_db = 20.148
+sigma_db = 0.965
+median_share = 0.5
+q95_share = 0.052
+
+[point.from_short]
+median_db = 17.948
+q95_db = 22.111
+q99_db = 25.344
+sigma_db = 1.759
+median_share = 0.5
+q95_share = 0.051
+
+[point.from_header]
+median_db = 18.115
+q95_db = 29.0
+q99_db = 29.0
+sigma_db = 4.593
+median_share = 0.5
+q95_share = 0.163
