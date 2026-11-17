@@ -51,6 +51,9 @@ pub struct Ofdm {
 pub struct Frame {
     /// Equalized data-carrier symbols: `data_carriers()` values per OFDM symbol,
     /// symbol after symbol. [`Frame::symbol`] returns one OFDM symbol.
+    ///
+    /// The row layout comes from the other fields: `symbols.len()` must stay
+    /// `symbol_noise_scale.len() * noise_var.len()`.
     pub symbols: Vec<Complex32>,
     /// Estimated noise variance after equalization, per data carrier.
     pub noise_var: Vec<f32>,
@@ -73,6 +76,7 @@ impl Frame {
     /// The equalized data carriers of OFDM symbol `i`.
     pub fn symbol(&self, i: usize) -> &[Complex32] {
         let nd = self.noise_var.len();
+        debug_assert_eq!(self.symbols.len(), self.nsym() * nd, "Frame fields disagree on the layout");
         &self.symbols[i * nd..(i + 1) * nd]
     }
 }
@@ -259,6 +263,7 @@ impl Ofdm {
         if pos < 0 || pos as usize + n > rx.len() {
             return None;
         }
+        debug_assert_eq!(out.len(), self.p.num_carriers);
         let pos = pos as usize;
         let x = &mut bufs.x;
         x.iter_mut().zip(&rx[pos..pos + n]).for_each(|(c, &v)| *c = Complex32::new(v, 0.0));
@@ -540,6 +545,7 @@ fn track_pilots(cs: &[Complex32], np: usize, scale: &[f32]) -> (Vec<Complex32>, 
 /// hit by a click adds almost nothing. Fewer than three observations cannot show an
 /// outlier and all get weight 1.
 fn training_weights(obs: &[Complex32], nc: usize) -> Vec<f32> {
+    debug_assert!(obs.len().is_multiple_of(nc));
     let n = obs.len() / nc;
     if n < 3 {
         return vec![1.0; n];
@@ -572,6 +578,7 @@ fn robust_reference(e: &[f32]) -> f32 {
 ///
 /// `dev` holds `np` pilots per symbol, symbol after symbol.
 fn noise_model(dev: &[f32], np: usize) -> (Vec<f32>, Vec<f32>) {
+    debug_assert!(dev.len().is_multiple_of(np));
     let nsym = dev.len() / np;
     let per_pilot = |scale: &[f32]| -> Vec<f32> {
         (0..np)
@@ -612,7 +619,14 @@ mod tests {
         let b = ofdm.detect(&rx, 0).expect("frame not detected");
         let frame = ofdm.demodulate(&rx, b, nsym).expect("demod failed");
         assert_eq!(frame.nsym(), nsym);
-        assert_eq!(frame.symbol(nsym - 1), &frame.symbols[(nsym - 1) * ofdm.data_carriers()..]);
+        // Each row of `symbol` decides to the row that was sent in that symbol.
+        let nd = ofdm.data_carriers();
+        for (i, sent) in data.chunks_exact(nd).enumerate() {
+            let (mut got, mut want) = (Vec::new(), Vec::new());
+            frame.symbol(i).iter().for_each(|s| m.hard_bits(*s, &mut got));
+            sent.iter().for_each(|s| m.hard_bits(*s, &mut want));
+            assert_eq!(got, want, "symbol {i}");
+        }
         let mut out = Vec::new();
         for s in &frame.symbols {
             m.hard_bits(*s, &mut out);
