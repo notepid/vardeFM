@@ -15,8 +15,11 @@ pub struct Spectrum {
 impl Spectrum {
     /// Welch estimate over `segments` (each one stretch of carrier), `nfft` points
     /// per FFT with half overlap. The 4-term Blackman-Harris window keeps leakage
-    /// about 92 dB down, so adjacent-channel power can be read down to about -80 dBc.
+    /// about 92 dB down, so adjacent-channel power can be read down to about -80 dBc
+    /// (`weak_tone_reads_at_its_level`). Every segment must hold `nfft` samples, and
+    /// the signal must have power: a spectrum of nothing has no fractions.
     pub fn welch<'a>(segments: impl IntoIterator<Item = &'a [Complex32]>, fs: f32, nfft: usize) -> Self {
+        assert!(nfft >= 2 && nfft.is_multiple_of(2), "nfft {nfft} must be even and at least 2");
         let a = [0.35875, 0.48829, 0.14128, 0.01168];
         let window: Vec<f64> = (0..nfft)
             .map(|n| {
@@ -30,6 +33,7 @@ impl Spectrum {
         let mut frames = 0usize;
         let mut buf = vec![Complex32::new(0.0, 0.0); nfft];
         for seg in segments {
+            assert!(seg.len() >= nfft, "a segment of {} samples is shorter than nfft {nfft}", seg.len());
             let mut start = 0;
             while start + nfft <= seg.len() {
                 for (b, (x, w)) in buf.iter_mut().zip(seg[start..start + nfft].iter().zip(&window)) {
@@ -43,10 +47,12 @@ impl Spectrum {
                 start += nfft / 2;
             }
         }
-        assert!(frames > 0, "no segment holds {nfft} samples");
+        assert!(frames > 0, "no segments");
         // Shift so bin 0 is -fs/2, and scale so the bins sum to the mean power.
         let scale = 1.0 / (frames as f64 * wpow * nfft as f64);
-        let power = (0..nfft).map(|i| acc[(i + nfft / 2) % nfft] * scale).collect();
+        let power: Vec<f64> = (0..nfft).map(|i| acc[(i + nfft / 2) % nfft] * scale).collect();
+        let total: f64 = power.iter().sum();
+        assert!(total.is_finite() && total > 0.0, "the signal's power is {total}");
         Spectrum { power, fs }
     }
 
@@ -156,7 +162,8 @@ mod tests {
 
     /// A tone of 1 kHz at 2.5 kHz deviation puts Jn(2.5)^2 of the power on each
     /// line n kHz from the carrier; the measured power within ±(n + 1/2) kHz must
-    /// match the Bessel sum, and so must a power fraction far down the skirt.
+    /// match the Bessel sum, to about -40 dB (`weak_tone_reads_at_its_level` checks
+    /// lower levels).
     #[test]
     fn fm_tone_matches_bessel_lines() {
         let (fm, dev) = (1_000.0f64, 2_500.0f64);
@@ -174,5 +181,47 @@ mod tests {
             let got = s.fraction_in(-half, half);
             assert!((got - want).abs() < 1e-4 + 1e-3 * (1.0 - want), "n {n}: {got} in ±{half} Hz, want {want}");
         }
+    }
+
+    /// A unit carrier and a tone 12.5 kHz away at -70 and -80 dBc: the power in an
+    /// 8.5 kHz band around the tone, as `spectrum_eval` measures adjacent-channel
+    /// power, reads within 1 dB of the tone's level, so figures that low are
+    /// measured, not leakage.
+    #[test]
+    fn weak_tone_reads_at_its_level() {
+        for dbc in [-70.0f64, -80.0] {
+            let a = 10f64.powf(dbc / 20.0);
+            let x: Vec<Complex32> = (0..1 << 15)
+                .map(|i| {
+                    let ph = 2.0 * PI * 12_500.0 * i as f64 / FS as f64;
+                    Complex32::new((1.0 + a * ph.cos()) as f32, (a * ph.sin()) as f32)
+                })
+                .collect();
+            let s = Spectrum::welch([x.as_slice()], FS, NFFT);
+            let got = 10.0 * s.fraction_in(12_500.0 - 4_250.0, 12_500.0 + 4_250.0).log10();
+            assert!((got - dbc).abs() < 1.0, "tone at {dbc} dBc reads {got:.1} dBc");
+            // The other side holds only leakage of the carrier.
+            let other = 10.0 * s.fraction_in(-12_500.0 - 4_250.0, -12_500.0 + 4_250.0).max(1e-30).log10();
+            assert!(other < dbc - 20.0, "leakage {other:.1} dBc next to a {dbc} dBc tone");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "power is 0")]
+    fn silence_has_no_spectrum() {
+        Spectrum::welch([vec![Complex32::new(0.0, 0.0); NFFT].as_slice()], FS, NFFT);
+    }
+
+    #[test]
+    #[should_panic(expected = "power is NaN")]
+    fn nan_has_no_spectrum() {
+        Spectrum::welch([vec![Complex32::new(f32::NAN, 0.0); NFFT].as_slice()], FS, NFFT);
+    }
+
+    #[test]
+    #[should_panic(expected = "shorter than nfft")]
+    fn a_short_segment_is_refused() {
+        let x = vec![Complex32::new(1.0, 0.0); NFFT];
+        Spectrum::welch([x.as_slice(), &x[..NFFT - 1]], FS, NFFT);
     }
 }

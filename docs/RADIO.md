@@ -114,9 +114,9 @@ your user needs to be in group `gpio` (the default user already is):
 
    - `--mode narrow` on the mic/speaker path fits a 12.5 kHz channel: about
      7 kHz wide at 2.5 kHz deviation. At the robust speed levels the power it
-     puts into a neighbouring channel is about 2 dB above the 60 dB below carrier
-     that commercial 12.5 kHz equipment must meet (ETSI EN 300 086); the fast
-     levels meet it. Where 25 kHz channels are allowed, setting
+     puts into a neighbouring channel is close to the 60 dB below carrier that
+     commercial 12.5 kHz equipment must meet (ETSI EN 300 086); the fast levels
+     are a few dB clearer. Where 25 kHz channels are allowed, setting
      the radio to wide makes the fastest speed levels work with a signal about
      5 dB weaker; the robust levels hardly change. It then needs a 25 kHz channel.
    - `--mode wide` needs the radio set to wide and a 25 kHz channel. On a radio

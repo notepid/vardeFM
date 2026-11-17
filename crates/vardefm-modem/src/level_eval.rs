@@ -72,8 +72,8 @@
 
 use super::*;
 use crate::detect_eval::{
-    burst, env_channels, env_flag, env_list, env_modes, env_or, header_at, modem, on_every_core, payload_seed, through,
-    true_position_on,
+    burst, channels_for, env_channels, env_flag, env_list, env_modes, env_or, header_at, modem, no_channels,
+    on_every_core, payload_seed, through, true_position_on,
 };
 use vardefm_dsp::prng::Prng;
 use vardefm_sim::FmChannelConfig;
@@ -572,13 +572,9 @@ fn level_sweep() {
     let mut summary = Vec::new();
     for mode in &modes {
         let m = modem(mode);
-        let own = [(None, FmChannelConfig::by_name(mode).unwrap())];
-        let on: Vec<(Option<&str>, FmChannelConfig)> = if channels.is_empty() {
-            own.to_vec()
-        } else {
-            channels.iter().map(|(name, cfg)| (Some(name.as_str()), cfg.clone())).collect()
-        };
-        for (name, channel) in on {
+        let on = channels_for(mode, &channels);
+        for (name, channel) in &on {
+            let name = name.as_deref();
             // Crossings mostly rise with the level; start each search at the last of
             // its kind.
             let (mut header_start, mut level_start) = (0i32, 0i32);
@@ -594,7 +590,7 @@ fn level_sweep() {
                     Err(e) if channels.is_empty() => panic!("{e}"),
                     Err(e) => {
                         println!("NO POINT: {e}");
-                        let label = format!("{} on {}", target.label(mode), name.unwrap_or(mode));
+                        let label = format!("{} on {}", target.label(mode), name.unwrap_or_default());
                         summary.push(format!("  {label:<50} drive {:.2}  no point", m.tx_rms(target.level())));
                         continue;
                     }
@@ -664,7 +660,7 @@ fn level_gate() {
     assert!(bursts > 0, "TRIALS must be at least 1");
     // The baseline holds each mode on its own channel only; gating another would
     // compare it with the wrong points.
-    assert!(std::env::var("CHANNELS").is_err(), "level_gate gates the modes' own channels: unset CHANNELS");
+    no_channels("level_gate");
     let base = load();
     println!("baseline {} ({})", base.source.commit, base.source.command);
     let mut failed = Vec::new();
