@@ -8,8 +8,8 @@
 //! | `rigctld[:<host>:<port>]` | Hamlib's rigctld (CAT), default `localhost:4532`. |
 //! | `gpio:<n>` / `gpio:<chip>:<line>` | Linux GPIO pin, e.g. `gpio:17` on a Raspberry Pi. Prefix `-` to invert. |
 //!
-//! The CM108 method follows Dire Wolf's `cm108.c` (WB2OSZ, GPL-2.0-or-later):
-//! the supported USB IDs, the GPIO numbering and the HID output report
+//! The CM108 method uses the hardware facts documented in Dire Wolf's `cm108.c`
+//! (WB2OSZ): the supported USB IDs, the GPIO numbering and the HID output report
 //! `[report id 0, 0, data, mask, 0]`.
 
 mod cm108;
