@@ -216,39 +216,34 @@ impl Modem {
 
     /// The data-carrier values of a burst's header and payload symbols, as
     /// [`Modem::modulate`] sends them.
-    fn symbols(&self, burst: &Burst) -> Vec<Vec<Complex32>> {
+    /// `data_carriers()` values per OFDM symbol, symbol after symbol.
+    fn symbols(&self, burst: &Burst) -> Vec<Complex32> {
         let h = &burst.header;
         assert_eq!(h.ncw as usize, burst.payload.len());
-        let nd = self.ofdm.data_carriers();
-        let mut symbols: Vec<Vec<Complex32>> = Vec::new();
-        let bpsk = Modulation::Bpsk;
-        for chunk in self.header_bits(h).chunks(nd) {
-            symbols.push(chunk.iter().map(|&b| bpsk.map(&[b])).collect());
-        }
+        let mut symbols = self.header_carriers(h);
         if h.ncw > 0 {
             let m = LEVELS[h.level as usize].modulation;
-            let bits = self.payload_bits(h.level, &burst.payload);
-            for chunk in bits.chunks(nd * m.bits_per_symbol()) {
-                symbols.push(m.map_all(chunk));
-            }
+            symbols.extend(m.map_all(&self.payload_bits(h.level, &burst.payload)));
         }
         symbols
     }
 
-    /// The header's data-carrier values, one Vec per OFDM symbol, as transmitted.
-    /// Once the header has decoded, the receiver uses them as channel training.
-    fn header_carriers(&self, h: &Header) -> Vec<Vec<Complex32>> {
+    /// The header's data-carrier values as transmitted: `data_carriers()` per OFDM
+    /// symbol, symbol after symbol. Once the header has decoded, the receiver uses them
+    /// as channel training.
+    fn header_carriers(&self, h: &Header) -> Vec<Complex32> {
         let bpsk = Modulation::Bpsk;
-        let nd = self.ofdm.data_carriers();
-        self.header_bits(h).chunks(nd).map(|c| c.iter().map(|&b| bpsk.map(&[b])).collect()).collect()
+        self.header_bits(h).iter().map(|&b| bpsk.map(&[b])).collect()
     }
 
     /// LLRs for every bit slot of symbols `from..` of `f`. The noise variance of
     /// symbol `i`, carrier `j` is `f.noise_var[j] * f.symbol_noise_scale[i]`.
     fn llrs(m: Modulation, f: &Frame, from: usize) -> Vec<f32> {
-        let symbols = &f.symbols[from..];
-        let mut out = Vec::with_capacity(symbols.len() * f.noise_var.len() * m.bits_per_symbol());
-        for (sym, &scale) in symbols.iter().zip(&f.symbol_noise_scale[from..]) {
+        let nd = f.noise_var.len();
+        assert_eq!(f.symbols.len(), f.nsym() * nd, "Frame fields disagree on the layout");
+        let symbols = &f.symbols[from * nd..];
+        let mut out = Vec::with_capacity(symbols.len() * m.bits_per_symbol());
+        for (sym, &scale) in symbols.chunks_exact(nd).zip(&f.symbol_noise_scale[from..]) {
             for (y, &nv) in sym.iter().zip(&f.noise_var) {
                 m.demap_llr(*y, nv * scale, &mut out);
             }
