@@ -220,6 +220,42 @@ impl Net {
     }
 }
 
+#[test]
+fn write_is_reported_even_when_the_buffer_length_is_unchanged() {
+    // A write that lands in the same tick as the ack draining an equal amount leaves
+    // the buffer length as last reported. The host still needs a report newer than
+    // its write, so one must follow.
+    let mut net = Net::new(9, 0.0, 0.0);
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    net.run_until(60.0, Net::both_connected);
+    let d = data(10, 9);
+    net.nodes[A].node.link.send_data(&d);
+    net.run_until(60.0, |n| n.nodes[1].host_rx.len() >= d.len());
+    assert_eq!(net.nodes[A].events.last(), Some(&LinkEvent::Buffer(10)));
+    // Stop one tick before B's ack reaches A, then write as much again.
+    net.run_until(60.0, |n| n.air.iter().any(|a| a.1 == A && a.0 <= n.now + DT));
+    let before = net.nodes[A].events.len();
+    net.nodes[A].node.link.send_data(&d);
+    net.step();
+    let reports: Vec<_> = net.nodes[A].events[before..].iter().filter(|e| matches!(e, LinkEvent::Buffer(_))).collect();
+    // Buffer(20) would mean the ack missed this tick (the setup drifted), not a bug.
+    assert_eq!(reports, [&LinkEvent::Buffer(10)], "none = write went unreported; Buffer(20) = ack not in this tick");
+}
+
+#[test]
+fn write_that_changes_the_buffer_length_is_reported_once() {
+    let mut net = Net::new(9, 0.0, 0.0);
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    net.run_until(60.0, Net::both_connected);
+    let before = net.nodes[A].events.len();
+    net.nodes[A].node.link.send_data(&data(10, 9));
+    // No ack can come back within two ticks, so the length stays 10 throughout.
+    net.step();
+    net.step();
+    let reports: Vec<_> = net.nodes[A].events[before..].iter().filter(|e| matches!(e, LinkEvent::Buffer(_))).collect();
+    assert_eq!(reports, [&LinkEvent::Buffer(10)]);
+}
+
 fn data(n: usize, seed: u32) -> Vec<u8> {
     // Every byte value, including CR and 0x00, in pseudo-random order.
     let mut rng = Prng::new(seed);
@@ -548,7 +584,9 @@ fn more_than_two_digipeaters_is_refused() {
         assert!(net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &via(path)).is_err(), "via {path:?}");
         assert!(net.nodes[A].node.link.is_idle());
     }
-    // Nor is a request through three answered.
+    // Nor is a request through three answered. The header's hop field tops out at
+    // MAX_DIGIS, so such a request never looks fully repeated and is refused even without
+    // the payload's digipeater-count check (that limit is tested in connect_payload_parsing).
     let mut b = Link::new(net.modem.clone(), LinkConfig::default(), 1);
     b.set_mycalls(vec!["LA2BBB-1".into()]);
     b.set_listen(true);
@@ -1084,8 +1122,7 @@ fn digipeater_carries_its_own_session_while_relaying() {
     // A talks to B through D, while D itself talks to C. A, B and C hear only D.
     // This shows that both sessions can run and that their data is not mixed up, not
     // that they always do: C and A or B cannot hear each other, and their bursts
-    // collide at D. Over seeds 44..124, D's own session was dropped in 7 runs (see the
-    // limits in docs/PROTOCOL.md).
+    // collide at D, so both sessions retry a lot (see the limits in docs/PROTOCOL.md).
     for seed in 44..48 {
         let digis = ["LA3DDD"];
         let mut net = Net::chain(seed, 0.0, &digis, LinkConfig::default());
@@ -1123,4 +1160,29 @@ fn digipeater_carries_its_own_session_while_relaying() {
         }
         assert!(net.nodes[d].node.repeats() >= 4, "seed {seed}: {} repeats", net.nodes[d].node.repeats());
     }
+}
+
+#[test]
+fn direct_ends_retrying_together_recover() {
+    // Two stations that hear each other, no digipeater. Once connected and quiet, both
+    // get 2 kB at the same instant, so both start a burst of their own and some of
+    // these collide. Then both retry after the same wait, give or take the back-off,
+    // and without giving way to each other every retry collides until the session drops.
+    let mut dropped = Vec::new();
+    // Without giving way, 4 of these 15 seeds drop (0, 2, 12, 14).
+    for seed in 0..15 {
+        let mut net = Net::new(seed, 0.0, 0.0);
+        net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+        net.run_until(60.0, |n| n.both_connected());
+        net.run_until(60.0, |n| n.now > 15.0);
+        let (a, b) = (data(2000, seed), data(2000, seed + 1));
+        net.nodes[A].node.link.send_data(&a);
+        net.nodes[1].node.link.send_data(&b);
+        let lost = |n: &Net| n.has(A, &LinkEvent::Disconnected) || n.has(1, &LinkEvent::Disconnected);
+        net.run_until(300.0, |n| lost(n) || (n.nodes[A].host_rx == b && n.nodes[1].host_rx == a));
+        if lost(&net) {
+            dropped.push(seed);
+        }
+    }
+    assert!(dropped.is_empty(), "sessions dropped for seeds {dropped:?}");
 }

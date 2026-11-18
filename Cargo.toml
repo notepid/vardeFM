@@ -5,7 +5,7 @@ members = ["crates/vardefm-dsp", "crates/vardefm-fec", "crates/vardefm-modem", "
 [workspace.package]
 version = "0.3.2"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/notepid/vardeFM"
 
 [workspace.dependencies]

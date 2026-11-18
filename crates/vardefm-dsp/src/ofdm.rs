@@ -387,8 +387,10 @@ impl Ofdm {
             }
             Detector::MatchedFilter => self.detect_mf(rx, from),
         };
-        debug_assert!(found.resume >= from && found.resume <= rx.len(), "{detector}: {found:?} from {from}");
-        debug_assert!(found.at.is_none() || found.resume > from, "{detector}: {found:?} from {from}");
+        // Checked in every build: a caller that searches on from `resume` after a
+        // detection would loop forever if it did not move on, so fail instead.
+        assert!(found.resume >= from && found.resume <= rx.len(), "{detector}: {found:?} from {from}");
+        assert!(found.at.is_none() || found.resume > from, "{detector}: {found:?} from {from}");
         found
     }
 

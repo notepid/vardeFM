@@ -385,8 +385,7 @@ fn engine_from(cfg: &RadioConfig) -> std::io::Result<RadioEngine<FakeOut>> {
 #[test]
 fn default_config_gives_the_links_defaults() {
     let eng = engine_from(&RadioConfig::default()).unwrap();
-    let (got, want) = (eng.station.link_config(), LinkConfig::default());
-    assert_eq!((got.hop_margin_s, got.max_level), (want.hop_margin_s, want.max_level));
+    assert_eq!(eng.station.link_config(), &LinkConfig::default());
 }
 
 #[test]

@@ -6,6 +6,11 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Changed
+- **License.** VardeFM is now dual licensed under MIT OR Apache-2.0, at your option, so it
+  can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including
+  0.3.2 remain available under GPL-3.0-or-later.
+
 ## [0.3.2] - 2026-11-16
 
 On-air compatible with 0.3.0 and 0.3.1 for direct sessions. Digipeating is new and
@@ -62,6 +67,11 @@ end stations and the digipeaters of a routed session should all run 0.3.2.
   at a faster level, the receiver acknowledged the longer copy but kept the shorter one,
   so the sender never sent the difference again. Only the receiving side changes: a
   station with this fix receives correctly from any version. (#29, thanks @mustig)
+- Two stations talking directly could drop their session when both started a burst at
+  the same moment. Both then retried after the same wait, within 0.4 s of each other,
+  and a retry did not give way to a busy channel, so every retry collided. A retry now
+  gives way, as it already did through digipeaters, and answers the other end's burst
+  instead. In the simulator this dropped 1 run in 4 with both ends sending at once.
 
 ## [0.3.1] - 2026-11-09
 

@@ -1,7 +1,7 @@
 //! PTT through a GPIO pin of a CM108/CM119-family USB audio chip.
 //!
-//! Supported devices and report format follow Dire Wolf's cm108.c (WB2OSZ,
-//! GPL-2.0-or-later). To change a pin, the host sends a 4-byte HID output report
+//! The supported devices and the report format are the ones documented in Dire Wolf's
+//! cm108.c (WB2OSZ). To change a pin, the host sends a 4-byte HID output report
 //! (5 bytes with the leading report id 0):
 //!
 //! ```text

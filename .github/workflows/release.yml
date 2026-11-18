@@ -52,6 +52,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: vardefm_*  # only the release archives
           merge-multiple: true
       - name: Checksums
         working-directory: dist

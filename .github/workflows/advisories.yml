@@ -1,0 +1,22 @@
+# Weekly check of the dependencies against the RustSec advisory database. In ci.yml
+# the advisory check never blocks a merge, so this run is what reports a new one:
+# GitHub notifies about a failed scheduled run.
+name: Advisories
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

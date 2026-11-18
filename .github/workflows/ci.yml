@@ -37,6 +37,23 @@ jobs:
         if: runner.arch == 'ARM64'
         run: cargo run -q --locked -p vardefm-cli -- bench
 
+  deny:
+    name: cargo-deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # A new advisory can appear on any day without a change here; keep it from
+        # blocking merges, but let a license or source problem fail the build.
+        # advisories.yml runs the advisory check weekly and fails visibly.
+        checks: [advisories, bans licenses sources]
+    continue-on-error: ${{ matrix.checks == 'advisories' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
+
   snapshot:
     name: Build all release targets
     uses: ./.github/workflows/build.yml

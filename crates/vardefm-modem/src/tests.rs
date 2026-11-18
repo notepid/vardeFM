@@ -234,8 +234,12 @@ fn header_only_burst_reports_the_same_snr() {
         eprintln!("{mode}: header-only {:.2} dB, data {:.2} dB", snr[0], snr[1]);
         // A data burst's SNR includes the clipping noise of its payload symbols (the
         // per-symbol noise scale picks them up), which a header-only burst cannot see:
-        // about 0.8 dB in narrow mode at the 0.30 drive, 0.3 dB at 0.20.
-        assert!((snr[0] - snr[1]).abs() < 1.0, "{mode}: header-only {:.1} dB, data {:.1} dB", snr[0], snr[1]);
+        // about 0.8 dB in narrow mode at the 0.30 drive, 0.3 dB at 0.20. So the header-only
+        // burst reads the same or a little higher, not meaningfully lower: measured without
+        // the header as training it reads 0.49 dB (narrow) and 0.97 dB (wide) lower, which
+        // a symmetric 1 dB bound lets through.
+        let diff = snr[0] - snr[1];
+        assert!(diff > -0.25 && diff < 1.0, "{mode}: header-only {:.2} dB, data {:.2} dB", snr[0], snr[1]);
     }
 }
 
@@ -434,6 +438,17 @@ fn lone_preamble(m: &Modem, b: &Burst, gap: usize) -> Vec<f32> {
     out
 }
 
+/// Preambles A and B of `b` on their own, as a burst cut off before its header would
+/// leave them, then `gap` samples of silence. Every detector finds a burst there, and
+/// its header fails. (Preamble A alone is not enough for every detector: Schmidl-Cox
+/// confirms on preamble B, and finds nothing there in narrow mode.)
+fn cut_off_burst(m: &Modem, b: &Burst, gap: usize) -> Vec<f32> {
+    assert_eq!(m.leader_symbols(), 0, "the burst must start with preamble A");
+    let mut out = m.modulate(b)[..2 * m.ofdm.p.symbol_len()].to_vec();
+    out.extend(vec![0.0; gap]);
+    out
+}
+
 /// A burst whose template starts within a cyclic prefix after the end of the search
 /// window that a lone preamble A opened. The header tried at the window's peak fails,
 /// and the search must go on from where the window ended, not from that header.
@@ -459,9 +474,10 @@ fn a_false_crossing_just_before_a_burst_does_not_hide_it() {
     }
 }
 
-/// What a receiver finds must not depend on how its audio is chunked. A lone
-/// preamble A sits right after the first burst, so the search after that burst
-/// starts next to a crossing that opens a window ending just before the second one.
+/// What a receiver finds must not depend on how its audio is chunked. A burst cut off
+/// before its header sits right after the first burst, so the search after that
+/// burst finds a header that fails just before the second burst, and searches on
+/// from there.
 ///
 /// The bursts must match exactly; where they end may move by a few samples, since
 /// the matched filter's FFT blocks start where each search starts, and two near-equal
@@ -473,13 +489,27 @@ fn chunking_does_not_change_what_is_received() {
             let m = modem_without_leader(mode, detector);
             let ncp = m.ofdm.p.ncp;
             let (b1, b2) = (burst(2, 1, 11), burst(1, 1, 12));
-            for (after, gap) in [(0, ncp / 2), (ncp, 1), (m.ofdm.p.symbol_len(), ncp - 1)] {
+            // Never 0 samples `after` the first burst: the search after it starts where
+            // it ends, and Schmidl-Cox misses a preamble A that starts right at the
+            // start of its search (narrow mode up to at least 32 samples in).
+            for (after, gap) in [(ncp / 2, ncp / 2), (ncp, 1), (m.ofdm.p.symbol_len(), ncp - 1)] {
                 let mut audio = vec![0.0; 10_000];
                 audio.extend(m.modulate(&b1));
                 audio.extend(vec![0.0; after]);
-                audio.extend(lone_preamble(&m, &b2, gap));
+                audio.extend(cut_off_burst(&m, &b2, gap));
                 audio.extend(m.modulate(&b2));
                 audio.extend(vec![0.0; 48_000]);
+                // The case this test is for must happen: searching from the end of the
+                // first burst finds the cut-off burst before the second one, and its
+                // header fails.
+                let l = m.ofdm.p.symbol_len();
+                let b1_end = 10_000 + m.modulate(&b1).len();
+                let b2_at = b1_end + after + 2 * l + gap + l + ncp;
+                let false_at = m.ofdm.detect(&audio, b1_end).at;
+                let at = format!("{mode} {detector} after {after} gap {gap}");
+                assert!(false_at.is_some_and(|b| b + l < b2_at), "{at}: found {false_at:?}, second burst at {b2_at}");
+                let hdr = m.ofdm.demodulate(&audio, false_at.unwrap(), m.header_symbols());
+                assert!(hdr.and_then(|f| m.decode_header(&f)).is_none(), "{at}: the cut-off burst's header decoded");
                 let run = |chunk: usize| {
                     let mut rx = Receiver::new(m.clone());
                     let got: Vec<RxBurst> = audio.chunks(chunk).flat_map(|c| rx.push(c)).collect();

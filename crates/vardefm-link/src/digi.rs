@@ -389,11 +389,13 @@ mod tests {
 
     #[test]
     fn same_id_new_path_through_us_replaces_entry() {
-        // Session 7 through us at position 1, then a new session 7 with us at position 2.
+        // Session 7 through us at position 1, then a new session 7 with us at position 2
+        // while the first entry is still live (it would expire at UNCONFIRMED_EXPIRY_S).
         let mut d = stale_entry();
-        assert_eq!(repeat(&mut d, 300.0, &connect_req(7, &["LA3D8", "LA3D1"], 1)).unwrap().hop(), 2);
-        assert!(repeat(&mut d, 301.0, &rx(Kind::Data, 7, false, 0, vec![])).is_none(), "LA3D8's turn");
-        assert_eq!(repeat(&mut d, 302.0, &rx(Kind::Data, 7, true, 0, vec![])).unwrap().hop(), 1);
+        assert_eq!(d.sessions(30.0), 1);
+        assert_eq!(repeat(&mut d, 30.0, &connect_req(7, &["LA3D8", "LA3D1"], 1)).unwrap().hop(), 2);
+        assert!(repeat(&mut d, 31.0, &rx(Kind::Data, 7, false, 0, vec![])).is_none(), "LA3D8's turn");
+        assert_eq!(repeat(&mut d, 32.0, &rx(Kind::Data, 7, true, 0, vec![])).unwrap().hop(), 1);
     }
 
     #[test]
