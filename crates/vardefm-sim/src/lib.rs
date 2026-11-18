@@ -205,14 +205,16 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
     receive(cfg, &modulate(cfg, audio))
 }
 
+fn check_emphasis(name: &str, us: Option<f32>) {
+    assert!(us.is_none_or(|us| us.is_finite() && us > 0.0), "{name} {us:?}: must be a positive time constant");
+}
+
 /// The transmitter: audio chain, deviation limiter and FM modulator. The carrier
 /// is up for `audio`, with `cfg.lead_silence_s` before and `cfg.trail_silence_s`
 /// after.
 pub fn modulate(cfg: &FmChannelConfig, audio: &[f32]) -> Rf {
     let fs = cfg.fs;
-    for (name, us) in [("tx_emphasis_us", cfg.tx_emphasis_us), ("rx_emphasis_us", cfg.rx_emphasis_us)] {
-        assert!(us.is_none_or(|us| us.is_finite() && us > 0.0), "{name} {us:?}: must be a positive time constant");
-    }
+    check_emphasis("tx_emphasis_us", cfg.tx_emphasis_us);
     if let Some(t) = &cfg.ctcss {
         // A NaN here would make the FM phase NaN for the rest of the carrier.
         assert!(t.hz.is_finite() && t.hz > 0.0 && t.hz < fs / 2.0, "CTCSS {} Hz: must be between 0 and fs/2", t.hz);
@@ -287,6 +289,7 @@ pub fn receive(cfg: &FmChannelConfig, rf: &Rf) -> Vec<f32> {
     let tail = (cfg.squelch_tail_s * fs) as usize;
     let total = rf.samples.len();
     let carrier = rf.carrier.clone();
+    check_emphasis("rx_emphasis_us", cfg.rx_emphasis_us);
     let rf = add_noise(cfg, rf);
 
     // --- Receiver: IF filter, discriminator, de-emphasis, audio filter ---
@@ -423,9 +426,15 @@ mod tests {
         let n = FmChannelConfig::parse_channel("mic-12k5").unwrap();
         assert_eq!((n.deviation_hz, n.if_bandwidth_hz), (2500.0, 11_000.0));
         let w = FmChannelConfig::parse_channel("mic-25k").unwrap();
-        assert_eq!((w.deviation_hz, w.if_bandwidth_hz, w.emphasis_us), (5000.0, 15_000.0, n.emphasis_us));
+        assert_eq!(
+            (w.deviation_hz, w.if_bandwidth_hz, w.tx_emphasis_us, w.rx_emphasis_us),
+            (5000.0, 15_000.0, n.tx_emphasis_us, n.rx_emphasis_us)
+        );
         let d = FmChannelConfig::parse_channel("data-12k5").unwrap();
-        assert_eq!((d.deviation_hz, d.if_bandwidth_hz, d.emphasis_us), (1500.0, 11_000.0, None));
+        assert_eq!(
+            (d.deviation_hz, d.if_bandwidth_hz, d.tx_emphasis_us, d.rx_emphasis_us),
+            (1500.0, 11_000.0, None, None)
+        );
         // C/N0 is the CNR in the IF bandwidth plus 10 log10 of that bandwidth.
         let ten_k = FmChannelConfig { if_bandwidth_hz: 10_000.0, ..n };
         assert!((ten_k.cn0_db(0.0) - 40.0).abs() < 1e-4 && (ten_k.cn0_db(6.0) - 46.0).abs() < 1e-4);

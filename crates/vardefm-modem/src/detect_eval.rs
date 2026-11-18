@@ -199,16 +199,11 @@ fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t
     Trial { det, genie }
 }
 
-/// Where preamble B of a `level` burst of `ncw` codewords lands after the channel.
-/// The channel's delays depend neither on its noise nor on the payload (the burst
-/// layout is fixed by level and size), so one noiseless copy gives it for every trial.
-pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
-    true_position_on(m, &FmChannelConfig::by_name(mode).unwrap(), level, ncw)
-        .expect("burst not found on a clean channel")
-}
-
-/// As [`true_position`], over channel `channel`; `None` when the burst is not
-/// found even without noise, as on a channel too narrow for the mode.
+/// Where preamble B of a `level` burst of `ncw` codewords lands after channel
+/// `channel`. The channel's delays depend neither on its noise nor on the payload
+/// (the burst layout is fixed by level and size), so one noiseless copy gives it for
+/// every trial. `None` when the burst is not found even without noise, as on a
+/// channel too narrow for the mode.
 pub(crate) fn true_position_on(m: &Modem, channel: &FmChannelConfig, level: u8, ncw: usize) -> Option<usize> {
     m.ofdm.detect(&clean_copy_on(m, channel, level, ncw, 0).1, 0)
 }
@@ -234,7 +229,7 @@ fn clean_copy_on(m: &Modem, channel: &FmChannelConfig, level: u8, ncw: usize, t:
 }
 
 /// Where the true position lies against the channel, from one noiseless copy: (the
-/// true position as [`true_position`] finds it, samples after the sent boundary of
+/// true position as [`clean_position`] finds it, samples after the sent boundary of
 /// preamble B's body, channel delay in samples).
 ///
 /// The boundary is counted back from the end of the modulated burst, so the leader
@@ -274,7 +269,7 @@ pub(crate) fn on_every_core<R: Send>(trials: u32, f: impl Fn(u32) -> R + Sync) -
 }
 
 /// Run `trials` trials of a `level` burst of `ncw` codewords on every core, with
-/// preamble B at `truth` ([`true_position`]).
+/// preamble B at `truth` ([`clean_position`]).
 fn run_trials(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, trials: u32) -> Vec<Trial> {
     on_every_core(trials, |t| trial(m, mode, cnr, level, ncw, truth, t))
 }
@@ -573,7 +568,7 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
         let m = modem(mode);
         let (truth, after, delay) = position_check(&m, mode, 1, 1);
         // The true position must not depend on the payload, or one copy could not give it.
-        // `position_check` finds it as `true_position` does: `clean_position` on payload 0.
+        // `position_check` finds it with `clean_position` on payload 0.
         for t in 1..4 {
             let pos = clean_position(&m, &clean_copy(&m, mode, 1, 1, t).1);
             assert_eq!(pos, truth, "{mode}: payload {t} moves the burst");
