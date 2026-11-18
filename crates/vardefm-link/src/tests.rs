@@ -475,18 +475,30 @@ fn direct_session_ignores_bursts_a_digipeater_repeated() {
     net.run_until(60.0, |n| n.both_connected());
     only_own_answered(&mut net, (false, 0), (false, 0));
 
-    // A caller still connecting takes any Data with its session id as the answer.
-    let mut net = Net::new(34, 0.0, 0.0);
-    let link = &mut net.nodes[A].node.link;
-    link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    // A caller still connecting takes only the called station's ConnectAck as it arrives.
+    connecting_takes_only_its_ack(&[], (false, 0));
+}
+
+/// A caller connecting via `digis` ignores Data with its session id, even with the
+/// called station's flags `own`, and a ConnectAck with any other flags. It connects on
+/// the ConnectAck with `own`.
+fn connecting_takes_only_its_ack(digis: &[&str], own: (bool, u8)) {
+    let modem = Arc::new(Modem::new(OfdmParams::narrow(), 0.1));
+    let mut link = Link::new(modem, LinkConfig::default(), 3);
+    link.connect(0.0, "LA1AAA", "LA2BBB-1", &via(digis)).unwrap();
     let State::Connecting { session, .. } = &link.state else { panic!("not connecting") };
     let id = *session;
-    for (up, route) in all_but((false, 0)) {
+    let ack = |(up, route)| connect_burst(Kind::ConnectAck, id, ("LA1AAA", "LA2BBB-1"), digis, up, route);
+    for (up, route) in all_but(own).into_iter().chain([own]) {
         link.on_burst(0.5, &probe(id, up, route));
-        assert!(!link.is_connected(), "connected by up {up} route {route}");
+        assert!(!link.is_connected(), "via {digis:?}: connected by Data up {up} route {route}");
     }
-    link.on_burst(0.5, &probe(id, false, 0));
-    assert!(link.is_connected());
+    for (up, route) in all_but(own) {
+        link.on_burst(0.5, &ack((up, route)));
+        assert!(!link.is_connected(), "via {digis:?}: connected by ConnectAck up {up} route {route}");
+    }
+    link.on_burst(0.5, &ack(own));
+    assert!(link.is_connected(), "via {digis:?}");
 }
 
 #[test]
@@ -500,18 +512,8 @@ fn routed_session_ignores_direct_bursts() {
     net.run_until(120.0, |n| n.both_connected());
     only_own_answered(&mut net, (true, 2), (false, 2));
 
-    // A routed caller still connecting is not answered by direct Data either.
-    let mut net = Net::new(39, 0.0, 0.0);
-    let link = &mut net.nodes[A].node.link;
-    link.connect(0.0, "LA1AAA", "LA2BBB-1", &via(&digis)).unwrap();
-    let State::Connecting { session, .. } = &link.state else { panic!("not connecting") };
-    let id = *session;
-    for (up, route) in all_but((true, 2)) {
-        link.on_burst(0.5, &probe(id, up, route));
-        assert!(!link.is_connected(), "connected by up {up} route {route}");
-    }
-    link.on_burst(0.5, &probe(id, true, 2));
-    assert!(link.is_connected());
+    // A routed caller still connecting is not answered by a direct ConnectAck either.
+    connecting_takes_only_its_ack(&digis, (true, 2));
 }
 
 #[test]
@@ -889,28 +891,30 @@ fn connect_burst(kind: Kind, session: u8, calls: (&str, &str), digis: &[&str], u
     RxBurst { header, payload, snr_db: 30.0, end_sample: 0, level: Default::default() }
 }
 
+/// B (LA2BBB-1) on its own, listening.
+fn called_station() -> Link {
+    let modem = Arc::new(Modem::new(OfdmParams::narrow(), 0.1));
+    let mut b = Link::new(modem, LinkConfig::default(), 1);
+    b.set_mycalls(vec!["LA2BBB-1".into()]);
+    b.set_listen(true);
+    b
+}
+
 #[test]
 fn connect_request_must_arrive_as_its_path_says() {
     // A direct request is unrouted; one through n digipeaters has been repeated n
     // times (route field n + 1). Neither carries UP. Any other header on the same
     // payload is a copy heard part way, or not what it claims to be.
-    let modem = Arc::new(Modem::new(OfdmParams::narrow(), 0.1));
-    let listener = || {
-        let mut b = Link::new(modem.clone(), LinkConfig::default(), 1);
-        b.set_mycalls(vec!["LA2BBB-1".into()]);
-        b.set_listen(true);
-        b
-    };
     let request = |digis: &[&str], (up, route): (bool, u8)| {
         connect_burst(Kind::ConnectReq, 9, ("LA1AAA", "LA2BBB-1"), digis, up, route)
     };
     for (digis, own) in [(&[][..], (false, 0)), (&["LA3A"][..], (false, 2)), (&["LA3A", "LA3B"][..], (false, 3))] {
         for other in all_but(own) {
-            let mut b = listener();
+            let mut b = called_station();
             b.on_burst(1.0, &request(digis, other));
             assert!(b.is_idle() && b.take_events().is_empty(), "via {digis:?}: answered {other:?}");
         }
-        let mut b = listener();
+        let mut b = called_station();
         b.on_burst(1.0, &request(digis, own));
         assert!(b.is_connected(), "via {digis:?}");
     }
@@ -1038,8 +1042,11 @@ fn unanswered_bursts(
     let (who, other) = if who == A { (A, net.b()) } else { (net.b(), A) };
     net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &via(digis)).unwrap();
     net.run_until(120.0, |n| n.both_connected());
-    let quiet = net.now + 20.0;
-    net.run_until(30.0, |n| n.now >= quiet);
+    // Past the time the caller could still be retrying its ConnectReq: until then a
+    // called station not yet answered retries with its ConnectAck, not Data.
+    let window = net.nodes[A].node.link.connect_window_s(digis.len() as u8);
+    let quiet = net.now + window.max(20.0);
+    net.run_until(window + 30.0, |n| n.now >= quiet);
     net.nodes[other].dead = true;
     let from = net.now;
     act(&mut net.nodes[who].node.link, from);
@@ -1185,4 +1192,217 @@ fn direct_ends_retrying_together_recover() {
         }
     }
     assert!(dropped.is_empty(), "sessions dropped for seeds {dropped:?}");
+}
+
+#[test]
+fn connecting_caller_ignores_data_with_its_session_id() {
+    // Issue #27: a Data burst carries no call signs. One with our session id while we
+    // are connecting belongs to another session that happens to use the same id.
+    let modem = Arc::new(Modem::new(OfdmParams::narrow(), 0.1));
+    let mut c = Link::new(modem, LinkConfig::default(), 7);
+    c.connect(0.0, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+    let State::Connecting { session, .. } = &c.state else { panic!("not connecting") };
+    let header = Header { kind: Kind::Data, session: *session, ..Header::default() };
+    let payload = vec![Some(vec![0; Modem::payload_bytes(0)])];
+    c.on_burst(0.5, &RxBurst { header, payload, snr_db: 30.0, end_sample: 0, level: Default::default() });
+    assert!(!c.is_connected());
+    assert!(c.take_events().iter().all(|e| !matches!(e, LinkEvent::Connected { .. } | LinkEvent::Data(_))));
+}
+
+#[test]
+fn call_colliding_with_a_session_on_air_does_not_join_it() {
+    // Issue #27: A and B are exchanging data. C hears both and calls LA9ZZZ, which is
+    // not there, under the session id A and B use (1 call in 255). C must not report
+    // CONNECTED or take their data, and A and B must not take C's bursts as each other's.
+    let mut net = Net::new(5, 0.0, 0.0);
+    let peer = Peer {
+        name: "C".into(),
+        node: Node::new(Link::new(net.modem.clone(), LinkConfig::default(), 77)),
+        tx: None,
+        host_rx: Vec::new(),
+        events: Vec::new(),
+        dead: false,
+    };
+    // Before B, so that `net.b()` is still B.
+    net.nodes.insert(1, peer);
+    let (c, b) = (1, 2);
+    assert_eq!(net.b(), b);
+    net.nodes[c].node.link.set_mycalls(vec!["LA5CCC".into()]);
+    net.hears = (0..3).map(|to| (0..3).map(|from| to != from).collect()).collect();
+
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    net.run_until(60.0, |n| n.both_connected());
+    let State::Connected(s) = &net.nodes[A].node.link.state else { panic!("A not connected") };
+    let id = s.id;
+    let (to_b, to_a) = (data(3000, 1), data(3000, 2));
+    net.nodes[A].node.link.send_data(&to_b);
+    net.nodes[b].node.link.send_data(&to_a);
+    let link = &mut net.nodes[c].node.link;
+    link.connect(net.now, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+    let State::Connecting { session, .. } = &mut link.state else { panic!("C not connecting") };
+    *session = id;
+
+    net.run_until(400.0, |n| n.nodes[A].host_rx.len() >= to_a.len() && n.nodes[b].host_rx.len() >= to_b.len());
+    assert!(!net.nodes[c].events.iter().any(|e| matches!(e, LinkEvent::Connected { .. })), "C joined session {id}");
+    assert!(net.nodes[c].host_rx.is_empty(), "C took {} bytes of session {id}", net.nodes[c].host_rx.len());
+    assert_eq!(net.nodes[A].host_rx, to_a);
+    assert_eq!(net.nodes[b].host_rx, to_b);
+    assert!(!net.has(A, &LinkEvent::Disconnected) && !net.has(b, &LinkEvent::Disconnected));
+}
+
+/// Runs `link` alone on a quiet channel from `*t` until it transmits, then finishes the
+/// burst. Returns its kind.
+fn next_tx(link: &mut Link, t: &mut f64) -> Kind {
+    let limit = *t + 300.0;
+    loop {
+        assert!(*t < limit, "nothing sent by t={t:.1}");
+        if let Some(b) = link.poll(*t, false) {
+            *t += link.modem.burst_seconds(b.header.level, b.payload.len()) as f64;
+            link.tx_done(*t);
+            return b.header.kind;
+        }
+        *t += DT;
+    }
+}
+
+#[test]
+fn called_station_retries_connect_ack_until_caller_answers() {
+    // The called station sends its ConnectAck and then its banner. If the caller never
+    // answers, it may not have heard the ConnectAck (a caller connects on nothing else),
+    // so the retry is the ConnectAck again, followed by the banner. Once the caller has
+    // sent anything, retries are Data.
+    let mut b = called_station();
+    b.on_burst(0.0, &connect_burst(Kind::ConnectReq, 9, ("LA1AAA", "LA2BBB-1"), &[], false, 0));
+    assert!(b.is_connected());
+    b.send_data(&data(500, 1));
+    let mut t = 0.0;
+    let sent: Vec<Kind> = (0..4).map(|_| next_tx(&mut b, &mut t)).collect();
+    assert_eq!(sent, [Kind::ConnectAck, Kind::Data, Kind::ConnectAck, Kind::Data]);
+
+    b.on_burst(t, &probe(9, false, 0));
+    let sent: Vec<Kind> = (0..2).map(|_| next_tx(&mut b, &mut t)).collect();
+    assert_eq!(sent, [Kind::Data, Kind::Data], "answer, then its retry");
+
+    // Once the caller would have stopped retrying its ConnectReq, a caller that missed
+    // the ConnectAck has given up: no point sending it again.
+    let mut b = called_station();
+    b.on_burst(0.0, &connect_burst(Kind::ConnectReq, 9, ("LA1AAA", "LA2BBB-1"), &[], false, 0));
+    let mut t = 0.0;
+    assert_eq!(next_tx(&mut b, &mut t), Kind::ConnectAck);
+    t = b.connect_window_s(0) + 0.1;
+    b.send_data(&data(500, 1));
+    let sent: Vec<Kind> = (0..2).map(|_| next_tx(&mut b, &mut t)).collect();
+    assert_eq!(sent, [Kind::Data, Kind::Data], "after the caller's connect window");
+}
+
+#[test]
+fn lost_connect_ack_rarely_leaves_a_half_open_session() {
+    // The caller connects only on the ConnectAck. When that is lost, the called station
+    // must get it through again before the caller gives up, also while it is sending
+    // its banner: otherwise the caller reports DISCONNECTED and the called station
+    // stays connected to nobody. It cannot always win: with every burst at 25 % loss,
+    // the caller's last ConnectReqs and the called station's resent ConnectAcks are all
+    // lost now and then (about 1 seed in 300). Without the resent ConnectAck, 10 in 300.
+    // Direct sessions only: through a digipeater at this loss, about 1 seed in 4 ends
+    // half open with or without the resend, and without this change too.
+    let mut half_open = Vec::new();
+    for seed in 0..100 {
+        let mut net = Net::new(seed, 0.25, 0.0);
+        let b = net.b();
+        net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+        let gave_up = |n: &Net| n.has(A, &LinkEvent::Disconnected);
+        net.run_until(120.0, |n| n.nodes[n.b()].node.link.is_connected() || gave_up(n));
+        if gave_up(&net) {
+            continue; // B never heard a request: nothing half open.
+        }
+        let banner = data(500, seed);
+        net.nodes[b].node.link.send_data(&banner);
+        net.run_until(400.0, |n| n.nodes[A].host_rx.len() >= banner.len() || gave_up(n));
+        if gave_up(&net) && net.nodes[b].node.link.is_connected() {
+            half_open.push(seed);
+        }
+    }
+    assert!(half_open.len() <= 1, "caller gave up, called station connected, for seeds {half_open:?}");
+}
+
+#[test]
+fn called_station_answers_only_its_callers_repeated_request() {
+    // A repeated ConnectReq means the caller missed our ConnectAck. One under our
+    // session id that names other stations or another path is another caller that
+    // happens to use the same id: answering it would step on our own session.
+    let mut b = called_station();
+    let ours = ("LA1AAA", "LA2BBB-1");
+    b.on_burst(0.0, &connect_burst(Kind::ConnectReq, 9, ours, &[], false, 0));
+    let mut t = 0.0;
+    assert_eq!(next_tx(&mut b, &mut t), Kind::ConnectAck);
+    for (calls, digis) in [(("LA5CCC", "LA9ZZZ"), &[][..]), (("LA5CCC", "LA2BBB-1"), &[]), (ours, &["LA3DDD"])] {
+        b.on_burst(t, &connect_burst(Kind::ConnectReq, 9, calls, digis, false, 0));
+        assert!(b.poll(t + 1.0, false).is_none(), "answered {calls:?} via {digis:?}");
+    }
+    b.on_burst(t, &connect_burst(Kind::ConnectReq, 9, ours, &[], false, 0));
+    t += 1.0;
+    assert_eq!(next_tx(&mut b, &mut t), Kind::ConnectAck);
+}
+
+#[test]
+fn caller_gives_up_within_the_called_stations_connect_window() {
+    // The called station resends its ConnectAck only while the caller could still be
+    // retrying its ConnectReq. That window is computed on the called station's side, so
+    // check it against a caller that really retries until it gives up, nobody answering.
+    for digis in [&[][..], &["LA3DDD"], &["LA3DDD", "LA4EEE-2"]] {
+        for seed in 0..5 {
+            let mut net = Net::chain(seed, 0.0, digis, LinkConfig::default());
+            let b = net.b();
+            net.nodes[b].dead = true;
+            net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &via(digis)).unwrap();
+            let gave_up = net.run_until(300.0, |n| n.nodes[A].node.link.is_idle());
+            let window = net.nodes[A].node.link.connect_window_s(digis.len() as u8);
+            assert!(
+                gave_up <= window,
+                "via {digis:?}, seed {seed}: gave up after {gave_up:.1} s, window {window:.1} s"
+            );
+        }
+    }
+    // The called station's own bursts hold the caller's retries back: the channel is
+    // busy with one of its longest bursts just as each retry is due.
+    let mut net = Net::new(0, 0.0, 0.0);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    let longest = net.nodes[A].node.link.max_burst_s;
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    let mut held = 0;
+    while !net.nodes[A].node.link.is_idle() {
+        assert!(net.now < 300.0, "caller never gave up");
+        if let State::Connecting { attempts, next_tx, sending: false, .. } = net.nodes[A].node.link.state {
+            if attempts > held && net.now >= next_tx - 0.05 {
+                held = attempts;
+                net.history.push((b, net.now - 0.1, net.now - 0.1 + longest));
+            }
+        }
+        net.step();
+    }
+    let window = net.nodes[A].node.link.connect_window_s(0);
+    assert!(held >= 4, "held back {held} retries");
+    assert!(net.now <= window, "held back: gave up after {:.1} s, window {window:.1} s", net.now);
+}
+
+#[test]
+fn another_callers_request_does_not_disturb_a_data_retry() {
+    // A called station is waiting to resend unanswered data when another caller's
+    // ConnectReq arrives under the same session id. Its retry must go out as planned,
+    // not be replaced by a ConnectAck for a request that is not its caller's.
+    let mut b = called_station();
+    b.on_burst(0.0, &connect_burst(Kind::ConnectReq, 9, ("LA1AAA", "LA2BBB-1"), &[], false, 0));
+    let mut t = 0.0;
+    assert_eq!(next_tx(&mut b, &mut t), Kind::ConnectAck);
+    b.on_burst(t, &probe(9, false, 0));
+    b.send_data(&data(500, 1));
+    assert_eq!(next_tx(&mut b, &mut t), Kind::Data);
+    let State::Connected(s) = &b.state else { panic!("not connected") };
+    let Phase::Wait { deadline, retry: true } = s.phase else { panic!("not waiting to retry: {:?}", s.phase) };
+    b.on_burst((t + deadline) / 2.0, &connect_burst(Kind::ConnectReq, 9, ("LA5CCC", "LA9ZZZ"), &[], false, 0));
+    t = (t + deadline) / 2.0;
+    assert_eq!(next_tx(&mut b, &mut t), Kind::Data);
+    assert_eq!(b.stats.retries, 1, "sent as a retry");
+    assert!(t >= deadline, "retried at {t:.2} s, before {deadline:.2} s");
 }

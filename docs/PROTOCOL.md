@@ -221,6 +221,21 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   `MYCALL`s answers `ConnectAck` with the same payload and session id. The caller retries
   5 times, then gives up and reports DISCONNECTED (about 17 s in narrow mode, 11 s in
   wide).
+- **Answer:** the caller connects only on a `ConnectAck` with its session id whose payload
+  names its request: source, destination and digipeaters. Other bursts carry no call
+  signs, and one with its session id may belong to another session that uses the same id.
+  A called station that has heard no burst of the session from the caller since its
+  `ConnectAck` resends the `ConnectAck` instead of Data when a burst goes unanswered, for
+  as long as the caller could still be retrying its `ConnectReq` (`connect_attempts` ×
+  (connect burst + wait + relay time through the digipeaters + 0.5 s jitter + longest
+  burst + 0.6 s)): the last two cover a burst of its own that holds the caller's retry
+  back while the channel is busy, rechecked every 0.3 s. It also answers a repeated
+  `ConnectReq` with its `ConnectAck`, but only one that names its caller, itself and its
+  path: another is a different caller's that happens to use the same session id.
+- **Mixed versions:** a 0.3.x station as the caller connects on the called
+  station's first Data burst too. As the called station it does not resend its
+  `ConnectAck` unprompted, so a caller of this version that missed it recovers only if
+  a later `ConnectReq` gets through, and gives up more often on a lossy channel.
 - **Turns:** the called station may send first right after `ConnectAck`; the caller
   waits one response period for it.
 - Bursts with a different session id are ignored.
