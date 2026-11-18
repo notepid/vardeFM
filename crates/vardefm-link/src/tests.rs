@@ -1186,3 +1186,100 @@ fn direct_ends_retrying_together_recover() {
     }
     assert!(dropped.is_empty(), "sessions dropped for seeds {dropped:?}");
 }
+
+#[test]
+#[ignore = "issue #27: a connecting caller still takes any Data burst with its session id as the answer"]
+fn connecting_caller_ignores_another_sessions_data() {
+    let modem = Arc::new(Modem::new(OfdmParams::narrow(), 0.1));
+    let mut c = Link::new(modem, LinkConfig::default(), 7);
+    c.connect(0.0, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+    let State::Connecting { session, .. } = &c.state else { panic!("not connecting") };
+    c.on_burst(0.5, &probe(*session, false, 0));
+    assert!(!c.is_connected(), "connected to LA9ZZZ by another session's Data");
+}
+
+#[test]
+fn caller_does_not_pick_a_session_id_heard_recently() {
+    let modem = Arc::new(Modem::new(OfdmParams::narrow(), 0.1));
+    let keep = Link::new(modem.clone(), LinkConfig::default(), 0).heard_id_s();
+    // Every id but 77 heard at t = 100: each caller picks 77.
+    for seed in 0..20 {
+        let mut c = Link::new(modem.clone(), LinkConfig::default(), seed);
+        for id in (1..=255).filter(|&id| id != 77) {
+            c.on_burst(100.0, &probe(id, false, 0));
+        }
+        c.connect(100.0 + keep - 1.0, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+        let State::Connecting { session, .. } = &c.state else { panic!("not connecting") };
+        assert_eq!(*session, 77, "seed {seed}");
+    }
+    // Once that time has passed, the ids are free again.
+    let picked: std::collections::HashSet<u8> = (0..20)
+        .map(|seed| {
+            let mut c = Link::new(modem.clone(), LinkConfig::default(), seed);
+            for id in (1..=255).filter(|&id| id != 77) {
+                c.on_burst(100.0, &probe(id, false, 0));
+            }
+            c.connect(100.0 + keep + 1.0, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+            let State::Connecting { session, .. } = &c.state else { panic!("not connecting") };
+            *session
+        })
+        .collect();
+    assert!(picked.len() > 1, "still avoiding expired ids: {picked:?}");
+    // Every id heard: still connects, with a non-zero id.
+    let mut c = Link::new(modem, LinkConfig::default(), 3);
+    for id in 0..=255 {
+        c.on_burst(100.0, &probe(id, false, 0));
+    }
+    c.connect(101.0, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+    let State::Connecting { session, .. } = &c.state else { panic!("not connecting") };
+    assert_ne!(*session, 0);
+}
+
+#[test]
+fn caller_does_not_join_a_session_it_hears() {
+    // Issue #27. A and B run a session. C hears both and calls LA9ZZZ, who is absent.
+    // C's random generator is set so that a random pick alone would give it A and B's
+    // id: C would then take their Data as LA9ZZZ's answer and break their session.
+    let mut net = Net::new(5, 0.0, 0.0);
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    let State::Connecting { session: id, .. } = net.nodes[A].node.link.state else { panic!("not connecting") };
+    let mut peer = Peer {
+        name: "C".into(),
+        node: Node::new(Link::new(net.modem.clone(), LinkConfig::default(), 77)),
+        tx: None,
+        host_rx: Vec::new(),
+        events: Vec::new(),
+        dead: false,
+    };
+    peer.node.link.set_mycalls(vec!["LA5CCC".into()]);
+    // C goes before B, which `Net` takes to be the last station.
+    net.nodes.insert(1, peer);
+    let (c, b) = (1, 2);
+    assert_eq!((net.nodes[A].name.as_str(), net.nodes[b].name.as_str(), net.b()), ("A", "B", b));
+    net.hears = vec![vec![false, true, true], vec![true, false, true], vec![true, true, false]];
+
+    net.run_until(60.0, |n| n.both_connected());
+    let (to_b, to_a) = (data(3000, 1), data(3000, 2));
+    net.nodes[A].node.link.send_data(&to_b);
+    net.nodes[b].node.link.send_data(&to_a);
+    // Every poll draws from the generator, so set it just before the pick. The seed is
+    // one with which a caller that has heard nothing picks A and B's id.
+    let unaware_pick = |seed| {
+        let mut fresh = Link::new(net.modem.clone(), LinkConfig::default(), 0);
+        fresh.rng = Prng::new(seed);
+        fresh.connect(net.now, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+        let State::Connecting { session, .. } = fresh.state else { panic!("not connecting") };
+        session
+    };
+    let seed = (0..10_000).find(|&s| unaware_pick(s) == id).expect("no seed picks the id");
+    net.nodes[c].node.link.rng = Prng::new(seed);
+    net.nodes[c].node.link.connect(net.now, "LA5CCC", "LA9ZZZ", &[]).unwrap();
+    let State::Connecting { session, .. } = net.nodes[c].node.link.state else { panic!("not connecting") };
+    assert_ne!(session, id, "C took the id of the session it hears");
+
+    net.run_until(400.0, |n| n.nodes[A].host_rx.len() >= to_a.len() && n.nodes[b].host_rx.len() >= to_b.len());
+    assert_eq!(net.nodes[A].host_rx, to_a);
+    assert_eq!(net.nodes[b].host_rx, to_b);
+    assert!(!net.has(c, &LinkEvent::Connected { source: "LA5CCC".into(), destination: "LA9ZZZ".into() }));
+    assert!(net.nodes[c].host_rx.is_empty(), "C received A and B's data");
+}

@@ -273,6 +273,8 @@ pub struct Link {
     oneshot: Option<Burst>,
     /// Recently closed session, so a repeated Disc can still be answered.
     closed: Option<(u8, Route)>,
+    /// When each session id was last heard on the channel, in any burst.
+    heard_ids: [f64; 256],
     /// Longest burst any level can send, seconds.
     max_burst_s: f64,
     last_tx: TxInfo,
@@ -305,6 +307,7 @@ impl Link {
             rng: Prng::new(seed),
             oneshot: None,
             closed: None,
+            heard_ids: [f64::NEG_INFINITY; 256],
             last_tx: TxInfo::default(),
             stats: LinkStats::default(),
         }
@@ -409,7 +412,7 @@ impl Link {
         if !self.is_idle() || via.len() > MAX_DIGIS {
             return Err(());
         }
-        let session = (self.rng.next_u32() % 255 + 1) as u8;
+        let session = self.pick_session_id(now);
         self.state = State::Connecting {
             session,
             mycall: norm_call(mycall),
@@ -420,6 +423,27 @@ impl Link {
             sending: false,
         };
         Ok(())
+    }
+
+    /// How long a caller avoids a session id after hearing it, so it does not share an id
+    /// with a session it can hear (issue #27): as long as a digipeater keeps an idle
+    /// session, and three of the longest keepalive intervals (a routed session's), so a
+    /// quiet session's id is not freed.
+    fn heard_id_s(&self) -> f64 {
+        digi::IDLE_EXPIRY_S.max(3.0 * self.keepalive_s(MAX_DIGIS as u8))
+    }
+
+    /// A random non-zero session id not heard in the last [`Self::heard_id_s`]. If every
+    /// id has been heard, any non-zero id.
+    fn pick_session_id(&mut self, now: f64) -> u8 {
+        let keep = self.heard_id_s();
+        let free: Vec<u8> = (1..=255).filter(|&id| now - self.heard_ids[id as usize] > keep).collect();
+        let n = self.rng.next_u32();
+        if free.is_empty() {
+            (n % 255 + 1) as u8
+        } else {
+            free[n as usize % free.len()]
+        }
     }
 
     /// Graceful close: send everything still queued, then close the session.
@@ -486,6 +510,7 @@ impl Link {
             rx
         };
         let h = rx.header;
+        self.heard_ids[h.session as usize] = now;
         self.stats.codewords_received += rx.payload.len() as u64;
         self.stats.codewords_failed += rx.payload.iter().filter(|p| p.is_none()).count() as u64;
         let req = self.level_for(rx);
