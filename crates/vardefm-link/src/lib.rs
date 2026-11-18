@@ -102,6 +102,18 @@ pub struct LinkConfig {
     /// decoding time and the delay before its transmitter is up. From 0 to
     /// [`MAX_HOP_MARGIN_S`].
     pub hop_margin_s: f64,
+    /// Drop the session once the channel has stayed busy this long without a break and
+    /// without us transmitting, and the peer has been silent both this long and past
+    /// its keepalive interval (an idle session holds nothing back before then). A busy
+    /// channel holds back our retries, so without this a carrier or another station's
+    /// traffic could keep a dead session open forever.
+    ///
+    /// The link raises a smaller value to a floor chosen to cover an exchange with the
+    /// peer through the session's digipeaters (the longest burst plus two of the called
+    /// station's longest retry waits), so that the peer's own bursts and their repeats do
+    /// not trigger it; 0 means "use the floor". `f64::INFINITY` turns the drop off.
+    /// [`Link::new`] panics on a negative or NaN value.
+    pub busy_timeout_s: f64,
 }
 
 impl Default for LinkConfig {
@@ -116,6 +128,7 @@ impl Default for LinkConfig {
             start_level: 1,
             max_level: LEVELS.len() as u8 - 1,
             hop_margin_s: 0.5,
+            busy_timeout_s: 60.0,
         }
     }
 }
@@ -274,6 +287,9 @@ pub struct Link {
     closed: Option<(u8, Route)>,
     /// Longest burst any level can send, seconds.
     max_burst_s: f64,
+    /// When the channel turned busy, if it has stayed busy (as `poll` saw it) since, and
+    /// we have not transmitted since.
+    busy_since: Option<f64>,
     last_tx: TxInfo,
     pub stats: LinkStats,
 }
@@ -288,7 +304,13 @@ fn norm_call(c: &str) -> String {
 }
 
 impl Link {
+    /// Panics if `cfg.busy_timeout_s` is negative or NaN.
     pub fn new(modem: Arc<Modem>, cfg: LinkConfig, seed: u32) -> Self {
+        assert!(
+            cfg.busy_timeout_s >= 0.0,
+            "LinkConfig::busy_timeout_s must be 0 or more (or infinite), got {}",
+            cfg.busy_timeout_s
+        );
         let max_burst_s =
             (0..LEVELS.len() as u8).map(|l| modem.burst_seconds(l, modem.max_ncw(l)) as f64).fold(0.0, f64::max);
         Self {
@@ -304,6 +326,7 @@ impl Link {
             rng: Prng::new(seed),
             oneshot: None,
             closed: None,
+            busy_since: None,
             last_tx: TxInfo::default(),
             stats: LinkStats::default(),
         }
@@ -331,6 +354,19 @@ impl Link {
 
     pub fn last_tx(&self) -> &TxInfo {
         &self.last_tx
+    }
+
+    /// We finished a transmission of our own that did not come from `poll`, such as a
+    /// digipeater repeat. We got on the air, so the channel did not hold us back: the
+    /// busy-channel timer starts again. `tx_done` does the same for our own bursts.
+    pub(crate) fn note_own_tx(&mut self) {
+        self.busy_since = None;
+    }
+
+    /// When the channel turned busy, if it has stayed busy as `poll` saw it and we have
+    /// not transmitted since.
+    pub fn busy_since(&self) -> Option<f64> {
+        self.busy_since
     }
 
     pub fn take_events(&mut self) -> Vec<LinkEvent> {
@@ -394,6 +430,15 @@ impl Link {
         } else {
             self.cfg.keepalive_s.max(2.0 * self.retry_wait(hops, false, 0.0))
         }
+    }
+
+    /// How long a busy channel may hold back a session whose peer we do not hear.
+    /// The configured value, but at least the peer's longest burst plus two of the
+    /// called station's longest retry waits, a floor chosen to cover the channel staying
+    /// busy from our burst's repeats through the peer's answer and its repeats before we
+    /// decode the answer. `f64::INFINITY` turns the drop off.
+    fn busy_timeout_s(&self, hops: u8) -> f64 {
+        self.cfg.busy_timeout_s.max(self.max_burst_s + 2.0 * self.retry_wait(hops, false, 0.0))
     }
 
     // ------------------------------------------------------------ host commands
@@ -699,6 +744,7 @@ impl Link {
 
     /// Called regularly while not transmitting. Returns a burst to transmit now.
     pub(crate) fn poll(&mut self, now: f64, busy: bool) -> Option<Burst> {
+        self.busy_since = if busy { Some(self.busy_since.unwrap_or(now)) } else { None };
         if let Some(b) = self.oneshot.take() {
             self.last_tx = TxInfo { kind: b.header.kind, ..TxInfo::default() };
             self.stats.bursts_sent += 1;
@@ -706,10 +752,11 @@ impl Link {
         }
         let cfg = self.cfg.clone();
         let backoff = self.rand_s(RETRY_BACKOFF_S);
-        let keepalive = match &self.state {
-            State::Connected(s) => self.keepalive_s(s.route.hops()),
-            _ => cfg.keepalive_s,
+        let (keepalive, busy_timeout) = match &self.state {
+            State::Connected(s) => (self.keepalive_s(s.route.hops()), self.busy_timeout_s(s.route.hops())),
+            _ => (cfg.keepalive_s, f64::INFINITY),
         };
+        let busy_for = self.busy_since.map_or(0.0, |t| now - t);
         match &mut self.state {
             State::Idle => None,
             State::Connecting { session, mycall, target, digis, attempts, next_tx, sending } => {
@@ -747,6 +794,19 @@ impl Link {
                 Some(burst)
             }
             State::Connected(s) => {
+                // A busy channel holds back everything we would start ourselves: retries,
+                // keepalives, a pending Disc. If it stays busy and the peer is not among
+                // those talking, give up rather than wait for the channel forever. An idle
+                // session holds nothing back until its keepalive is due, so the peer must
+                // also have been silent past that. A peer we hear but cannot decode counts
+                // as not heard: `last_heard` moves only on a burst we accept.
+                let keepalive_due = keepalive * if s.route.caller { 1.0 } else { 1.5 };
+                let silent = now - s.last_heard > busy_timeout.max(keepalive_due);
+                let stalled = busy_for > busy_timeout && silent;
+                if stalled && !matches!(s.phase, Phase::Sending { .. }) {
+                    self.close();
+                    return None;
+                }
                 // Advance timers.
                 match s.phase {
                     Phase::Sending { .. } => return None,
@@ -790,9 +850,7 @@ impl Link {
                             s.closing.is_some_and(|t| now >= t + cfg.disconnect_grace_s) && s.tx_buf.is_empty();
                         if ready_to_close {
                             s.phase = Phase::Respond { at: now, kind: Kind::Disc, initiated: true };
-                        } else if s.has_data()
-                            || now - s.last_heard > keepalive * if s.route.caller { 1.0 } else { 1.5 }
-                        {
+                        } else if s.has_data() || now - s.last_heard > keepalive_due {
                             // Start a burst on a quiet channel, after a short random wait.
                             s.phase =
                                 Phase::Respond { at: now + 0.05 + backoff * 0.5, kind: Kind::Data, initiated: true };
@@ -827,6 +885,7 @@ impl Link {
 
     /// Called when the burst returned by `poll` has finished transmitting.
     pub(crate) fn tx_done(&mut self, now: f64) {
+        self.note_own_tx();
         let timeout = self.cfg.response_timeout_s;
         let connect_s = self.modem.burst_seconds(0, 1) as f64;
         // Draw the retry jitter only while connecting, as before digipeating, so direct

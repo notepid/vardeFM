@@ -60,8 +60,12 @@ impl Node {
 
     /// Called when the burst returned by `poll` has finished transmitting.
     pub fn tx_done(&mut self, now: f64) {
-        // A repeat is not the link's burst: its timers must not restart.
-        if !std::mem::take(&mut self.repeating) {
+        // A repeat is not the link's burst: its retry timers must not restart. It is
+        // still our transmission, so the channel did not hold us back: the busy-channel
+        // timer starts again.
+        if std::mem::take(&mut self.repeating) {
+            self.link.note_own_tx();
+        } else {
             self.link.tx_done(now);
         }
     }
@@ -147,5 +151,19 @@ mod tests {
         let (a, b) = (next_own_burst(&mut quiet, 2.9), next_own_burst(&mut busy, 2.9));
         assert!(a > 2.9 + 0.1, "retry at {a}: not waiting for an answer");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn repeat_restarts_the_links_busy_timer() {
+        let mut node = calling_digi(3);
+        assert!(node.poll(0.0, false).is_some_and(|(_, repeat)| !repeat));
+        node.tx_done(1.9);
+        assert!(node.poll(2.0, true).is_none());
+        assert_eq!(node.link.busy_since(), Some(2.0));
+        node.on_burst(2.0, &routed_request());
+        // The repeat is due 0.2 s after the burst, busy channel or not.
+        assert!(node.poll(2.2, true).is_some_and(|(_, repeat)| repeat));
+        node.tx_done(2.9);
+        assert_eq!(node.link.busy_since(), None);
     }
 }
