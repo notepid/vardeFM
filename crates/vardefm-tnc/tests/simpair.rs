@@ -282,7 +282,9 @@ fn disconnect_right_after_write_delivers_everything() {
 }
 
 /// Every write to the data port is followed by a BUFFER report, so a host can
-/// wait for a report newer than its last write before disconnecting.
+/// wait for a report newer than its last write before disconnecting. Here every write
+/// changes the length; a write that leaves it as last reported is covered by the link's
+/// `write_is_reported_even_when_the_buffer_length_is_unchanged`.
 #[test]
 fn buffer_report_follows_every_write() {
     let sp = sim("narrow", Some(30.0), 0.0, 7);

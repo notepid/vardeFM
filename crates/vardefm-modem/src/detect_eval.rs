@@ -364,11 +364,22 @@ fn mcnemar(b: u32, c: u32) -> f64 {
 }
 
 /// Environment variable `name` parsed as `T`, or `default` when unset. A value that
-/// does not parse stops the run: falling back would quietly run something else.
+/// does not parse, or is not Unicode, stops the run: falling back would quietly run
+/// something else.
 pub(crate) fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    match env_var(name) {
+        Some(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} does not parse")),
+        None => default,
+    }
+}
+
+/// Environment variable `name`, or `None` when unset. A value that is not Unicode
+/// stops the run rather than reading as unset.
+fn env_var(name: &str) -> Option<String> {
     match std::env::var(name) {
-        Ok(v) => v.trim().parse().unwrap_or_else(|_| panic!("{name}={v:?} does not parse")),
-        Err(_) => default,
+        Ok(v) => Some(v),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(v)) => panic!("{name}={v:?} is not Unicode"),
     }
 }
 
@@ -378,7 +389,7 @@ pub(crate) fn env_list<T: std::str::FromStr>(name: &str, default: &str) -> Vec<T
 where
     T::Err: std::fmt::Display,
 {
-    let v = std::env::var(name).unwrap_or_else(|_| default.to_string());
+    let v = env_var(name).unwrap_or_else(|| default.to_string());
     v.split(',').map(|s| s.trim().parse().unwrap_or_else(|e| panic!("{name}: {s:?}: {e}"))).collect()
 }
 
@@ -395,10 +406,10 @@ pub(crate) fn env_modes(default: &str) -> Vec<String> {
 /// Environment variable `name` as a switch: unset, `0` or `false` is off, `1` or
 /// `true` is on. Anything else stops the run, as with [`env_or`].
 pub(crate) fn env_flag(name: &str) -> bool {
-    match std::env::var(name).as_deref().map(str::trim) {
-        Err(_) | Ok("0" | "false") => false,
-        Ok("1" | "true") => true,
-        Ok(v) => panic!("{name}={v:?}: use 1 or 0"),
+    match env_var(name).as_deref().map(str::trim) {
+        None | Some("0" | "false") => false,
+        Some("1" | "true") => true,
+        Some(v) => panic!("{name}={v:?}: use 1 or 0"),
     }
 }
 
@@ -542,11 +553,16 @@ fn detector_eval() {
     assert!(ctcss.is_finite() && ctcss >= 0.0, "CTCSS={ctcss}: must be a deviation in Hz, 0 for none");
     assert!((level as usize) < LEVELS.len(), "LEVEL {level}: levels are 0 to {}", LEVELS.len() - 1);
     assert!(trials > 0, "TRIALS must be at least 1");
-    assert!(noise_s > 0.0, "NOISE_SECONDS={noise_s}: must be more than 0");
+    assert!(noise_s > 0.0 && noise_s.is_finite(), "NOISE_SECONDS={noise_s}: must be a finite number more than 0");
     let modes: Vec<&str> = modes.iter().map(String::as_str).collect();
-    // Checked up front, so that a typo does not fail after the first mode has run.
+    // Checked up front, so that a typo or a bad NCW does not fail after the first mode
+    // has run.
     for mode in &modes {
-        Link::new(mode, chan, tx_tilt).with_ctcss(ctcss);
+        let link = Link::new(mode, chan, tx_tilt).with_ctcss(ctcss);
+        // A longer burst would modulate, but its header would not unpack (MAX_NCW) or
+        // the modem would never send it (MAX_PAYLOAD_SECONDS): every trial would fail.
+        let max = link.rx.max_ncw(level);
+        assert!(ncw <= max, "NCW {ncw}: a level {level} burst in {mode} mode holds at most {max} codewords");
     }
     let cnr_list = |mode: &str| -> Vec<f32> {
         let default = match mode {
@@ -554,22 +570,38 @@ fn detector_eval() {
             "wide" => "5,6,7,8,9,10,12",
             _ => panic!("no default CNRS for mode {mode:?}: set CNRS"),
         };
-        env_list("CNRS", default)
+        let cnrs: Vec<f32> = env_list("CNRS", default);
+        for c in &cnrs {
+            // NaN or infinite noise gives an all-NaN recording, which would be written as data.
+            assert!(c.is_finite(), "CNRS: {c} is not a finite number of dB");
+        }
+        cnrs
     };
     for mode in &modes {
         cnr_list(mode);
     }
     const CSV_HEADER: &str = "mode,channel,tx_tilt,ctcss_hz,level,ncw,cnr_db,trials,detector,hits,bursts";
-    let mut csv = std::env::var("CSV").ok().map(|p| {
-        // Appending rows to a file with other columns would mix them up unnoticed.
-        let old = std::fs::read_to_string(&p).unwrap_or_default();
-        if let Some(head) = old.lines().next() {
-            assert_eq!(head, CSV_HEADER, "CSV: {p} has other columns; use a new file");
-        }
-        let new = old.is_empty();
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
-        if new {
-            writeln!(f, "{CSV_HEADER}").unwrap();
+    // Any path the OS accepts, Unicode or not.
+    let mut csv = std::env::var_os("CSV").map(|p| {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .unwrap_or_else(|e| panic!("CSV: cannot open {p:?}: {e}"));
+        // A pipe or a terminal is never read (that would wait for input) and gets no
+        // header, rather than one per run. A regular file gets the header when empty
+        // (new, or from mktemp, say), and must already have it otherwise: appending rows
+        // to a file with other columns would mix them up unnoticed.
+        let meta = f.metadata().unwrap_or_else(|e| panic!("CSV: cannot read {p:?}: {e}"));
+        if meta.is_file() {
+            if meta.len() == 0 {
+                writeln!(f, "{CSV_HEADER}").unwrap();
+            } else {
+                let old = std::fs::read(&p).unwrap_or_else(|e| panic!("CSV: cannot read {p:?}: {e}"));
+                let head = old.split(|&b| b == b'\n').next().unwrap_or_default();
+                let head = String::from_utf8_lossy(head);
+                assert_eq!(head.trim_end_matches('\r'), CSV_HEADER, "CSV: {p:?} has other columns; use a new file");
+            }
         }
         f
     });
@@ -583,10 +615,6 @@ fn detector_eval() {
     for &mode in &modes {
         let link = Link::new(mode, chan, tx_tilt).with_ctcss(ctcss);
         let m = &*link.rx;
-        // A longer burst would modulate, but its header would not unpack (MAX_NCW) or
-        // the modem would never send it (MAX_PAYLOAD_SECONDS): every trial would fail.
-        let max = m.max_ncw(level);
-        assert!(ncw <= max, "NCW {ncw}: a level {level} burst in {mode} mode holds at most {max} codewords");
         println!("\n{mode}: hits and decoded bursts out of {trials}; paired test against '{REFERENCE}'");
         // A link that loses the noiseless burst skips its bursts, not the whole run.
         let truth = match link_position(&link, level, ncw) {

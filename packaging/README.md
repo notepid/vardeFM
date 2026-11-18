@@ -20,7 +20,8 @@ Project page, source code and issues: https://github.com/notepid/vardeFM
 | `docs/RADIO.md` | Detailed radio setup guide |
 | `docs/PROTOCOL.md` | Technical description of the waveform and protocol |
 | `99-vardefm-cm108.rules` | (Linux only) lets normal users key CM108/AIOC PTT |
-| `LICENSE` | GNU GPL version 3 |
+| `LICENSE-MIT`, `LICENSE-APACHE` | The two licenses; you may use VardeFM under either |
+| `THIRD-PARTY-LICENSES.html` | Licenses of the libraries built into the program |
 
 ## 1. Install
 
@@ -263,5 +264,6 @@ More detail is in `docs/RADIO.md`.
 
 ## License
 
-VardeFM is free software under the GNU General Public License, version 3 or later
-(see `LICENSE`). The CM108 PTT support follows Dire Wolf by WB2OSZ.
+VardeFM is free software, licensed under either the MIT license (`LICENSE-MIT`) or the
+Apache License 2.0 (`LICENSE-APACHE`), at your option. The CM108 PTT support uses the
+USB IDs and HID report format documented in Dire Wolf by WB2OSZ.

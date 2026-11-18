@@ -246,8 +246,10 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   failed codeword the request drops at least one level below the burst's level. Each
   unanswered burst lowers our own level by one. The called station starts at the level
   it measured on the connect request.
-- **Retries:** an unanswered burst is resent after 1.2 s (plus a random back-off, and
-  longer while the channel is busy). After 8 consecutive failures the link is lost.
+- **Retries:** an unanswered burst is resent after 1.2 s (plus a random back-off of
+  0–0.4 s, and longer while the channel is busy). A retry not yet sent gives way when the
+  channel turns busy: that is most likely the peer's own retry, which is answered instead.
+  After 8 consecutive failures the link is lost.
 - **Keepalive:** a quiet link is probed with a POLL burst after 30 s (caller) or 45 s
   (called station).
 
@@ -322,9 +324,9 @@ not on-air compatible with VARA FM digipeaters.
   0.2 s after a repeat ends. The wait is about 11 s and 20.5 s for 1 and 2
   digipeaters in narrow mode after a full burst (10 and 19 s wide). Connect
   retries are spaced the same way with the connect bursts' own length. Retries are spread
-  by a random 0–0.4 s times (1 + 2n), and give way while the channel is busy: through
-  digipeaters that is most likely the other end's burst coming through, which is then
-  answered instead.
+  by a random 0–0.4 s times (1 + 2n), and give way while the channel is busy: that is
+  most likely the other end's burst (its own retry, or coming through a digipeater),
+  which is then answered instead.
 - **Called station waits longer:** the two ends do not hear each other, so if both start
   a burst at about the same time, both can be lost at a digipeater, and with equal timers
   every retry would meet there again. So before resending a burst it started itself (not
@@ -348,8 +350,7 @@ not on-air compatible with VARA FM digipeaters.
   channel with the sessions it repeats, and its peer usually cannot hear the stations on
   the other side, nor they the peer, so their bursts collide at the digipeater. Right
   after a repeat the digipeater may also start a burst of its own over the answer, which
-  it cannot hear yet. Both sessions then retry a lot. With 2 kB each way on both at once,
-  a simulated digipeater lost its own session in 7 runs of 80.
+  it cannot hear yet. Both sessions then retry a lot.
 
 ## 4. Host interface
 

@@ -1,0 +1,19 @@
+# cargo-about: generates THIRD-PARTY-LICENSES.html for the release archives (see build.yml,
+# which fails if a build target is missing from `targets` below).
+# Preview locally: cargo about generate -m crates/vardefm-cli/Cargo.toml about.hbs -o THIRD-PARTY-LICENSES.html
+# https://embarkstudios.github.io/cargo-about/
+
+# For a crate with a choice of licenses, the first one in this list is the one reported.
+accepted = ["MIT", "Apache-2.0", "Unicode-3.0", "MPL-2.0"]
+
+# Only what ends up in the vardefm binary, on any release target.
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "armv7-unknown-linux-gnueabihf",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
