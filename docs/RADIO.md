@@ -119,14 +119,16 @@ your user needs to be in group `gpio` (the default user already is):
      are a few dB clearer. Where 25 kHz channels are allowed, setting the radio
      to wide can make the fastest speed levels work with a signal about 5 dB
      weaker; the robust levels hardly change. That assumes the radio itself
-     doubles the deviation in wide (to about 5 kHz), so set the level in step 3
-     with the radio on narrow and leave it there when you switch. If you set it
-     to 2.5 kHz with the radio on wide, wide gains nothing. It then needs a
-     25 kHz channel.
+     doubles the deviation in wide (to about 5 kHz); the signal is then about
+     12 kHz wide and needs a 25 kHz channel. So set the level in step 3 with the
+     radio on narrow and leave it there when you switch: if you set it to
+     2.5 kHz with the radio already on wide, the radio's wide setting gains
+     nothing.
    - `--mode wide` needs the radio set to wide and a 25 kHz channel. On any
      setting it spills into neighbouring 12.5 kHz channels. On a radio set to
-     narrow, with a receive filter of 8–9 kHz (as in radios we checked), the
-     fastest level stops working and the others need several dB more signal.
+     narrow, with a receive filter of 9 kHz, the fastest level stops working and
+     the others need several dB more signal; with 8 kHz, level 4 stops working
+     too. (Narrow receive filters are commonly 6–9 kHz; none was measured.)
    - On a 12.5 kHz channel with only the data port available, use `--mode narrow`
      on the data port, on both stations, with the radio set to narrow. Set the
      deviation in step 3 to 2.5 kHz with the radio already set to narrow (a radio
