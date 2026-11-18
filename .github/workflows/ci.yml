@@ -54,6 +54,59 @@ jobs:
         with:
           command: check ${{ matrix.checks }}
 
+  # The C ABI on every push. The XCFramework and the Swift tests need five LTO builds
+  # on a macOS runner, so they only run for a release (build.yml).
+  ffi:
+    name: C ABI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ffi
+      # The version is written into the header, so --verify needs the one that generated it.
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked --version 0.29.4
+      - name: FFI has no desktop dependencies
+        run: |
+          tree="$(cargo tree -p vardefm-ffi --prefix none --locked)"
+          echo "$tree"
+          for bad in cpal hidapi serialport hound vardefm-ptt vardefm-audio vardefm-tnc vardefm-sim; do
+            if echo "$tree" | grep -E "^${bad} " >/dev/null; then
+              echo "::error::$bad must not appear in vardefm-ffi's dependency tree"
+              exit 1
+            fi
+          done
+      - name: Verify C header
+        run: cbindgen -c crates/vardefm-ffi/cbindgen.toml -o crates/vardefm-ffi/include/CVardeFM/vardefm.h crates/vardefm-ffi --verify
+      - name: C smoke test
+        run: |
+          cargo build --locked -p vardefm-ffi
+          cc -I crates/vardefm-ffi/include -o /tmp/vfm_smoke \
+            crates/vardefm-ffi/tests/smoke.c target/debug/libvardefm.a \
+            -lpthread -ldl -lm
+          /tmp/vfm_smoke
+
+  # Undefined behaviour at the C ABI (docs/EMBEDDING.md). The nightly is pinned so
+  # that a new Miri cannot fail a build that changed nothing.
+  miri:
+    name: Miri (C ABI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-11-17
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+      - name: C ABI tests under Miri
+        run: cargo miri test -p vardefm-ffi --locked
+
+
   snapshot:
     name: Build all release targets
     uses: ./.github/workflows/build.yml

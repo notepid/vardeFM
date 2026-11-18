@@ -1,0 +1,4 @@
+module CVardeFM {
+  header "vardefm.h"
+  export *
+}

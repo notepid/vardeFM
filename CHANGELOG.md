@@ -6,6 +6,18 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Added
+- **Embeddable engine and C ABI.** `vardefm-engine` holds the station and
+  `RadioEngine` without sound-card, PTT-hardware or TCP dependencies.
+  `vardefm-ffi` exposes a thread-free C API (`vfm_new`, `vfm_rx_audio`,
+  `vfm_advance`, `vfm_tx_played`, host lines/data, optional TX/RX reports).
+  Release builds include an Apple XCFramework (device, simulator, macOS). CI runs
+  the C ABI tests under Miri. See [docs/EMBEDDING.md](docs/EMBEDDING.md).
+- **`RadioEngine::advance`.** Advances the sample clock without feeding audio, so
+  a host that gets no RX while keyed can still reach the PTT tail and watchdog.
+- **Structured burst reports.** `RadioEngine::reports` carries per-burst TX/RX
+  stats; log lines are formatted from the same values.
+
 ### Changed
 - **License.** VardeFM is now dual licensed under MIT OR Apache-2.0, at your option, so it
   can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including

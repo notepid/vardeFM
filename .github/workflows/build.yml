@@ -1,5 +1,5 @@
 # Builds the release archives for every platform. Called by ci.yml (snapshot
-# builds on every push) and release.yml (tagged releases).
+# builds on every push) and release.yml (tagged releases, with the XCFramework).
 name: Build
 
 on:
@@ -9,6 +9,10 @@ on:
         description: Version in the archive names, e.g. 0.2.0
         type: string
         required: true
+      xcframework:
+        description: Also build the Apple XCFramework (five LTO builds on a macOS runner)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -130,5 +134,64 @@ jobs:
           path: |
             dist/*.zip
             dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  xcframework:
+    name: Build Apple XCFramework
+    if: inputs.xcframework
+    runs-on: macos-latest
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: xcframework
+      # The version is written into the header, so --verify needs the one that generated it.
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked --version 0.29.4
+      - name: FFI has no desktop dependencies
+        run: |
+          tree="$(cargo tree -p vardefm-ffi --prefix none --locked)"
+          echo "$tree"
+          for bad in cpal hidapi serialport hound vardefm-ptt vardefm-audio vardefm-tnc vardefm-sim; do
+            if echo "$tree" | grep -E "^${bad} " >/dev/null; then
+              echo "::error::$bad must not appear in vardefm-ffi's dependency tree"
+              exit 1
+            fi
+          done
+      - name: Verify C header
+        run: cbindgen -c crates/vardefm-ffi/cbindgen.toml -o crates/vardefm-ffi/include/CVardeFM/vardefm.h crates/vardefm-ffi --verify
+      - name: Build XCFramework
+        run: ./packaging/apple/build-xcframework.sh
+      - name: Swift package tests
+        working-directory: packaging/apple
+        run: swift test
+      - name: C smoke test
+        run: |
+          cargo build --profile dist --locked -p vardefm-ffi --target aarch64-apple-darwin
+          cc -I crates/vardefm-ffi/include -o /tmp/vfm_smoke \
+            crates/vardefm-ffi/tests/smoke.c \
+            target/aarch64-apple-darwin/dist/libvardefm.a \
+            -framework Security -framework CoreFoundation -lm
+          /tmp/vfm_smoke
+      - name: Package release zip
+        run: |
+          mkdir -p dist
+          cp packaging/apple/build/VardeFM.xcframework.zip \
+            "dist/vardefm_${{ inputs.version }}_apple_xcframework.zip"
+          cp packaging/apple/build/VardeFM.xcframework.zip.checksum \
+            "dist/vardefm_${{ inputs.version }}_apple_xcframework.zip.checksum"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vardefm_apple_xcframework
+          path: |
+            dist/*.zip
+            dist/*.checksum
           if-no-files-found: error
           retention-days: 7

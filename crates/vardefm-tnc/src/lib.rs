@@ -6,12 +6,12 @@
 //! - [`simpair`]: two stations connected by a simulated FM radio link.
 //! - [`radio`]: one station on a real radio (sound card + PTT).
 //! - [`level`]: receive level meter and volume advice.
+//!
+//! The station and radio engine live in [`vardefm_engine`]; this crate adds the
+//! TCP server, sound-card and PTT wiring, and the sim-pair virtual radio pair.
 
-pub mod host;
-pub mod level;
+pub use vardefm_engine::{host, level, station, VERSION};
+
 pub mod radio;
 pub mod server;
 pub mod simpair;
-pub mod station;
-
-pub const VERSION: &str = concat!("VardeFM ", env!("CARGO_PKG_VERSION"));
