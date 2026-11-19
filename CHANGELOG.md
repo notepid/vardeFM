@@ -11,6 +11,12 @@ run the same minor version.
   can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including
   0.3.2 remain available under GPL-3.0-or-later.
 
+### Fixed
+- **PTT on SIGTERM.** On Linux and macOS, `modem`, `tone`, `ptt-test` and `monitor` now
+  stop cleanly on SIGTERM (`systemctl stop`, `kill`, system shutdown) as they do on
+  Ctrl-C, and release PTT. Before, a stop during a transmission could leave the radio
+  keyed (#55).
+
 ## [0.3.2] - 2026-11-16
 
 On-air compatible with 0.3.0 and 0.3.1 for direct sessions. Digipeating is new and

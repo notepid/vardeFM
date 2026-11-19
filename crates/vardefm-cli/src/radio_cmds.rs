@@ -14,11 +14,17 @@ fn e(x: impl std::fmt::Display) -> String {
     x.to_string()
 }
 
-/// Ctrl-C sets the returned flag, so loops can stop and release PTT.
+/// Ctrl-C sets the returned flag, so loops can stop and release PTT. On Linux and macOS
+/// SIGTERM sets it too: that is what `systemctl stop`, `kill` and a system shutdown send.
+///
+/// SIGHUP (the terminal or SSH session closed) is left alone, so a modem started with
+/// `nohup` keeps running.
 pub fn stop_flag() -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
     let s = stop.clone();
     let _ = ctrlc::set_handler(move || s.store(true, Ordering::Relaxed));
+    #[cfg(unix)]
+    let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, stop.clone());
     stop
 }
 
