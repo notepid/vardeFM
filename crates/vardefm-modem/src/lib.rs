@@ -258,7 +258,11 @@ impl Modem {
 
     /// Decode the header from the first `header_symbols()` symbols of `f`.
     fn decode_header(&self, f: &Frame) -> Option<Header> {
-        let slots = Self::llrs(Modulation::Bpsk, f, 0);
+        self.decode_header_slots(&Self::llrs(Modulation::Bpsk, f, 0))
+    }
+
+    /// Decode the header from the LLRs of its bit slots, in transmitted order.
+    fn decode_header_slots(&self, slots: &[f32]) -> Option<Header> {
         let llr: Vec<f32> = (0..HDR_CODE_BITS).map(|j| slots[self.hdr_perm[j]]).collect();
         let mut bits = self.hdr_code.decode(&llr, DECODE_ITERS)?;
         for (b, s) in bits.iter_mut().zip(scramble_bits(SEED_HDR_SCRAMBLE, HDR_INFO_BITS)) {
@@ -318,3 +322,6 @@ mod detect_eval;
 
 #[cfg(test)]
 mod level_eval;
+
+#[cfg(test)]
+mod header_eval;
