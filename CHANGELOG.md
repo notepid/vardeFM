@@ -10,6 +10,19 @@ run the same minor version.
 - **License.** VardeFM is now dual licensed under MIT OR Apache-2.0, at your option, so it
   can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including
   0.3.2 remain available under GPL-3.0-or-later.
+- **`OfdmParams::detect_lowpass_hz` is now `detect_band_hz`**, a `(f32, Option<f32>)`:
+  the high-pass corner and the optional low-pass corner, Hz. The high-pass cannot be
+  turned off: library users who set `detect_lowpass_hz: Some(f)` now set
+  `detect_band_hz: (lo, Some(f))` with the mode's corner (420 Hz narrow, 340 Hz wide). (#12)
+
+### Fixed
+- A CTCSS tone in the received audio no longer hides bursts from detection. Detection
+  now high-passes the audio (8th order, 420 Hz narrow, 340 Hz wide) and confirms
+  preamble B on the high-passed audio. Before, a tone at the usual 750 Hz deviation hid
+  every burst for 12 of the 21 EIA tones on the wide data port, and almost every burst
+  in narrow mode on a radio whose de-emphasised audio output passes the sub-tone. In narrow mode the
+  higher corner also detects weak bursts better. The tone still corrupts demodulation at
+  the higher speed levels; that is not fixed here. (#12)
 
 ## [0.3.2] - 2026-11-16
 

@@ -44,6 +44,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use vardefm_dsp::filter::Chain;
 use vardefm_dsp::prng::Prng;
+use vardefm_dsp::CTCSS_HZ;
 use vardefm_sim::{transmit, FmChannelConfig};
 
 /// A busy detector for the mode with these parameters.
@@ -66,11 +67,8 @@ const VOICE_RMS: f32 = 0.1;
 /// Received level of the quiet voice under strong hum, and of that hum.
 const QUIET_VOICE_RMS: f32 = 0.03;
 const STRONG_HUM_RMS: f32 = 0.1;
-const CTCSS_HZ: [f32; 21] = [
-    67.0, 71.9, 77.0, 82.5, 88.5, 94.8, 100.0, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5,
-    218.1, 233.6, 250.3, 254.1,
-];
-const CTCSS_DEVIATION_HZ: [f32; 3] = [375.0, 750.0, 1500.0];
+/// CTCSS deviation, Hz: 750 is the usual, 1500 a stress case.
+pub(crate) const CTCSS_DEVIATION_HZ: [f32; 3] = [375.0, 750.0, 1500.0];
 
 struct Ctx {
     mode: &'static str,

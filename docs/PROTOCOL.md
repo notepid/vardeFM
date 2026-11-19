@@ -72,8 +72,10 @@ So BPSK maps bit 0 to −1 and bit 1 to +1.
 
 ### 1.5 Receiver (informative)
 The reference receiver:
-1. Low-pass filters the audio (wide mode only) and runs a Schmidl-Cox autocorrelation.
-2. Confirms the frame by cross-correlating with preamble B.
+1. High-passes the audio (8th order, 420 Hz narrow, 340 Hz wide) to keep CTCSS tones out,
+   low-passes it too in wide mode (2500 Hz), and runs a Schmidl-Cox autocorrelation.
+2. Confirms the frame by cross-correlating the high-passed audio with preamble B, filtered
+   the same way.
 3. Places the FFT window mid cyclic prefix, which absorbs clock drift of ±ncp/2 samples
    over the frame.
 4. Estimates the channel from preamble B, smoothed across frequency, and decodes the
