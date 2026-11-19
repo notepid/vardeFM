@@ -273,7 +273,7 @@ fn run_sim(ofdm: &Ofdm, m: Modulation, nsym: usize, txdelay: f32, cfg: &FmChanne
         let tx = make_frame(ofdm, m, &bits, txdelay);
         let rx = transmit(&FmChannelConfig { seed: f as u64 + 1, ..cfg.clone() }, &tx);
         st.bits += bits.len();
-        match ofdm.detect(&rx, 0).and_then(|b| ofdm.demodulate(&rx, b, nsym)) {
+        match ofdm.detect(&rx, 0).at.and_then(|b| ofdm.demodulate(&rx, b, nsym)) {
             Some(frame) => {
                 if std::env::var("VARDEFM_DUMP").is_ok() {
                     let nv: Vec<String> = frame.noise_var.iter().map(|v| format!("{:.0}", -10.0 * v.log10())).collect();
