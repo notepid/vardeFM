@@ -6,6 +6,14 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Added
+- **Matched-filter burst detector**, chosen with `--detector mf` on the receiving
+  commands, `sim-pair` and `bench`. It cross-correlates the audio with the known
+  preambles. Near the sensitivity edge it decodes what decoding from the known position
+  decodes, where Schmidl-Cox loses up to a third of the bursts, and in wide mode it keeps
+  working under a CTCSS tone. Schmidl-Cox stays the default, and nothing on the air
+  changes. (#36, #37, #38, #39, #40)
+
 ### Changed
 - **License.** VardeFM is now dual licensed under MIT OR Apache-2.0, at your option, so it
   can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including

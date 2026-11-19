@@ -148,7 +148,7 @@ fn threaded_decoding_matches_single_thread() {
 fn received(m: &Modem, mode: &str, b: &Burst, cnr: f32) -> (Vec<f32>, usize) {
     let cfg = FmChannelConfig { cnr_db: Some(cnr), ..FmChannelConfig::by_name(mode).unwrap() };
     let audio = transmit(&cfg, &m.modulate(b));
-    let start = m.ofdm.detect(&audio, 0).expect("frame not detected");
+    let start = m.ofdm.detect(&audio, 0).at.expect("frame not detected");
     (audio, start)
 }
 
@@ -416,6 +416,117 @@ fn a_non_finite_sample_does_not_hide_a_burst() {
                 let got = receive(&mut Receiver::new(m.clone()), &audio);
                 assert_eq!(got.len(), 1, "{mode}, {bad} at {at}");
                 assert!(got[0].payload.iter().all(|p| p.is_some()), "{mode}, {bad} at {at}");
+            }
+        }
+    }
+}
+
+/// A modem whose bursts start straight with preamble A, without a leader, so that a
+/// test can place the preambles to the sample.
+fn modem_without_leader(mode: &str, detector: Detector) -> Arc<Modem> {
+    Arc::new(Modem::new(OfdmParams::by_name(mode).unwrap(), 0.0).with_detector(detector))
+}
+
+/// Preamble A of `b` on its own, as a burst cut off after it would leave it, then
+/// `gap` samples of silence. Preamble A alone matches half the matched filter's
+/// template (about 0.7 normalized), so it opens a search window that ends about one
+/// symbol later, and its header fails.
+fn lone_preamble(m: &Modem, b: &Burst, gap: usize) -> Vec<f32> {
+    assert_eq!(m.leader_symbols(), 0, "the burst must start with preamble A");
+    let mut out = m.modulate(b)[..m.ofdm.p.symbol_len()].to_vec();
+    out.extend(vec![0.0; gap]);
+    out
+}
+
+/// Preambles A and B of `b` on their own, as a burst cut off before its header would
+/// leave them, then `gap` samples of silence. Every detector finds a burst there, and
+/// its header fails. (Preamble A alone is not enough for every detector: Schmidl-Cox
+/// confirms on preamble B, and finds nothing there in narrow mode.)
+fn cut_off_burst(m: &Modem, b: &Burst, gap: usize) -> Vec<f32> {
+    assert_eq!(m.leader_symbols(), 0, "the burst must start with preamble A");
+    let mut out = m.modulate(b)[..2 * m.ofdm.p.symbol_len()].to_vec();
+    out.extend(vec![0.0; gap]);
+    out
+}
+
+/// A burst whose template starts within a cyclic prefix after the end of the search
+/// window that a lone preamble A opened. The header tried at the window's peak fails,
+/// and the search must go on from where the window ended, not from that header.
+#[test]
+fn a_false_crossing_just_before_a_burst_does_not_hide_it() {
+    for mode in ["narrow", "wide"] {
+        for detector in Detector::ALL {
+            let m = modem_without_leader(mode, detector);
+            let p = &m.ofdm.p;
+            let b = burst(1, 1, 5);
+            let peak = m.ofdm.mf_peak(&lone_preamble(&m, &b, 2 * p.symbol_len()));
+            assert!(peak > vardefm_dsp::ofdm::MF_THRESHOLD, "{mode}: lone preamble A peaks at {peak}");
+            for gap in [1, p.ncp / 2, p.ncp - 1] {
+                let mut audio = vec![0.0; 20_000];
+                audio.extend(lone_preamble(&m, &b, gap));
+                audio.extend(m.modulate(&b));
+                let got = receive(&mut Receiver::new(m.clone()), &audio);
+                assert_eq!(got.len(), 1, "{mode} {detector} gap {gap}");
+                assert_eq!(got[0].header, b.header, "{mode} {detector} gap {gap}");
+                assert!(got[0].payload.iter().all(|p| p.is_some()), "{mode} {detector} gap {gap}");
+            }
+        }
+    }
+}
+
+/// What a receiver finds must not depend on how its audio is chunked. A burst cut off
+/// before its header sits right after the first burst, so the search after that
+/// burst finds a header that fails just before the second burst, and searches on
+/// from there.
+///
+/// The bursts must match exactly; where they end may move by a few samples, since
+/// the matched filter's FFT blocks start where each search starts, and two near-equal
+/// correlation peaks can swap with the rounding.
+#[test]
+fn chunking_does_not_change_what_is_received() {
+    for mode in ["narrow", "wide"] {
+        for detector in Detector::ALL {
+            let m = modem_without_leader(mode, detector);
+            let ncp = m.ofdm.p.ncp;
+            let (b1, b2) = (burst(2, 1, 11), burst(1, 1, 12));
+            // Never 0 samples `after` the first burst: the search after it starts where
+            // it ends, and Schmidl-Cox misses a preamble A that starts right at the
+            // start of its search (narrow mode up to at least 32 samples in).
+            for (after, gap) in [(ncp / 2, ncp / 2), (ncp, 1), (m.ofdm.p.symbol_len(), ncp - 1)] {
+                let mut audio = vec![0.0; 10_000];
+                audio.extend(m.modulate(&b1));
+                audio.extend(vec![0.0; after]);
+                audio.extend(cut_off_burst(&m, &b2, gap));
+                audio.extend(m.modulate(&b2));
+                audio.extend(vec![0.0; 48_000]);
+                // The case this test is for must happen: searching from the end of the
+                // first burst finds the cut-off burst before the second one, and its
+                // header fails.
+                let l = m.ofdm.p.symbol_len();
+                let b1_end = 10_000 + m.modulate(&b1).len();
+                let b2_at = b1_end + after + 2 * l + gap + l + ncp;
+                let false_at = m.ofdm.detect(&audio, b1_end).at;
+                let at = format!("{mode} {detector} after {after} gap {gap}");
+                assert!(false_at.is_some_and(|b| b + l < b2_at), "{at}: found {false_at:?}, second burst at {b2_at}");
+                let hdr = m.ofdm.demodulate(&audio, false_at.unwrap(), m.header_symbols());
+                assert!(hdr.and_then(|f| m.decode_header(&f)).is_none(), "{at}: the cut-off burst's header decoded");
+                let run = |chunk: usize| {
+                    let mut rx = Receiver::new(m.clone());
+                    let got: Vec<RxBurst> = audio.chunks(chunk).flat_map(|c| rx.push(c)).collect();
+                    got.iter().map(|g| (g.header, g.payload.clone(), g.end_sample)).collect::<Vec<_>>()
+                };
+                let whole = run(audio.len());
+                let headers: Vec<Header> = whole.iter().map(|g| g.0).collect();
+                assert_eq!(headers, [b1.header, b2.header], "{mode} {detector} after {after} gap {gap}");
+                for chunk in [37, 480, 4801] {
+                    let got = run(chunk);
+                    let at = format!("{mode} {detector} after {after} gap {gap}, chunks of {chunk}");
+                    assert_eq!(got.len(), whole.len(), "{at}");
+                    for (g, w) in got.iter().zip(&whole) {
+                        assert_eq!((g.0, &g.1), (w.0, &w.1), "{at}");
+                        assert!(g.2.abs_diff(w.2) <= (ncp / 8) as u64, "{at}: ends at {} and {}", g.2, w.2);
+                    }
+                }
             }
         }
     }

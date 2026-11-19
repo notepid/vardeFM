@@ -31,7 +31,7 @@ pub fn count_errors(m: Modulation, frame: &Frame, bits: &[u8]) -> usize {
 pub fn decode_all(ofdm: &Ofdm, rx: &[f32], nsym: usize) -> Vec<(usize, Frame)> {
     let mut pos = 0;
     let mut frames = Vec::new();
-    while let Some(b) = ofdm.detect(rx, pos) {
+    while let Some(b) = ofdm.detect(rx, pos).at {
         let Some(frame) = ofdm.demodulate(rx, b, nsym) else { break };
         pos = frame.end;
         frames.push((b, frame));
