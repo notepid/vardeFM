@@ -67,6 +67,19 @@ end stations and the digipeaters of a routed session should all run 0.3.2.
   at a faster level, the receiver acknowledged the longer copy but kept the shorter one,
   so the sender never sent the difference again. Only the receiving side changes: a
   station with this fix receives correctly from any version. (#29, thanks @mustig)
+- A session whose peer went silent stayed connected forever if the channel then stayed
+  busy (a stuck carrier, or other stations' traffic): retries, keepalives and a pending
+  disconnect all wait for a free channel, so the retry limit was never reached. The
+  same held for a connect request. The session (or connect attempt) now ends, and the
+  host gets `DISCONNECTED`, once the channel has held back a burst we want to send for
+  `LinkConfig::busy_timeout_s` (default 60 s) with none of our own bursts going out and
+  nothing heard from the peer. A short quiet gap in the carrier, or a repeat sent as a
+  digipeater, does not restart that time. A dropped session sends one Disc once the
+  channel is quiet (if that comes within the same time again), so a peer that was there
+  but could not be heard learns of it. A
+  shorter setting is raised to a floor chosen to cover an exchange with the peer
+  through the session's digipeaters, so the peer's own bursts and their repeats do not
+  end a working session. (#32, #49)
 - Two stations talking directly could drop their session when both started a burst at
   the same moment. Both then retried after the same wait, within 0.4 s of each other,
   and a retry did not give way to a busy channel, so every retry collided. A retry now
