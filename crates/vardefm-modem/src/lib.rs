@@ -28,6 +28,11 @@ pub const MAX_NCW: usize = 24;
 /// Payload airtime limit per burst. Keeps clock drift inside the cyclic-prefix slack.
 pub const MAX_PAYLOAD_SECONDS: f32 = 4.0;
 const DECODE_ITERS: usize = 50;
+/// Most decoding passes over a burst's payload: the first, and up to two that decode
+/// failed codewords again with the bits of decoded ones known
+/// (`Modem::decode_payload_passes`). Near a level's threshold the third pass still
+/// rescues codewords; further passes added little in the channel simulator.
+pub const MAX_PASSES: usize = 3;
 
 const SEED_CODE: u32 = 0x1d9c_0000;
 const SEED_HDR_CODE: u32 = 0x1d9c_1000;
@@ -140,6 +145,16 @@ impl Modem {
         LEVELS[level as usize].k / 8 - 4
     }
 
+    /// Most decoding passes over a payload at `level`: [`MAX_PASSES`] at 16QAM and
+    /// 64QAM, 1 at BPSK and QPSK, whose axes carry one bit each and share none.
+    pub fn decode_passes(level: u8) -> usize {
+        if LEVELS[level as usize].modulation.bits_per_axis() >= 2 {
+            MAX_PASSES
+        } else {
+            1
+        }
+    }
+
     pub fn header_symbols(&self) -> usize {
         self.hdr_syms
     }
@@ -243,15 +258,22 @@ impl Modem {
         self.header_bits(h).chunks(nd).map(|c| c.iter().map(|&b| bpsk.map(&[b])).collect()).collect()
     }
 
-    /// LLRs for every bit slot of symbols `from..` of `f`. The noise variance of
-    /// symbol `i`, carrier `j` is `f.noise_var[j] * f.symbol_noise_scale[i]`.
+    /// Every received point of symbols `from..` of `f`, in slot order (symbol by
+    /// symbol, carrier by carrier), with its noise variance:
+    /// `f.noise_var[j] * f.symbol_noise_scale[i]` for symbol `i`, carrier `j`.
+    /// [`Modem::llrs`] and [`Modem::llrs_known`] both lay out their slots by it.
+    fn points(f: &Frame, from: usize) -> impl Iterator<Item = (Complex32, f32)> + '_ {
+        f.symbols[from..]
+            .iter()
+            .zip(&f.symbol_noise_scale[from..])
+            .flat_map(|(sym, &scale)| sym.iter().zip(&f.noise_var).map(move |(y, &nv)| (*y, nv * scale)))
+    }
+
+    /// LLRs for every bit slot of symbols `from..` of `f`.
     fn llrs(m: Modulation, f: &Frame, from: usize) -> Vec<f32> {
-        let symbols = &f.symbols[from..];
-        let mut out = Vec::with_capacity(symbols.len() * f.noise_var.len() * m.bits_per_symbol());
-        for (sym, &scale) in symbols.iter().zip(&f.symbol_noise_scale[from..]) {
-            for (y, &nv) in sym.iter().zip(&f.noise_var) {
-                m.demap_llr(*y, nv * scale, &mut out);
-            }
+        let mut out = Vec::with_capacity((f.symbols.len() - from) * f.noise_var.len() * m.bits_per_symbol());
+        for (y, nv) in Self::points(f, from) {
+            m.demap_llr(y, nv, &mut out);
         }
         out
     }
@@ -269,42 +291,126 @@ impl Modem {
 
     /// Decode the payload codewords of `f` (a whole frame, header symbols included).
     fn decode_payload(&self, h: &Header, f: &Frame) -> Vec<Option<Vec<u8>>> {
+        self.decode_payload_passes(h, f, Self::decode_passes(h.level)).data
+    }
+
+    /// Decode the payload codewords of `f` in at most `max_passes` passes: after the
+    /// first, each pass decodes the failed ones again with the bits of the decoded
+    /// ones known.
+    ///
+    /// The interleaver spreads all codewords of a burst over every symbol, so at
+    /// 16QAM and 64QAM one axis of a point carries bits of several codewords. Once a
+    /// codeword has passed its CRC its coded bits are known, and the failed
+    /// codewords' bits that share an axis with them are demapped again against only
+    /// the points that remain possible. That repeats while a pass rescues a codeword,
+    /// up to `max_passes`.
+    fn decode_payload_passes(&self, h: &Header, f: &Frame, max_passes: usize) -> Decoded {
         let level = LEVELS[h.level as usize];
         let code = &self.codes[h.level as usize];
-        let slots = Self::llrs(level.modulation, f, self.hdr_syms);
-        let total = h.ncw as usize * CW_BITS;
+        let m = level.modulation;
+        let ncw = h.ncw as usize;
+        let total = ncw * CW_BITS;
         let perm = permutation(SEED_INTERLEAVE, total);
-        let decode = |j: usize| -> Option<Vec<u8>> {
+        // Only an axis of two or more bits can share them: not BPSK or QPSK.
+        let rescue = max_passes.min(Self::decode_passes(h.level)) > 1;
+        /// A codeword's scrambled information bits (kept with `rescue`) and data.
+        type Got = Option<(Option<Vec<u8>>, Vec<u8>)>;
+        // Codeword `j` from its slot LLRs, if it decodes and passes the CRC: its data
+        // bytes, and with `rescue` its scrambled information bits, to encode again.
+        let decode = |slots: &[f32], j: usize| -> Got {
             let llr: Vec<f32> = (0..CW_BITS).map(|i| slots[perm[j * CW_BITS + i]]).collect();
-            let mut bits = code.decode(&llr, DECODE_ITERS)?;
-            for (b, s) in bits.iter_mut().zip(scramble_bits(SEED_SCRAMBLE + j as u32, code.k)) {
-                *b ^= s;
-            }
+            let info = code.decode(&llr, DECODE_ITERS)?;
+            let scramble = scramble_bits(SEED_SCRAMBLE + j as u32, code.k);
+            let bits: Vec<u8> = info.iter().zip(scramble).map(|(b, s)| b ^ s).collect();
             let bytes = vardefm_fec::bits_to_bytes(&bits);
             let (data, tail) = bytes.split_at(bytes.len() - 4);
-            (crc::crc32(data).to_be_bytes() == tail).then(|| data.to_vec())
+            (crc::crc32(data).to_be_bytes() == tail).then(|| (rescue.then_some(info), data.to_vec()))
         };
-        let ncw = h.ncw as usize;
-        let threads = self.decode_threads.clamp(1, ncw.max(1));
+        let slots = Self::llrs(m, f, self.hdr_syms);
+        let mut got: Vec<Got> = self.on_decode_threads(&(0..ncw).collect::<Vec<_>>(), |j| decode(&slots, j));
+        let mut passes = 1;
+        let mut known = vec![None; if rescue { total } else { 0 }];
+        let mut new_ok: Vec<usize> = (0..ncw).filter(|&j| got[j].is_some()).collect();
+        while rescue && passes < max_passes && !new_ok.is_empty() {
+            let failed: Vec<usize> = (0..ncw).filter(|&j| got[j].is_none()).collect();
+            if failed.is_empty() {
+                break;
+            }
+            for &j in &new_ok {
+                let info = got[j].as_mut().and_then(|g| g.0.take()).expect("decoded with rescue");
+                let coded = code.encode(&info);
+                for (i, b) in coded.into_iter().enumerate() {
+                    known[perm[j * CW_BITS + i]] = Some(b == 1);
+                }
+            }
+            let slots = Self::llrs_known(m, f, self.hdr_syms, &known);
+            let again = self.on_decode_threads(&failed, |j| decode(&slots, j));
+            passes += 1;
+            new_ok.clear();
+            for (&j, r) in failed.iter().zip(again) {
+                if r.is_some() {
+                    got[j] = r;
+                    new_ok.push(j);
+                }
+            }
+        }
+        let data: Vec<Option<Vec<u8>>> = got.into_iter().map(|g| g.map(|(_, d)| d)).collect();
+        Decoded { data, passes }
+    }
+
+    /// LLRs as [`Modem::llrs`], with the bits `known` (one per slot of the payload,
+    /// `None` where not known) taken as given. Points whose bits are all known are not
+    /// demapped: their LLRs are 0.
+    fn llrs_known(m: Modulation, f: &Frame, from: usize, known: &[Option<bool>]) -> Vec<f32> {
+        let bps = m.bits_per_symbol();
+        debug_assert_eq!((f.symbols.len() - from) * f.noise_var.len() * bps, known.len(), "one known bit per slot");
+        let mut out = Vec::with_capacity(known.len());
+        for ((y, nv), k) in Self::points(f, from).zip(known.chunks_exact(bps)) {
+            if k.contains(&None) {
+                m.demap_llr_known(y, nv, k, &mut out);
+            } else {
+                // Every bit of this point belongs to a decoded codeword: no failed
+                // codeword reads its LLRs.
+                out.extend(std::iter::repeat_n(0.0, bps));
+            }
+        }
+        out
+    }
+
+    /// `decode(j)` for every `j` of `items`, in order, spread over the decode threads.
+    fn on_decode_threads<R: Send>(&self, items: &[usize], decode: impl Fn(usize) -> R + Sync) -> Vec<R> {
+        let n = items.len();
+        let threads = self.decode_threads.clamp(1, n.max(1));
         if threads == 1 {
-            return (0..ncw).map(decode).collect();
+            return items.iter().map(|&j| decode(j)).collect();
         }
         // The whole burst is decoded after it ends, and the reply waits for it:
         // spread the codewords over the CPU cores (thread t takes t, t+threads, ...).
         let decode = &decode;
-        let mut out = vec![None; ncw];
+        let mut out: Vec<Option<R>> = (0..n).map(|_| None).collect();
         std::thread::scope(|scope| {
             let workers: Vec<_> = (0..threads)
-                .map(|t| scope.spawn(move || (t..ncw).step_by(threads).map(|j| (j, decode(j))).collect::<Vec<_>>()))
+                .map(|t| {
+                    scope.spawn(move || (t..n).step_by(threads).map(|i| (i, decode(items[i]))).collect::<Vec<_>>())
+                })
                 .collect();
             for w in workers {
-                for (j, r) in w.join().expect("decoder thread panicked") {
-                    out[j] = r;
+                for (i, r) in w.join().expect("decoder thread panicked") {
+                    out[i] = Some(r);
                 }
             }
         });
-        out
+        out.into_iter().map(|r| r.expect("every item decoded")).collect()
     }
+}
+
+/// What [`Modem::decode_payload_passes`] returns.
+struct Decoded {
+    /// The data of each codeword that decoded.
+    data: Vec<Option<Vec<u8>>>,
+    /// Passes made, the first included.
+    #[cfg_attr(not(test), allow(dead_code))]
+    passes: usize,
 }
 
 #[cfg(test)]
@@ -318,3 +424,6 @@ mod detect_eval;
 
 #[cfg(test)]
 mod level_eval;
+
+#[cfg(test)]
+mod rescue_eval;
