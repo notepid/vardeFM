@@ -73,6 +73,24 @@ fn header_only_and_back_to_back_bursts() {
     assert!(got[1].payload.iter().all(|p| p.is_some()));
 }
 
+/// `narrow` decodes through the new channel presets, so a preset that breaks fails
+/// CI rather than only the ignored sweeps: the mic path with the radio on 25 kHz,
+/// and the flat data port on 12.5 kHz at the 2.5 kHz the docs recommend.
+#[test]
+fn narrow_decodes_over_the_other_channels() {
+    let m = modem("narrow");
+    for spec in ["mic-25k", "data-12k5:dev=2500"] {
+        for (level, cnr) in [(0, None), (4, Some(20.0))] {
+            let b = burst(level, 2, 9);
+            let cfg = FmChannelConfig { cnr_db: cnr, ..FmChannelConfig::parse_channel(spec).unwrap() };
+            let got = receive(&mut Receiver::new(m.clone()), &transmit(&cfg, &m.modulate(&b)));
+            assert_eq!(got.len(), 1, "{spec} L{level} at {cnr:?} dB");
+            assert_eq!(got[0].header, b.header, "{spec} L{level}");
+            assert!(got[0].payload.iter().all(|p| p.is_some()), "{spec} L{level} at {cnr:?} dB: codeword failed");
+        }
+    }
+}
+
 #[test]
 fn decodes_through_noisy_radio() {
     // (mode, level, CNR): all codewords must decode.
@@ -92,35 +110,43 @@ fn decodes_through_noisy_radio() {
 /// Prints, per level, the codeword success rate and estimated SNR across CNR.
 /// Used to set the rate-adaptation thresholds in vardefm-link.
 /// `cargo test --release -p vardefm-modem level_table -- --ignored --nocapture`
+///
+/// Environment: `MODES` (narrow,wide), `CHANNELS` (channel specs as in
+/// `FmChannelConfig::parse_channel`; unset, each mode on its own channel).
 #[test]
 #[ignore]
 fn level_table() {
-    for mode in ["narrow", "wide"] {
-        let m = modem(mode);
-        println!("{mode}: net rates {:?}", (0..7).map(|l| m.net_rate(l) as u32).collect::<Vec<_>>());
-        for level in 0..LEVELS.len() as u8 {
-            let mut line = format!("{mode} L{level} {:>10}:", LEVELS[level as usize].name);
-            for cnr in [6.0, 8.0, 10.0, 12.0, 14.0, 17.0, 20.0, 24.0, 28.0, 33.0, 40.0] {
-                let (mut ok, mut total, mut snr, mut nf) = (0, 0, 0.0, 0);
-                for t in 0..4 {
-                    let b = burst(level, m.max_ncw(level).min(4), 100 + t);
-                    let cfg = FmChannelConfig {
-                        cnr_db: Some(cnr),
-                        seed: t as u64 + 1,
-                        ..FmChannelConfig::by_name(mode).unwrap()
-                    };
-                    let got = receive(&mut Receiver::new(m.clone()), &transmit(&cfg, &m.modulate(&b)));
-                    total += b.payload.len();
-                    if let Some(g) = got.first() {
-                        ok += g.payload.iter().filter(|p| p.is_some()).count();
-                        snr += g.snr_db;
-                        nf += 1;
-                    }
-                }
-                line += &format!(" {cnr}:{:.0}%/{:.1}", 100.0 * ok as f32 / total as f32, snr / nf.max(1) as f32);
-            }
-            println!("{line}");
+    let channels = crate::detect_eval::env_channels();
+    for mode in crate::detect_eval::env_modes("narrow,wide") {
+        let mode = mode.as_str();
+        for (name, channel) in &crate::detect_eval::channels_for(mode, &channels) {
+            level_table_on(mode, &crate::detect_eval::mode_on(mode, name.as_deref()), channel);
         }
+    }
+}
+
+/// One mode's `level_table` over `channel`, labelled `name` (from `mode_on`).
+fn level_table_on(mode: &str, name: &str, channel: &FmChannelConfig) {
+    let m = modem(mode);
+    println!("{name}: net rates {:?}", (0..7).map(|l| m.net_rate(l) as u32).collect::<Vec<_>>());
+    for level in 0..LEVELS.len() as u8 {
+        let mut line = format!("{name} L{level} {:>10}:", LEVELS[level as usize].name);
+        for cnr in [6.0, 8.0, 10.0, 12.0, 14.0, 17.0, 20.0, 24.0, 28.0, 33.0, 40.0] {
+            let (mut ok, mut total, mut snr, mut nf) = (0, 0, 0.0, 0);
+            for t in 0..4 {
+                let b = burst(level, m.max_ncw(level).min(4), 100 + t);
+                let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: t as u64 + 1, ..channel.clone() };
+                let got = receive(&mut Receiver::new(m.clone()), &transmit(&cfg, &m.modulate(&b)));
+                total += b.payload.len();
+                if let Some(g) = got.first() {
+                    ok += g.payload.iter().filter(|p| p.is_some()).count();
+                    snr += g.snr_db;
+                    nf += 1;
+                }
+            }
+            line += &format!(" {cnr}:{:.0}%/{:.1}", 100.0 * ok as f32 / total as f32, snr / nf.max(1) as f32);
+        }
+        println!("{line}");
     }
 }
 

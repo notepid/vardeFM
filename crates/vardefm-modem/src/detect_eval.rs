@@ -175,8 +175,12 @@ pub(crate) fn received(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, t
 /// The audio the receiver gets when trial `t` sends `sent` over the `mode` channel
 /// at `cnr` dB.
 pub(crate) fn through_channel(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: u32) -> Vec<f32> {
-    let cfg =
-        FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..FmChannelConfig::by_name(mode).unwrap() };
+    through(m, &FmChannelConfig::by_name(mode).unwrap(), cnr, sent, t)
+}
+
+/// As [`through_channel`], over channel `channel` at `cnr` dB instead of the mode's.
+pub(crate) fn through(m: &Modem, channel: &FmChannelConfig, cnr: f32, sent: &Burst, t: u32) -> Vec<f32> {
+    let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..channel.clone() };
     transmit(&cfg, &m.modulate(sent))
 }
 
@@ -195,11 +199,13 @@ fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t
     Trial { det, genie }
 }
 
-/// Where preamble B of a `level` burst of `ncw` codewords lands after the channel.
-/// The channel's delays depend neither on its noise nor on the payload (the burst
-/// layout is fixed by level and size), so one noiseless copy gives it for every trial.
-pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
-    clean_position(m, &clean_copy(m, mode, level, ncw, 0).1)
+/// Where preamble B of a `level` burst of `ncw` codewords lands after channel
+/// `channel`. The channel's delays depend neither on its noise nor on the payload
+/// (the burst layout is fixed by level and size), so one noiseless copy gives it for
+/// every trial. `None` when the burst is not found even without noise, as on a
+/// channel too narrow for the mode.
+pub(crate) fn true_position_on(m: &Modem, channel: &FmChannelConfig, level: u8, ncw: usize) -> Option<usize> {
+    m.ofdm.detect(&clean_copy_on(m, channel, level, ncw, 0).1, 0)
 }
 
 /// The true position in `rx`, a noiseless copy from [`clean_copy`]: where the
@@ -211,14 +217,19 @@ fn clean_position(m: &Modem, rx: &[f32]) -> usize {
 /// The `level` burst of `ncw` codewords with payload `t` as modulated, and as a
 /// noiseless `mode` channel delivers it.
 fn clean_copy(m: &Modem, mode: &str, level: u8, ncw: usize, t: u32) -> (Vec<f32>, Vec<f32>) {
-    let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+    clean_copy_on(m, &FmChannelConfig::by_name(mode).unwrap(), level, ncw, t)
+}
+
+/// As [`clean_copy`], over channel `channel`.
+fn clean_copy_on(m: &Modem, channel: &FmChannelConfig, level: u8, ncw: usize, t: u32) -> (Vec<f32>, Vec<f32>) {
+    let clean = FmChannelConfig { cnr_db: None, ..channel.clone() };
     let tx = m.modulate(&burst(level, ncw, payload_seed(t)));
     let rx = transmit(&clean, &tx);
     (tx, rx)
 }
 
 /// Where the true position lies against the channel, from one noiseless copy: (the
-/// true position as [`true_position`] finds it, samples after the sent boundary of
+/// true position as [`clean_position`] finds it, samples after the sent boundary of
 /// preamble B's body, channel delay in samples).
 ///
 /// The boundary is counted back from the end of the modulated burst, so the leader
@@ -258,7 +269,7 @@ pub(crate) fn on_every_core<R: Send>(trials: u32, f: impl Fn(u32) -> R + Sync) -
 }
 
 /// Run `trials` trials of a `level` burst of `ncw` codewords on every core, with
-/// preamble B at `truth` ([`true_position`]).
+/// preamble B at `truth` ([`clean_position`]).
 fn run_trials(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, trials: u32) -> Vec<Trial> {
     on_every_core(trials, |t| trial(m, mode, cnr, level, ncw, truth, t))
 }
@@ -317,6 +328,44 @@ pub(crate) fn env_modes(default: &str) -> Vec<String> {
         assert!(OfdmParams::by_name(mode).is_some(), "MODES: unknown mode {mode:?} (narrow or wide)");
     }
     modes
+}
+
+/// `CHANNELS` as a list of channel specs (`FmChannelConfig::parse_channel`), each
+/// checked up front; empty when unset, which means each mode's own channel. An
+/// unknown channel stops the run rather than falling back to a default.
+pub(crate) fn env_channels() -> Vec<(String, FmChannelConfig)> {
+    let Ok(v) = std::env::var("CHANNELS") else {
+        return Vec::new();
+    };
+    let parse = |s: &str| FmChannelConfig::parse_channel(s).unwrap_or_else(|e| panic!("CHANNELS: {e}"));
+    v.split(',').map(str::trim).map(|s| (s.to_string(), parse(s))).collect()
+}
+
+/// The channels `mode` runs on: each of `channels` (from [`env_channels`]) with its
+/// name, or the mode's own channel with no name when `channels` is empty.
+pub(crate) fn channels_for(
+    mode: &str,
+    channels: &[(String, FmChannelConfig)],
+) -> Vec<(Option<String>, FmChannelConfig)> {
+    if channels.is_empty() {
+        vec![(None, FmChannelConfig::by_name(mode).unwrap())]
+    } else {
+        channels.iter().map(|(name, cfg)| (Some(name.clone()), cfg.clone())).collect()
+    }
+}
+
+/// `mode`, or `mode on name` for a channel that is not the mode's own.
+pub(crate) fn mode_on(mode: &str, name: Option<&str>) -> String {
+    match name {
+        Some(n) => format!("{mode} on {n}"),
+        None => mode.to_string(),
+    }
+}
+
+/// Stops `eval`, which runs only the modes' own channels, when `CHANNELS` is set,
+/// rather than run something other than what was asked for.
+pub(crate) fn no_channels(eval: &str) {
+    assert!(std::env::var("CHANNELS").is_err(), "{eval} runs the modes' own channels only: unset CHANNELS");
 }
 
 /// Environment variable `name` as a switch: unset, `0` or `false` is off, `1` or
@@ -403,6 +452,7 @@ fn false_detections(m: &Modem, f: DetectFn, rx: &[f32]) -> (u32, u32) {
 #[test]
 #[ignore]
 fn detector_eval() {
+    no_channels("detector_eval");
     let modes = env_modes("narrow,wide");
     let trials: u32 = env_or("TRIALS", 100);
     let level: u8 = env_or("LEVEL", 1);
@@ -518,7 +568,7 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
         let m = modem(mode);
         let (truth, after, delay) = position_check(&m, mode, 1, 1);
         // The true position must not depend on the payload, or one copy could not give it.
-        // `position_check` finds it as `true_position` does: `clean_position` on payload 0.
+        // `position_check` finds it with `clean_position` on payload 0.
         for t in 1..4 {
             let pos = clean_position(&m, &clean_copy(&m, mode, 1, 1, t).1);
             assert_eq!(pos, truth, "{mode}: payload {t} moves the burst");

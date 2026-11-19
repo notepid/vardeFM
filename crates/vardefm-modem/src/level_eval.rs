@@ -63,14 +63,20 @@
 //!
 //! Environment: `MODES` (narrow,wide), `LEVELS` (0,1,..,6; `h` is the header at
 //! every drive), `TRIALS` (bursts per point: 100 for the gate, 200 for the sweep's
-//! fine grid), `WRITE` (sweep only).
+//! fine grid), `WRITE` (sweep only), `CHANNELS` (sweep only: channel specs as in
+//! `FmChannelConfig::parse_channel`, e.g. `mic-25k,data-12k5:dev=2000:if=7500`;
+//! unset, each mode runs on its own channel, the one the baseline holds; with it
+//! the sweep cannot write, and the gate refuses to run). The sweep gives each
+//! point also as C/N0 in dB-Hz, which compares channels at equal signal strength
+//! whatever their IF bandwidth.
 
 use super::*;
 use crate::detect_eval::{
-    burst, env_flag, env_list, env_modes, env_or, header_at, modem, on_every_core, payload_seed, through_channel,
-    true_position,
+    burst, channels_for, env_channels, env_flag, env_list, env_modes, env_or, header_at, modem, no_channels,
+    on_every_core, payload_seed, through, true_position_on,
 };
 use vardefm_dsp::prng::Prng;
+use vardefm_sim::FmChannelConfig;
 
 /// Error rate at which a point is recorded and gated.
 const TARGET_RATE: f32 = 0.1;
@@ -273,6 +279,9 @@ impl Baseline {
 struct Case<'a> {
     m: &'a Modem,
     mode: &'a str,
+    /// The channel, and its name when it is not the mode's own.
+    channel: FmChannelConfig,
+    channel_name: Option<&'a str>,
     target: Target,
     /// The level of the bursts sent.
     level: u8,
@@ -284,14 +293,40 @@ struct Case<'a> {
 }
 
 impl<'a> Case<'a> {
+    /// `target` of `mode` on the mode's own channel.
     fn new(m: &'a Modem, mode: &'a str, target: Target) -> Self {
+        Self::on_channel(m, mode, None, FmChannelConfig::by_name(mode).unwrap(), target)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// `target` of `mode` on `channel`, named `channel_name` when it is not the
+    /// mode's own. Fails when the burst is not found even on the noiseless channel.
+    fn on_channel(
+        m: &'a Modem,
+        mode: &'a str,
+        channel_name: Option<&'a str>,
+        channel: FmChannelConfig,
+        target: Target,
+    ) -> Result<Self, String> {
         let level = target.level();
         let ncw = match target {
             Target::Header(_) => 1,
             Target::Level(l) => m.max_ncw(l).min(CODEWORDS),
         };
-        let truth = true_position(m, mode, level, ncw);
-        Case { m, mode, target, level, ncw, truth }
+        let label = |n: Option<&str>| match n {
+            Some(n) => format!("{} on {n}", target.label(mode)),
+            None => target.label(mode),
+        };
+        let truth = true_position_on(m, &channel, level, ncw)
+            .ok_or_else(|| format!("{}: burst not found on the noiseless channel", label(channel_name)))?;
+        Ok(Case { m, mode, channel, channel_name, target, level, ncw, truth })
+    }
+
+    fn label(&self) -> String {
+        match self.channel_name {
+            Some(n) => format!("{} on {n}", self.target.label(self.mode)),
+            None => self.target.label(self.mode),
+        }
     }
 
     /// Failed decisions of trial `t` at `cnr` dB, from the true position: whether
@@ -299,7 +334,7 @@ impl<'a> Case<'a> {
     fn errors(&self, cnr: f32, t: u32) -> u32 {
         let (m, ncw) = (self.m, self.ncw);
         let sent = trial_burst(self.level, ncw, t);
-        let rx = through_channel(m, self.mode, cnr, &sent, t);
+        let rx = through(m, &self.channel, cnr, &sent, t);
         if let Target::Header(_) = self.target {
             return u32::from(header_at(m, &rx, self.truth) != Some(sent.header));
         }
@@ -456,22 +491,26 @@ fn commit() -> String {
 /// Measures the 10 % point of `case`: a 1 dB search for the crossing from `start`,
 /// then a 0.25 dB grid of ±1 dB around it, moved until it crosses 10 % with the
 /// gate's two points on it. Returns the point and the whole dB the
-/// search ended at. Warns when the curve is too flat for the gate to tell a shift of
-/// the target's margin from noise.
-fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
-    let label = case.target.label(case.mode);
+/// search ended at, or why there is no point. Warns when the curve is too flat for
+/// the gate to tell a shift of the target's margin from noise.
+fn sweep(case: &Case, start: i32, bursts: u32) -> Result<(Point, i32), String> {
+    let label = case.label();
     let rate_name = case.target.rate_name();
     let mut seen = std::collections::BTreeMap::new();
     let mut at = |c: i32| *seen.entry(c).or_insert_with(|| case.rate(c as f32, 0, COARSE_BURSTS));
     // c ends as the last whole dB at which the rate is still 10 % or more.
     let mut c = start;
     while at(c) < TARGET_RATE {
-        assert!(c > MIN_CNR_DB, "{label}: {rate_name} is below 10 % even at {c} dB");
+        if c <= MIN_CNR_DB {
+            return Err(format!("{label}: {rate_name} is below 10 % even at {c} dB"));
+        }
         c -= 1;
     }
     while at(c + 1) >= TARGET_RATE {
         c += 1;
-        assert!(c < MAX_CNR_DB, "{label}: {rate_name} is still 10 % or more at {MAX_CNR_DB} dB");
+        if c >= MAX_CNR_DB {
+            return Err(format!("{label}: {rate_name} is still 10 % or more at {MAX_CNR_DB} dB"));
+        }
     }
     // Whole quarter dB steps, so the recorded grid reads as written. The search rests
     // on few bursts, so its crossing can be off by more than the grid allows, and
@@ -479,12 +518,13 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
     // the run here, not after the whole sweep.
     let margin = case.target.margin();
     let measured = fine_grid(c * 4 + 2, 4.0, FINE_STEPS, TARGET_RATE, margin, |g| case.rate(g, 0, bursts));
-    let (grid, rates, cnr_db) = measured.unwrap_or_else(|(grid, rates)| {
-        panic!("{label}: the fine grid {grid:?} does not carry the gate: {rate_name} {rates:?}")
-    });
+    let (grid, rates, cnr_db) = measured.map_err(|(grid, rates)| {
+        format!("{label}: the fine grid {grid:?} does not carry the gate: {rate_name} {rates:?}")
+    })?;
 
     let line: String = grid.iter().zip(&rates).map(|(g, r)| format!(" {g:.2}:{r:.3}")).collect();
-    println!("{label}: 10 % {rate_name} at {cnr_db:.2} dB;{line}");
+    let cn0 = case.channel.cn0_db(cnr_db);
+    println!("{label}: 10 % {rate_name} at {cnr_db:.2} dB, C/N0 {cn0:.2} dB-Hz;{line}");
     // The rate the gate would see on either side, interpolated on the grid, against
     // the binomial sigma, which is somewhat optimistic (see `GATE_BURSTS`).
     let decisions = case.trials(GATE_BURSTS).1;
@@ -504,7 +544,7 @@ fn sweep(case: &Case, start: i32, bursts: u32) -> (Point, i32) {
         grid_db: grid,
         rate: rates,
     };
-    (p, c)
+    Ok((p, c))
 }
 
 /// Measures the header point of every mode and drive and the codeword point of
@@ -517,6 +557,7 @@ fn level_sweep() {
     let bursts = env_or("TRIALS", RECORD_BURSTS);
     assert!(bursts > 0, "TRIALS must be at least 1");
     let write = env_flag("WRITE");
+    let channels = env_channels();
     // The tree as measured, not as it is when the run ends.
     let commit = commit();
     // The file holds every point from one run; a partial run would drop the rest.
@@ -524,22 +565,61 @@ fn level_sweep() {
         !write || (std::env::var("MODES").is_err() && std::env::var("LEVELS").is_err()),
         "WRITE=1 records every mode and level: unset MODES and LEVELS"
     );
+    // The baseline holds each mode on its own channel only.
+    assert!(!write || channels.is_empty(), "WRITE=1 records the modes' own channels: unset CHANNELS");
     let (mut header, mut level) = (Vec::new(), Vec::new());
+    // One line per point, for the summary.
+    let mut summary = Vec::new();
     for mode in &modes {
         let m = modem(mode);
-        // Crossings mostly rise with the level; start each search at the last of its
-        // kind.
-        let (mut header_start, mut level_start) = (0i32, 0i32);
-        for target in Target::all(&m, &specs) {
-            let case = Case::new(&m, mode, target);
-            let (list, start) = match target {
-                Target::Header(_) => (&mut header, &mut header_start),
-                Target::Level(_) => (&mut level, &mut level_start),
-            };
-            let (p, c) = sweep(&case, *start, bursts);
-            list.push(p);
-            *start = c;
+        let on = channels_for(mode, &channels);
+        for (name, channel) in &on {
+            let name = name.as_deref();
+            // Crossings mostly rise with the level; start each search at the last of
+            // its kind.
+            let (mut header_start, mut level_start) = (0i32, 0i32);
+            for target in Target::all(&m, &specs) {
+                let (list, start) = match target {
+                    Target::Header(_) => (&mut header, &mut header_start),
+                    Target::Level(_) => (&mut level, &mut level_start),
+                };
+                // On the modes' own channels a point that cannot be measured stops the
+                // run; on others it is a result, and the sweep goes on.
+                let case = match Case::on_channel(&m, mode, name, channel.clone(), target) {
+                    Ok(case) => case,
+                    Err(e) if channels.is_empty() => panic!("{e}"),
+                    Err(e) => {
+                        println!("NO POINT: {e}");
+                        let label = format!("{} on {}", target.label(mode), name.unwrap_or_default());
+                        summary.push(format!("  {label:<50} drive {:.2}  no point", m.tx_rms(target.level())));
+                        continue;
+                    }
+                };
+                let (p, c) = match sweep(&case, *start, bursts) {
+                    Ok(pc) => pc,
+                    Err(e) if channels.is_empty() => panic!("{e}"),
+                    Err(e) => {
+                        println!("NO POINT: {e}");
+                        summary.push(format!("  {:<50} drive {:.2}  no point", case.label(), m.tx_rms(case.level)));
+                        continue;
+                    }
+                };
+                let cn0 = channel.cn0_db(p.cnr_db);
+                let line = format!(
+                    "  {:<50} drive {:.2}  CNR {:6.2} dB  C/N0 {cn0:6.2} dB-Hz",
+                    case.label(),
+                    p.drive,
+                    p.cnr_db
+                );
+                summary.push(line);
+                list.push(p);
+                *start = c;
+            }
         }
+    }
+    println!("\nsummary: 10 % point, {bursts} bursts per fine-grid point");
+    for line in &summary {
+        println!("{line}");
     }
     if write {
         // A grid that cannot carry the gate stops the run instead of reaching the file.
@@ -578,6 +658,9 @@ fn level_gate() {
     let specs: Vec<Spec> = env_list("LEVELS", ALL_TARGETS);
     let bursts = env_or("TRIALS", GATE_BURSTS);
     assert!(bursts > 0, "TRIALS must be at least 1");
+    // The baseline holds each mode on its own channel only; gating another would
+    // compare it with the wrong points.
+    no_channels("level_gate");
     let base = load();
     println!("baseline {} ({})", base.source.commit, base.source.command);
     let mut failed = Vec::new();
@@ -860,4 +943,17 @@ fn check_point(at: &str, grid: &[f32], rates: &[f32], point: f32, target: f32, m
     let x = crossing(grid, rates, target).unwrap_or_else(|| panic!("{at}: the grid does not cross the target"));
     assert!(((x * 100.0).round() / 100.0 - point).abs() < 1e-3, "{at}: recorded {point}, the grid crosses at {x}");
     assert!(grid[0] <= point - margin && point + margin <= grid[grid.len() - 1], "{at}: gate points off the grid");
+}
+
+/// On a channel too narrow to find the burst even without noise, a case is an
+/// error for the sweep to report as no point, not a panic that ends the run.
+#[test]
+fn a_channel_too_narrow_for_detection_is_an_error() {
+    let m = modem("wide");
+    let narrow_if = FmChannelConfig::parse_channel("data-12k5:if=200").unwrap();
+    let e = Case::on_channel(&m, "wide", Some("data-12k5:if=200"), narrow_if, Target::Level(0)).err();
+    assert!(e.is_some_and(|e| e.contains("not found")), "the burst was found through a 200 Hz IF");
+    // The same case on the mode's own channel is found.
+    let own = FmChannelConfig::by_name("wide").unwrap();
+    assert!(Case::on_channel(&m, "wide", None, own, Target::Level(0)).is_ok());
 }

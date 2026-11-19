@@ -108,6 +108,38 @@ your user needs to be in group `gpio` (the default user already is):
    Use `--mode wide` only with the radio's flat 9600-baud data port, on both
    stations. Stop with Ctrl-C; PTT is released on exit.
 
+   **The radio's wide/narrow setting.** Many radios have their own wide/narrow
+   (25 / 12.5 kHz channel) setting. It is not VardeFM's `--mode`; set it to suit
+   the channel you are on, on both stations.
+
+   - `--mode narrow` on the mic/speaker path fits a 12.5 kHz channel: about
+     7 kHz wide at 2.5 kHz deviation. At the robust speed levels the power it
+     puts into a neighbouring channel is close to the 60 dB below carrier that
+     commercial 12.5 kHz equipment must meet (ETSI EN 300 086); the fast levels
+     are a few dB clearer. Where 25 kHz channels are allowed, setting the radio
+     to wide can make the fastest speed levels work with a signal about 5 dB
+     weaker; the robust levels hardly change. That assumes the radio itself
+     doubles the deviation in wide (to about 5 kHz); the signal is then about
+     12 kHz wide and needs a 25 kHz channel. So set the level in step 3 with the
+     radio on narrow and leave it there when you switch: if you set it to
+     2.5 kHz with the radio already on wide, the radio's wide setting gains
+     nothing.
+   - `--mode wide` needs the radio set to wide and a 25 kHz channel. On any
+     setting it spills into neighbouring 12.5 kHz channels. On a radio set to
+     narrow, with a receive filter of 9 kHz, the fastest level stops working and
+     the others need several dB more signal; with 8 kHz, level 4 stops working
+     too. (Narrow receive filters are commonly 6–9 kHz; none was measured.)
+   - On a 12.5 kHz channel with only the data port available, use `--mode narrow`
+     on the data port, on both stations, with the radio set to narrow. Set the
+     deviation in step 3 to 2.5 kHz with the radio already set to narrow (a radio
+     may change the data-port deviation when set to narrow). Expect it to need about
+     1 dB more signal than the mic path at the robust levels and about 3 dB more at
+     the fastest. How the link picks its speed level was tuned on the mic path
+     and has not been tested on this one, so it may choose a level slower or
+     faster than the signal allows.
+
+   These figures come from the FM channel simulator, not from radios.
+
 ## 3. Timing options
 
 | Option | Default | Meaning |

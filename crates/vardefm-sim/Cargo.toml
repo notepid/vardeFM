@@ -9,4 +9,5 @@ license.workspace = true
 num-complex.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
+rustfft.workspace = true
 vardefm-dsp.workspace = true

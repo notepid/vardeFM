@@ -6,10 +6,23 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Added
+- **Channel spacing in the simulator.** The FM channel simulator can now run a mode on a
+  channel other than its own: `mic-12k5`, `mic-25k`, `data-25k` and `data-12k5`, with
+  the deviation and IF bandwidth overridable (`data-12k5:dev=2500:if=8000`). `vardefm
+  sim` and `sweep` take `--channel`; `level_sweep` and `level_table` take `CHANNELS`, and
+  `level_sweep` also gives each threshold as C/N0, so channels compare at equal signal
+  strength. A new ignored
+  test, `occupied_bandwidth`, reports the occupied bandwidth and adjacent-channel power of
+  real bursts. The modem itself is unchanged.
+
 ### Changed
 - **License.** VardeFM is now dual licensed under MIT OR Apache-2.0, at your option, so it
   can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including
   0.3.2 remain available under GPL-3.0-or-later.
+- docs/RADIO.md says how the radio's own wide/narrow (25 / 12.5 kHz) setting fits each
+  mode, from simulator runs: `narrow` fits 12.5 kHz on the mic path and, at 2.5 kHz
+  deviation, on the data port; `wide` needs the radio on wide and a 25 kHz channel.
 
 ## [0.3.2] - 2026-11-16
 
