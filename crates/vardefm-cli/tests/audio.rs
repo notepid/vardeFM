@@ -5,7 +5,7 @@
 
 use std::f32::consts::PI;
 use vardefm_cli::{count_errors, decode_all, make_frame, read_wav, test_bits, write_wav};
-use vardefm_dsp::{Modulation, Ofdm, OfdmParams};
+use vardefm_dsp::{Detector, Modulation, Ofdm, OfdmParams};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 const FS: u32 = 48_000;
@@ -146,7 +146,9 @@ fn no_frames_found_in_non_modem_audio() {
     for mode in ["narrow", "wide"] {
         let ofdm = modem(mode);
         for (name, audio) in &cases {
-            assert!(ofdm.detect(audio, 0).is_none(), "{mode}: false frame in {name}");
+            for d in Detector::ALL {
+                assert!(ofdm.detect_with(d, audio, 0).at.is_none(), "{mode} {d}: false frame in {name}");
+            }
         }
     }
 }
@@ -157,7 +159,9 @@ fn squelch_noise_is_not_a_frame() {
     for mode in ["narrow", "wide"] {
         let cfg = FmChannelConfig { cnr_db: Some(-10.0), keyup_delay_s: 0.0, ..channel(mode) };
         let rx = transmit(&cfg, &vec![0.0; FS as usize * 2]);
-        assert!(modem(mode).detect(&rx, 0).is_none(), "{mode}");
+        for d in Detector::ALL {
+            assert!(modem(mode).detect_with(d, &rx, 0).at.is_none(), "{mode} {d}");
+        }
     }
 }
 

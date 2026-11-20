@@ -74,6 +74,11 @@ So BPSK maps bit 0 to −1 and bit 1 to +1.
 The reference receiver:
 1. Low-pass filters the audio (wide mode only) and runs a Schmidl-Cox autocorrelation.
 2. Confirms the frame by cross-correlating with preamble B.
+
+   Steps 1 and 2 are the default detector. With `--detector mf` the receiver instead
+   cross-correlates the audio with the known waveform of preambles A and B (a matched
+   filter, normalized by the audio's energy) and takes the largest value within one
+   symbol of the first that exceeds 0.4. Nothing on the air changes.
 3. Places the FFT window mid cyclic prefix, which absorbs clock drift of ±ncp/2 samples
    over the frame.
 4. Estimates the channel from preamble B, smoothed across frequency, and decodes the
