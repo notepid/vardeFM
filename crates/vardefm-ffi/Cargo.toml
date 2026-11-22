@@ -1,0 +1,15 @@
+[package]
+name = "vardefm-ffi"
+description = "C ABI for embedding the VardeFM radio engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "vardefm"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+vardefm-engine.workspace = true
+vardefm-modem.workspace = true
+vardefm-link.workspace = true

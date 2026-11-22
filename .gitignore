@@ -2,3 +2,7 @@
 *.wav
 /.claude/
 /THIRD-PARTY-LICENSES.html
+packaging/apple/build/
+packaging/apple/.build/
+packaging/apple/.swiftpm/
+.build/
