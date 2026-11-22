@@ -3,9 +3,7 @@
 use crate::busy::BusyDetector;
 use crate::{Header, Modem, LEVELS};
 use std::sync::Arc;
-
-/// A received sample beyond this is a glitch: full scale is 1.
-const MAX_SAMPLE: f32 = 4.0;
+use vardefm_dsp::MAX_SAMPLE;
 
 /// A received burst.
 #[derive(Clone, Debug)]
@@ -41,6 +39,14 @@ impl AudioLevel {
     }
 }
 
+/// A burst detector: search `rx` from `from`, return where the body of preamble B starts.
+/// A position it returns must be more than `from`: the receiver searches on from a
+/// detection whose header fails, so one that returned `from` would search forever.
+pub(crate) type DetectFn = fn(&Modem, &[f32], usize) -> Option<usize>;
+
+/// The detector the receiver searches with.
+const OFDM_DETECT: DetectFn = |m, rx, from| m.ofdm.detect(rx, from);
+
 pub struct Receiver {
     modem: Arc<Modem>,
     buf: Vec<f32>,
@@ -54,12 +60,16 @@ pub struct Receiver {
     detector: BusyDetector,
     /// The last good sample pushed.
     last: f32,
+    /// The burst detector `step` searches with: always `Ofdm::detect` outside tests.
+    /// Tests replace it, so that the detector evaluation can check its offline receiver
+    /// against this one for every detector it scores.
+    pub(crate) detect: DetectFn,
 }
 
 impl Receiver {
     pub fn new(modem: Arc<Modem>) -> Self {
         let detector = BusyDetector::new(&modem.ofdm.p);
-        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector, last: 0.0 }
+        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector, last: 0.0, detect: OFDM_DETECT }
     }
 
     /// Absolute index of the next sample to be pushed.
@@ -157,7 +167,18 @@ impl Receiver {
         }
 
         let l = m.ofdm.p.symbol_len();
-        match m.ofdm.detect(&self.buf, self.search) {
+        let found = (self.detect)(m, &self.buf, self.search);
+        // A replaced detector that does not move past `search` would make `step`
+        // search from the same place forever after a failed header: fail instead.
+        #[cfg(test)]
+        if let Some(b) = found {
+            assert!(
+                b > self.search,
+                "detector returned {b} when searching from {}: the receiver would loop",
+                self.search
+            );
+        }
+        match found {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
                     // Come back when the header has arrived; re-detect from just before it.
@@ -201,10 +222,12 @@ impl Receiver {
 
     fn trim(&mut self) {
         let l = self.modem.ofdm.p.symbol_len();
+        // Keep the history the next search warms its filters on.
         let keep_from = match self.pending {
             Some((b, _)) => b.saturating_sub(3 * l),
             None => self.search,
-        };
+        }
+        .saturating_sub(self.modem.ofdm.detect_history());
         if keep_from > 20 * l {
             self.buf.drain(..keep_from);
             self.base += keep_from as u64;

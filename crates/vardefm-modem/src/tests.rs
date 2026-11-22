@@ -192,7 +192,7 @@ fn survives_a_click() {
     let a = 3.0 * rms * 3f32.sqrt();
     let mut rng = Prng::new(77);
     for x in &mut audio[from..from + l] {
-        *x = a * (rng.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0);
+        *x = a * rng.uniform();
     }
 
     let known = m.header_carriers(&b.header);
@@ -234,8 +234,12 @@ fn header_only_burst_reports_the_same_snr() {
         eprintln!("{mode}: header-only {:.2} dB, data {:.2} dB", snr[0], snr[1]);
         // A data burst's SNR includes the clipping noise of its payload symbols (the
         // per-symbol noise scale picks them up), which a header-only burst cannot see:
-        // about 0.8 dB in narrow mode at the 0.30 drive, 0.3 dB at 0.20.
-        assert!((snr[0] - snr[1]).abs() < 1.0, "{mode}: header-only {:.1} dB, data {:.1} dB", snr[0], snr[1]);
+        // about 0.8 dB in narrow mode at the 0.30 drive, 0.3 dB at 0.20. So the header-only
+        // burst reads the same or a little higher, not meaningfully lower: measured without
+        // the header as training it reads 0.49 dB (narrow) and 0.97 dB (wide) lower, which
+        // a symmetric 1 dB bound lets through.
+        let diff = snr[0] - snr[1];
+        assert!(diff > -0.25 && diff < 1.0, "{mode}: header-only {:.2} dB, data {:.2} dB", snr[0], snr[1]);
     }
 }
 
@@ -273,7 +277,7 @@ fn survives_a_click_in_the_header() {
     let mut audio = clean.clone();
     let mut rng = Prng::new(78);
     for x in &mut audio[from..from + l] {
-        *x = a * (rng.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0);
+        *x = a * rng.uniform();
     }
 
     let known = m.header_carriers(&b.header);
@@ -358,6 +362,34 @@ fn ctcss_tone_after_our_own_transmission_is_not_busy() {
             }
         }
     }
+}
+
+/// A burst sent with a CTCSS tone on the carrier decodes, on every receive path of
+/// `detector_eval`'s CTCSS pass. Each case missed the burst before detection was
+/// high-passed and confirmed on in-band energy (#12): 94.8 Hz is in antiphase at the
+/// wide lag of nfft/2 and keeps the Schmidl-Cox metric below threshold; 186.2 Hz is
+/// in phase and starts the plateau in the leader; in narrow mode, 141.3 Hz swells the
+/// energy that confirms preamble B.
+#[test]
+fn a_burst_with_a_ctcss_tone_decodes() {
+    use crate::detect_eval::{ctcss_cases, ctcss_channel, with_ctcss};
+    let mut missed = Vec::new();
+    for (mode, f, dev) in [("wide", 94.8, 1500.0), ("wide", 186.2, 1500.0), ("narrow", 141.3, 1500.0)] {
+        let m = modem(mode);
+        let b = burst(1, 1, 7);
+        for case in ctcss_cases(mode) {
+            let cfg = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+            let audio = with_ctcss(&m, &ctcss_channel(&cfg, case), case.tap, &b, f, dev, 0.0);
+            let got = receive(&mut Receiver::new(m.clone()), &audio);
+            if !got
+                .iter()
+                .any(|g| g.header == b.header && g.payload.first().and_then(|p| p.as_ref()) == b.payload.first())
+            {
+                missed.push(format!("{mode}, {}: {f} Hz at {dev} Hz deviation, {} burst(s)", case.name, got.len()));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
 }
 
 /// Busy holds for a while after the last loud audio, but not across our own

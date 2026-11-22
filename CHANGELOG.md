@@ -6,7 +6,77 @@ run the same minor version.
 
 ## [Unreleased]
 
+### Changed
+- **License.** VardeFM is now dual licensed under MIT OR Apache-2.0, at your option, so it
+  can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including
+  0.3.2 remain available under GPL-3.0-or-later.
+- **`OfdmParams::detect_lowpass_hz` is now `detect_band_hz`**, a `(f32, Option<f32>)`:
+  the high-pass corner and the optional low-pass corner, Hz. The high-pass cannot be
+  turned off: library users who set `detect_lowpass_hz: Some(f)` now set
+  `detect_band_hz: (lo, Some(f))` with the mode's corner (420 Hz narrow, 340 Hz wide). (#12)
+
+### Fixed
+- A CTCSS tone in the received audio no longer hides bursts from detection. Detection
+  now high-passes the audio (8th order, 420 Hz narrow, 340 Hz wide) and confirms
+  preamble B on the high-passed audio. Before, a tone at the usual 750 Hz deviation hid
+  every burst for 12 of the 21 EIA tones on the wide data port, and almost every burst
+  in narrow mode on a radio whose de-emphasised audio output passes the sub-tone. In narrow mode the
+  higher corner also detects weak bursts better. The tone still corrupts demodulation at
+  the higher speed levels; that is not fixed here. (#12)
+- **Session id clash, partly.** A caller no longer picks a session id it has heard on
+  the channel in the last 10 minutes. With a shared id, a caller could take the Data of
+  a session it overheard as its own answer, report CONNECTED to a station that never
+  answered, and disturb that session (#27). A session the caller cannot hear can still
+  share its id.
+- **Connecting to a busy frequency.** A calling station took any Data burst with its
+  session id as the answer to its request. When another session on the frequency used
+  the same 1-byte id (1 call in 255), the caller reported CONNECTED, received that
+  session's data and stalled it (#27). The caller now connects only on a ConnectAck
+  naming its request. A called station that has not heard from the caller since its
+  ConnectAck resends the ConnectAck, not Data, when a burst goes unanswered, so a lost
+  ConnectAck no longer leaves the session half open. A called station also answers a
+  repeated ConnectReq only from its own caller. Works with 0.3.x stations, but a caller
+  of this version connecting to a 0.3.x station gives up more often on a lossy channel:
+  0.3.x does not resend its ConnectAck unless asked, and its Data no longer stands in
+  for it.
+- A session whose peer went silent stayed connected forever if the channel then stayed
+  busy (a stuck carrier, or other stations' traffic): retries, keepalives and a pending
+  disconnect all wait for a free channel, so the retry limit was never reached. The
+  same held for a connect request. The session (or connect attempt) now ends, and the
+  host gets `DISCONNECTED`, once the channel has held back a burst we want to send for
+  `LinkConfig::busy_timeout_s` (default 60 s) with none of our own bursts going out and
+  nothing heard from the peer. A short quiet gap in the carrier, or a repeat sent as a
+  digipeater, does not restart that time. A dropped session sends one Disc once the
+  channel is quiet (if that comes within the same time again), so a peer that was there
+  but could not be heard learns of it. A shorter setting is raised to a floor chosen to
+  cover an exchange with the peer through the session's digipeaters, so the peer's own
+  bursts and their repeats do not end a working session. (#32, #49)
+
+### Fixed
+- **PTT on SIGTERM.** On Linux and macOS, `modem`, `tone`, `ptt-test` and `monitor` now
+  stop cleanly on SIGTERM (`systemctl stop`, `kill`, system shutdown) as they do on
+  Ctrl-C, and release PTT. Before, a stop during a transmission could leave the radio
+  keyed (#55).
+
+## [0.3.2] - 2026-11-16
+
+On-air compatible with 0.3.0 and 0.3.1 for direct sessions. Digipeating is new and
+experimental: how a routed session looks on air may change in the next release, so the
+end stations and the digipeaters of a routed session should all run 0.3.2.
+
 ### Added
+- **Digipeating.** `CONNECT <mycall> <target> VIA <d1> [<d2>]` connects through up to
+  two VardeFM digipeaters, as in VARA FM. `vardefm modem --digi <call>` makes a
+  station repeat the sessions routed through that call, with or without a host
+  connected. Each digipeater repeats every burst; acknowledgements and retries stay end
+  to end, and a codeword a digipeater could not decode is passed on as void so the
+  sender resends it. The end stations wait longer before retrying, by the repeats' airtime
+  plus `--hop-margin` (default 0.5 s) per digipeater. `sim-pair --digi <call>` puts
+  digipeaters between A and B, which then hear only their neighbours. On air, every burst
+  of a routed session is marked in new header flag bits, and its connect bursts carry a
+  `VFM2` payload; direct sessions are unchanged and still work with older builds, and
+  digipeaters never repeat them. See docs/PROTOCOL.md §3.4. (#24, #31, reviewed by
+  @mustig)
 - **Performance gates.** `level_gate` and `fer_gate` are ignored tests, run by hand in
   release mode, that fail when decoding performance moves. Per mode and level, the CNR
   at which 10 % of codewords fail, and per mode and drive level the CNR at which 10 % of
@@ -14,7 +84,10 @@ run the same minor version.
   `crates/vardefm-modem/perf/levels.toml`; per LDPC code, the Eb/N0 of 1 % FER in
   `crates/vardefm-fec/perf/ldpc.toml`. `level_sweep` and `fer_curve` with `WRITE=1`
   record them again. The figures in `docs/PROTOCOL.md` §2.2 and §2.4 now refer to these
-  files.
+  files. (#13, thanks @mustig)
+- **Detector harness.** `detector_eval` is an ignored test that measures how often a burst
+  detector leads to a decoded burst, against decoding from the known burst position. It
+  changes nothing in the modem. (#6, thanks @mustig)
 
 ### Changed
 - **Headers decode about 1.7 dB lower.** The receiver estimated the channel for the
@@ -35,11 +108,24 @@ run the same minor version.
   the tone came back abruptly and the band filter read that as busy for 150 ms after
   every burst, which held back the modem's next transmission. A busy hold from before a
   transmission no longer carries over it. (#10)
+- On the radio, session ids and retry delays are seeded from the operating system's
+  randomness. The process id alone could repeat between stations started from the same
+  system image, which then drew the same session ids.
 
 ### Fixed
 - A NaN, an Inf or a sample far beyond full scale from the sound card no longer loses a
   burst it falls in or shortly before, and cannot leave busy detection deaf; the last
   good sample takes its place. (#10)
+- A transfer could stop for good, with the session still connected, after lost bursts
+  and a change of speed level. When data that had arrived ahead of a gap was sent again
+  at a faster level, the receiver acknowledged the longer copy but kept the shorter one,
+  so the sender never sent the difference again. Only the receiving side changes: a
+  station with this fix receives correctly from any version. (#29, thanks @mustig)
+- Two stations talking directly could drop their session when both started a burst at
+  the same moment. Both then retried after the same wait, within 0.4 s of each other,
+  and a retry did not give way to a busy channel, so every retry collided. A retry now
+  gives way, as it already did through digipeaters, and answers the other end's burst
+  instead. In the simulator this dropped 1 run in 4 with both ends sending at once.
 
 ## [0.3.1] - 2026-11-09
 
@@ -129,7 +215,8 @@ correction with seven speed levels, selective-repeat ARQ link layer, VARA-compat
 host interface, `sim-pair` virtual radio pair, sound card I/O with serial, CM108 and
 GPIO PTT, and release builds for Windows, Linux and Raspberry Pi.
 
-[Unreleased]: https://github.com/notepid/vardeFM/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/notepid/vardeFM/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/notepid/vardeFM/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/notepid/vardeFM/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/notepid/vardeFM/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/notepid/vardeFM/compare/v0.2.0...v0.2.1

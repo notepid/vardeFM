@@ -3,7 +3,8 @@
 //! Models what happens to modem audio between two FM radios:
 //! TX audio filtering, pre-emphasis, deviation limiting, the FM modulator, RF noise,
 //! the IF filter, the discriminator (including threshold "clicks" at low signal),
-//! de-emphasis, RX audio filtering, squelch, TX key-up delay, and sound-card clock offset.
+//! de-emphasis, RX audio filtering, squelch, TX key-up delay, sound-card clock offset,
+//! and optionally a CTCSS tone on the carrier.
 
 use num_complex::Complex32;
 use rand::rngs::StdRng;
@@ -17,8 +18,11 @@ pub struct FmChannelConfig {
     pub fs: f32,
     /// Peak deviation in Hz for audio amplitude 1.0.
     pub deviation_hz: f32,
-    /// Pre-/de-emphasis time constant in microseconds (None for the flat data port).
-    pub emphasis_us: Option<f32>,
+    /// TX pre-emphasis time constant in microseconds (None for the flat data port).
+    pub tx_emphasis_us: Option<f32>,
+    /// RX de-emphasis time constant in microseconds. A radio whose value differs from
+    /// `tx_emphasis_us` passes the modem audio with a tilted response.
+    pub rx_emphasis_us: Option<f32>,
     /// TX audio passband in Hz.
     pub tx_band: (f32, f32),
     /// RX audio passband in Hz.
@@ -38,6 +42,19 @@ pub struct FmChannelConfig {
     pub lead_silence_s: f32,
     pub trail_silence_s: f32,
     pub seed: u64,
+    /// CTCSS tone on the carrier, None for none.
+    pub ctcss: Option<Ctcss>,
+}
+
+/// A CTCSS tone, added at the modulator after the transmit audio chain and the
+/// deviation limiter, as a radio's tone encoder does. It runs while the carrier is up.
+#[derive(Clone, Debug)]
+pub struct Ctcss {
+    pub hz: f32,
+    /// Peak deviation of the tone in Hz.
+    pub deviation_hz: f32,
+    /// Phase at carrier up, radians.
+    pub phase: f32,
 }
 
 impl FmChannelConfig {
@@ -46,7 +63,8 @@ impl FmChannelConfig {
         Self {
             fs: 48_000.0,
             deviation_hz: 2_500.0,
-            emphasis_us: Some(750.0),
+            tx_emphasis_us: Some(750.0),
+            rx_emphasis_us: Some(750.0),
             tx_band: (300.0, 3_000.0),
             rx_band: (300.0, 3_000.0),
             if_bandwidth_hz: 11_000.0,
@@ -58,13 +76,15 @@ impl FmChannelConfig {
             lead_silence_s: 0.2,
             trail_silence_s: 0.2,
             seed: 1,
+            ctcss: None,
         }
     }
 
     /// Flat 9600-baud data port path.
     pub fn wide() -> Self {
         Self {
-            emphasis_us: None,
+            tx_emphasis_us: None,
+            rx_emphasis_us: None,
             deviation_hz: 3_000.0,
             tx_band: (20.0, 7_000.0),
             rx_band: (20.0, 7_000.0),
@@ -85,6 +105,15 @@ impl FmChannelConfig {
 /// Pass one transmission (audio at `cfg.fs`, full scale = peak deviation) through the channel.
 pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
     let fs = cfg.fs;
+    for (name, us) in [("tx_emphasis_us", cfg.tx_emphasis_us), ("rx_emphasis_us", cfg.rx_emphasis_us)] {
+        assert!(us.is_none_or(|us| us.is_finite() && us > 0.0), "{name} {us:?}: must be a positive time constant");
+    }
+    if let Some(t) = &cfg.ctcss {
+        // A NaN here would make the FM phase NaN for the rest of the carrier.
+        assert!(t.hz.is_finite() && t.hz > 0.0 && t.hz < fs / 2.0, "CTCSS {} Hz: must be between 0 and fs/2", t.hz);
+        assert!(t.deviation_hz.is_finite() && t.deviation_hz >= 0.0, "CTCSS deviation {} Hz", t.deviation_hz);
+        assert!(t.phase.is_finite(), "CTCSS phase {}", t.phase);
+    }
     let lead = (cfg.lead_silence_s * fs) as usize;
     let trail = (cfg.trail_silence_s * fs) as usize;
     let keyup = (cfg.keyup_delay_s * fs) as usize;
@@ -94,7 +123,7 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
 
     // --- Transmitter audio chain ---
     let mut tx_chain = Chain::bandpass4(fs, cfg.tx_band.0, cfg.tx_band.1);
-    let mut pre = cfg.emphasis_us.map(|us| FirstOrder::preemphasis(fs, us * 1e-6));
+    let mut pre = cfg.tx_emphasis_us.map(|us| FirstOrder::preemphasis(fs, us * 1e-6));
     let mut tx_audio = vec![0f32; total];
     for (i, &x) in audio.iter().enumerate() {
         let mut v = x;
@@ -103,6 +132,13 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
         }
         v = v.clamp(-cfg.clip_level, cfg.clip_level);
         tx_audio[lead + i] = tx_chain.process(v);
+    }
+    if let Some(t) = &cfg.ctcss {
+        let a = (t.deviation_hz / cfg.deviation_hz) as f64;
+        let w = 2.0 * std::f64::consts::PI * t.hz as f64 / fs as f64;
+        for (i, v) in tx_audio[carrier.clone()].iter_mut().enumerate() {
+            *v += (a * (w * i as f64 + t.phase as f64).sin()) as f32;
+        }
     }
 
     // --- FM modulator + RF noise ---
@@ -133,7 +169,7 @@ pub fn transmit(cfg: &FmChannelConfig, audio: &[f32]) -> Vec<f32> {
     let taps = design_lowpass_fir(129, cfg.if_bandwidth_hz / 2.0, fs);
     let delay = taps.len() / 2;
     let iff = fir_complex(&taps, &rf);
-    let mut de = cfg.emphasis_us.map(|us| FirstOrder::deemphasis(fs, us * 1e-6));
+    let mut de = cfg.rx_emphasis_us.map(|us| FirstOrder::deemphasis(fs, us * 1e-6));
     let mut rx_chain = Chain::bandpass4(fs, cfg.rx_band.0, cfg.rx_band.1);
     let scale = fs / (2.0 * PI * cfg.deviation_hz);
     let mut out = vec![0f32; total];
@@ -173,6 +209,61 @@ mod tests {
         let out = transmit(&cfg, &tone);
         let peak = out[24_000..40_000].iter().fold(0f32, |m, v| m.max(v.abs()));
         assert!((peak - 0.3).abs() < 0.05, "peak {peak}");
+    }
+
+    /// Received amplitude of `f` Hz in `out[range]`, by correlation.
+    fn amplitude(out: &[f32], range: std::ops::Range<usize>, f: f32, fs: f32) -> f64 {
+        let w = 2.0 * std::f64::consts::PI * f as f64 / fs as f64;
+        let (c, s) = range.clone().fold((0.0, 0.0), |(c, s), i| {
+            let ph = w * i as f64;
+            (c + out[i] as f64 * ph.cos(), s + out[i] as f64 * ph.sin())
+        });
+        2.0 * f64::hypot(c, s) / range.len() as f64
+    }
+
+    #[test]
+    fn ctcss_tone_arrives_at_its_deviation() {
+        let base = FmChannelConfig { lead_silence_s: 0.0, keyup_delay_s: 0.0, ..FmChannelConfig::wide() };
+        for (hz, dev) in [(67.0, 300.0), (254.1, 750.0)] {
+            let cfg = FmChannelConfig { ctcss: Some(Ctcss { hz, deviation_hz: dev, phase: 1.0 }), ..base.clone() };
+            let out = transmit(&cfg, &vec![0.0; 48_000]);
+            let got = amplitude(&out, 12_000..44_000, hz, cfg.fs);
+            let want = (dev / cfg.deviation_hz) as f64;
+            assert!((got / want - 1.0).abs() < 0.1, "{hz} Hz: amplitude {got:.4}, want {want:.4}");
+        }
+    }
+
+    #[test]
+    fn emphasis_mismatch_tilts_the_response() {
+        // dB of 2 kHz over 500 Hz, for one emphasis setting. 750 us pre-emphasis
+        // lifts 2 kHz about 11.3 dB more than 500 Hz; de-emphasis takes it off.
+        let tilt = |tx: Option<f32>, rx: Option<f32>| {
+            let cfg = FmChannelConfig {
+                lead_silence_s: 0.0,
+                keyup_delay_s: 0.0,
+                tx_emphasis_us: tx,
+                rx_emphasis_us: rx,
+                ..FmChannelConfig::narrow()
+            };
+            let level = |f: f32| {
+                let tone: Vec<f32> = (0..48_000).map(|i| 0.02 * (2.0 * PI * f * i as f32 / 48_000.0).sin()).collect();
+                amplitude(&transmit(&cfg, &tone), 12_000..44_000, f, cfg.fs)
+            };
+            20.0 * (level(2000.0) / level(500.0)).log10()
+        };
+        let us = Some(750.0);
+        let matched = tilt(us, us);
+        let pre_only = tilt(us, None) - matched;
+        let de_only = tilt(None, us) - matched;
+        assert!((pre_only - 11.3).abs() < 1.5, "tx pre-emphasis only: {pre_only:+.1} dB");
+        assert!((de_only + 11.3).abs() < 1.5, "rx de-emphasis only: {de_only:+.1} dB");
+    }
+
+    #[test]
+    #[should_panic(expected = "CTCSS")]
+    fn a_nan_ctcss_tone_is_refused() {
+        let ctcss = Some(Ctcss { hz: f32::NAN, deviation_hz: 300.0, phase: 0.0 });
+        transmit(&FmChannelConfig { ctcss, ..FmChannelConfig::wide() }, &[0.0; 100]);
     }
 }
 

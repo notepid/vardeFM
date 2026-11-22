@@ -72,8 +72,10 @@ So BPSK maps bit 0 to −1 and bit 1 to +1.
 
 ### 1.5 Receiver (informative)
 The reference receiver:
-1. Low-pass filters the audio (wide mode only) and runs a Schmidl-Cox autocorrelation.
-2. Confirms the frame by cross-correlating with preamble B.
+1. High-passes the audio (8th order, 420 Hz narrow, 340 Hz wide) to keep CTCSS tones out,
+   low-passes it too in wide mode (2500 Hz), and runs a Schmidl-Cox autocorrelation.
+2. Confirms the frame by cross-correlating the high-passed audio with preamble B, filtered
+   the same way.
 3. Places the FFT window mid cyclic prefix, which absorbs clock drift of ±ncp/2 samples
    over the frame.
 4. Estimates the channel from preamble B and the pilots of the header symbols, as a
@@ -154,7 +156,7 @@ the 10 field bytes.
 | 3 | ack_burst: burst_id of the peer burst being acknowledged |
 | 24 | ack_offset: next byte offset expected from the peer, mod 2²⁴ |
 | 24 | bitmap: bit *i* (LSB = codeword 0) set if codeword *i* of burst `ack_burst` decoded |
-| 4 | flags: bit 0 = POLL (the peer must answer) |
+| 4 | flags: bit 0 = POLL (the peer must answer); bit 1 = UP (sent by the called station, routed sessions only); bits 2–3 = route field: 0 on a direct session, else 1 + digipeater repeats so far (section 3.4) |
 
 ### 2.4 LDPC codes
 Systematic IRA codes: `H = [Hu | Hp]`, where `Hp` is a staircase (check *i* holds parity
@@ -217,10 +219,31 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
 ### 3.1 Sessions
 - **Connect:** the caller sends `ConnectReq` (level 0, one codeword) with payload
   `"VFM1" | len | source call | len | destination call`, zero padded, and a random
-  non-zero session id. A station that has `LISTEN ON` and the destination among its
+  non-zero session id. The caller avoids ids it has heard in any burst in the last 10
+  minutes, or three keepalive intervals if that is longer (any id if it has heard all of
+  them), so it does not share an id with a session it can hear. This is local policy:
+  peers need nothing for it. A session it cannot hear may still share its id. Through digipeaters the payload is
+  `"VFM2" | len | source | len | destination | count | (len | digipeater) × count`
+  (section 3.4). A station that has `LISTEN ON` and the destination among its
   `MYCALL`s answers `ConnectAck` with the same payload and session id. The caller retries
   5 times, then gives up and reports DISCONNECTED (about 17 s in narrow mode, 11 s in
   wide).
+- **Answer:** the caller connects only on a `ConnectAck` with its session id whose payload
+  names its request: source, destination and digipeaters. Other bursts carry no call
+  signs, and one with its session id may belong to another session that uses the same id
+  despite the avoidance above: one the caller had not heard yet when it picked the id.
+  A called station that has heard no burst of the session from the caller since its
+  `ConnectAck` resends the `ConnectAck` instead of Data when a burst goes unanswered, for
+  as long as the caller could still be retrying its `ConnectReq` (`connect_attempts` ×
+  (connect burst + wait + relay time through the digipeaters + 0.5 s jitter + longest
+  burst + 0.6 s)): the last two cover a burst of its own that holds the caller's retry
+  back while the channel is busy, rechecked every 0.3 s. It also answers a repeated
+  `ConnectReq` with its `ConnectAck`, but only one that names its caller, itself and its
+  path: another is a different caller's that happens to use the same session id.
+- **Mixed versions:** a 0.3.x station as the caller connects on the called station's
+  first Data burst too. As the called station it does not resend its `ConnectAck`
+  unprompted, so a caller of this version that missed it recovers only if a later
+  `ConnectReq` gets through, and gives up more often on a lossy channel.
 - **Turns:** the called station may send first right after `ConnectAck`; the caller
   waits one response period for it.
 - Bursts with a different session id are ignored.
@@ -230,7 +253,9 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   segment: `offset mod 2²⁴ (3 bytes) | length (1 byte) | data | zero padding`.
 - **Acknowledgements:** every burst carries `ack_offset` and the bitmap for the peer's
   last burst. The sender drops acknowledged bytes and resends the rest, re-split to fit
-  the current level. Data is delivered to the host in order, exactly once.
+  the current level. Data is delivered to the host in order, exactly once. A receiver
+  must keep every byte of a codeword whose bitmap bit it sets: a resend may start at the
+  offset of a segment it already holds ahead of a gap, and carry more bytes.
 - **Turn-taking:** a station that receives a burst with data, or with POLL, answers after
   0.2 s. The answer holds acks plus any data of its own. If neither side has data, the
   link goes quiet. Either station may then start a burst once the channel has been clear
@@ -244,8 +269,10 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   failed codeword the request drops at least one level below the burst's level. Each
   unanswered burst lowers our own level by one. The called station starts at the level
   it measured on the connect request.
-- **Retries:** an unanswered burst is resent after 1.2 s (plus a random back-off, and
-  longer while the channel is busy). After 8 consecutive failures the link is lost.
+- **Retries:** an unanswered burst is resent after 1.2 s (plus a random back-off of
+  0–0.4 s, and longer while the channel is busy). A retry not yet sent gives way when the
+  channel turns busy: that is most likely the peer's own retry, which is answered instead.
+  After 8 consecutive failures the link is lost.
 - **Keepalive:** a quiet link is probed with a POLL burst after 30 s (caller) or 45 s
   (called station).
 
@@ -256,6 +283,97 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
 - **ABORT:** the station sends one `Disc` without waiting and closes at once.
 
 No encryption is used, and there is no compression yet.
+
+### 3.4 Digipeating
+A session may run through up to two digipeaters, named in order from the caller
+(`CONNECT … VIA`). A digipeater repeats whole bursts; the ARQ, acknowledgements and rate
+adaptation stay end to end between the two stations. This is VardeFM's own scheme and is
+not on-air compatible with VARA FM digipeaters.
+
+- **Path:** [caller, D1, …, Dn, called station], n = 1–2. The ConnectReq and ConnectAck
+  carry it in their `VFM2` payload. A station that predates digipeating ignores `VFM2`, so
+  it never answers a routed request it hears directly.
+- **Flags:** every burst of a routed session, from either end and of every kind, carries
+  UP (0 from the caller, 1 from the called station) and the route field: 1 as an end
+  station sends it, plus one for each digipeater repeat, so 1–3. Its *hop* below is the
+  route field minus one, the number of repeats so far. Direct sessions leave UP and the
+  route field zero, as every version sends them, and ignore a burst that has any of them
+  set: it is a routed session's burst heard directly, or a digipeater's copy. The field's
+  two bits are what limit a path to two digipeaters.
+- **Repeating:** a digipeater never repeats a burst with route field 0, and such a burst
+  does not change what it knows: a direct session cannot be mistaken for a routed one.
+  It learns a session from a routed ConnectReq or ConnectAck that names one of its call
+  signs, and keeps it by session id until 10 minutes pass without a burst it repeats.
+  Once it has repeated a DiscAck the session is over: it repeats only a resent Disc or
+  DiscAck, forgets the session 60 s after the last of them, and takes a connect burst
+  under that id as a new session. Until it has repeated the called station's answer
+  (a ConnectAck or a burst with UP = 1) it keeps the session only 90 s, renewed by each
+  request, and repeats nothing else from the caller's side, so an unanswered request does
+  not linger or repeat the bursts of another routed session that reuses the id and whose
+  connect bursts it did not decode. A routed ConnectReq or ConnectAck that does not name
+  it (through other digipeaters) means the session id is in use by another session: it
+  forgets any session it had under that id. The digipeater at position *i* (1 = next to
+  the caller) repeats a burst with UP = 0 and hop *i* − 1, or with UP = 1 and hop
+  *n* − *i*.
+  It sends the burst again 0.2 s after it ends, at the same level, with the route field
+  plus one and every other field unchanged, whether or not the channel is busy. A
+  digipeater with a session of its own sends repeats first, and starts no burst of its
+  own while a repeat is waiting for its 0.2 s. A path
+  may name one station more than once (the same call twice, or two calls of one
+  station). It never hears its own repeat, so when it holds the next positions in a row
+  it passes them all in one repeat, adding one to the route field for each.
+- **Failed codewords:** a codeword the digipeater could not decode goes out as a *void*
+  segment: segment length byte 0xFF (a real segment holds at most 242 bytes), the rest
+  zero. The receiving station treats a void like a codeword that failed: its bitmap bit
+  stays clear, it counts as a failure for rate adaptation, and the sender resends the
+  data. A ConnectReq or ConnectAck whose codeword failed is not repeated.
+- **Accepting:** an endpoint of a routed session accepts only bursts from the other end
+  (UP set if we are the caller, clear if we are the called station) with hop *n* (route
+  field *n* + 1). Copies heard directly or part way along the path, repeats of our own
+  bursts and direct bursts (route field 0) are ignored. The called station accepts a
+  routed (`VFM2`) ConnectReq only with UP = 0 and hop *n*, and a direct (`VFM1`) one only
+  with UP = 0 and route field 0.
+- **After ConnectAck:** the called station may send first, but on a routed session only
+  after `n · (connect burst + 0.2 s + hop margin)`, the time the digipeaters take to
+  repeat its ConnectAck. Sooner, its burst would collide with those repeats.
+- **Timing:** the far end's answer comes back after every digipeater has repeated our
+  burst and then the answer, and the stations at the ends may hear none of the middle
+  repeats. A station therefore waits
+  `1.2 s + n · (our burst + longest possible burst + 2 · 0.2 s + hop margin)` before it
+  resends. The hop margin (default 0.5 s, `--hop-margin`, at most 10 s) covers a
+  digipeater's decoding time and the delay before its transmitter is up. An answer passes
+  each digipeater twice, so it has to be about twice a digipeater's extra delay, and both
+  ends need the same value. It does not cover a VOX hang: the neighbours still answer
+  0.2 s after a repeat ends. The wait is about 11 s and 20.5 s for 1 and 2
+  digipeaters in narrow mode after a full burst (10 and 19 s wide). Connect
+  retries are spaced the same way with the connect bursts' own length. Retries are spread
+  by a random 0–0.4 s times (1 + 2n), and give way while the channel is busy: that is
+  most likely the other end's burst (its own retry, or coming through a digipeater),
+  which is then answered instead.
+- **Called station waits longer:** the two ends do not hear each other, so if both start
+  a burst at about the same time, both can be lost at a digipeater, and with equal timers
+  every retry would meet there again. So before resending a burst it started itself (not
+  an answer to the caller), and before every further retry, the called station waits
+  until the caller's longest retry period has passed since the start of its own burst
+  (`longest burst + the wait above after it + 0.4 s · (1 + 2n)`), plus
+  `n · (longest burst + 0.2 s + hop margin)`, the time the caller's retry takes to reach
+  it. After each such collision its next burst therefore starts at least that much later,
+  relative to the caller's, than the last one did, so within a few retries it hears the
+  caller's retry and answers it. The wait is about 21 s and 36.5 s for 1 and 2
+  digipeaters in narrow mode after a short burst (17 and 32.5 s after a full burst;
+  16–34 s wide). The caller's waits, direct sessions and `Disc` retries are unchanged
+  (a digipeater forgets the session 60 s after the DiscAck). A quiet routed link is probed
+  after the larger of the usual keepalive and twice the called station's longest wait.
+- **Limits:** `req_level` is measured on the last hop only. A weak first hop still lowers
+  the level through failed (void) codewords, but the level can settle above what that hop
+  supports best. Each digipeater adds a full copy of every burst to the channel, so with
+  *n* digipeaters on one frequency the throughput falls to about 1/(*n* + 1). Session ids
+  are 8 bits: two routed sessions through one digipeater with the same id would confuse
+  it (a direct session with the same id cannot). A digipeater's own session shares the
+  channel with the sessions it repeats, and its peer usually cannot hear the stations on
+  the other side, nor they the peer, so their bursts collide at the digipeater. Right
+  after a repeat the digipeater may also start a burst of its own over the answer, which
+  it cannot hear yet. Both sessions then retry a lot.
 
 ## 4. Host interface
 
@@ -272,7 +390,7 @@ Each command gets `OK`, or `WRONG` if it is invalid.
 |---|---|
 | `MYCALL c1 [c2 … c5]` | Up to 5 call signs: 3–7 characters A–Z/0–9, optional SSID −1…−15, −T or −R. |
 | `LISTEN ON` / `LISTEN OFF` | Accept incoming connections or not. |
-| `CONNECT <mycall> <target>` | `WRONG` if a session is already active. |
+| `CONNECT <mycall> <target> [VIA <d1> [<d2>]]` | `WRONG` if a session is already active. `VIA` (any case) routes the session through up to two digipeaters, in order from us (section 3.4). |
 | `DISCONNECT` | Graceful: closes once everything queued is acknowledged. |
 | `ABORT` | Immediate close. |
 | `VERSION` | `OK`, then `VERSION VardeFM <version>`. |
@@ -309,7 +427,10 @@ data port briefly (about 0.5 s), because received data and the `DISCONNECTED` li
 travel on different sockets.
 
 ### 4.4 Differences from VARA
-- `CONNECT … via <digis>` (VARA FM digipeating) is not supported (`WRONG`).
+- `CONNECT … VIA` takes up to two digipeaters, as VARA FM's document allows. The
+  digipeaters must be VardeFM stations running with `--digi` (section 3.4). A link
+  through digipeaters is slower, and a lost burst takes longer to recover, so a host's
+  own connect or session timeouts may need raising, most of all for two digipeaters.
 - `CONNECTED` always ends with `NARROW` or `WIDE`, like VARA FM's bandwidth field
   (the VARA document's example is `CONNECTED EA5HVK-7 EB1MS-3 WIDE`).
 - `LISTEN ON/OFF` does not drop an active session (VARA's document says it does).

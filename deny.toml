@@ -1,0 +1,33 @@
+# cargo-deny: run `cargo deny check` before adding a dependency. CI runs it on every push.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[licenses]
+# VardeFM is MIT OR Apache-2.0, so every dependency must allow use in a permissive,
+# possibly closed-source build. A crate offered under a choice ("MIT OR GPL-3.0") passes
+# if any choice is listed here.
+allow = ["MIT", "Apache-2.0"]
+confidence-threshold = 0.9
+# Other licenses are allowed only for the crate that needs them, so a new dependency
+# under one of them still fails the check until someone reviews it.
+exceptions = [
+    # File-level copyleft: changes to serialport's own files must be shared, the rest of
+    # the program is unaffected. Linking it unmodified is fine.
+    { crate = "serialport", allow = ["MPL-2.0"] },
+    { crate = "unicode-ident", allow = ["Unicode-3.0"] }, # its Unicode data tables
+]
+
+[advisories]
+# Known vulnerabilities and yanked crates fail the check. To accept an advisory, add its
+# id to `ignore` with a reason.
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

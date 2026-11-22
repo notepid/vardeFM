@@ -1,2 +1,4 @@
 /target
 *.wav
+/.claude/
+/THIRD-PARTY-LICENSES.html

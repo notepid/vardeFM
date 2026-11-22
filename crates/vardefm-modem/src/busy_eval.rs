@@ -44,6 +44,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use vardefm_dsp::filter::Chain;
 use vardefm_dsp::prng::Prng;
+use vardefm_dsp::CTCSS_HZ;
 use vardefm_sim::{transmit, FmChannelConfig};
 
 /// A busy detector for the mode with these parameters.
@@ -66,11 +67,8 @@ const VOICE_RMS: f32 = 0.1;
 /// Received level of the quiet voice under strong hum, and of that hum.
 const QUIET_VOICE_RMS: f32 = 0.03;
 const STRONG_HUM_RMS: f32 = 0.1;
-const CTCSS_HZ: [f32; 21] = [
-    67.0, 71.9, 77.0, 82.5, 88.5, 94.8, 100.0, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5,
-    218.1, 233.6, 250.3, 254.1,
-];
-const CTCSS_DEVIATION_HZ: [f32; 3] = [375.0, 750.0, 1500.0];
+/// CTCSS deviation, Hz: 750 is the usual, 1500 a stress case.
+pub(crate) const CTCSS_DEVIATION_HZ: [f32; 3] = [375.0, 750.0, 1500.0];
 
 struct Ctx {
     mode: &'static str,
@@ -123,17 +121,13 @@ const CASES: &[Case] = &[
     Case { name: "hiss above band, chattering", expect: Expect::Idle, wide_only: true, make: hiss_above_band_chatter },
 ];
 
-fn uniform(rng: &mut Prng) -> f32 {
-    rng.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0
-}
-
 fn samples(seconds: f32) -> usize {
     (seconds * FS) as usize
 }
 
 /// Between `lo` and `hi` seconds, in samples.
 fn between(rng: &mut Prng, lo: f32, hi: f32) -> usize {
-    samples(lo + (hi - lo) * (uniform(rng) + 1.0) / 2.0)
+    samples(lo + (hi - lo) * (rng.uniform() + 1.0) / 2.0)
 }
 
 fn rms(v: &[f32]) -> f32 {
@@ -223,7 +217,7 @@ fn voice(rng: &mut Prng, seconds: f32) -> Vec<f32> {
         i += len + between(rng, 0.03, 0.1);
         left_in_word -= 1;
     }
-    let f0 = 100.0 + 50.0 * (uniform(rng) + 1.0) / 2.0;
+    let f0 = 100.0 + 50.0 * (rng.uniform() + 1.0) / 2.0;
     let mut bp = Chain::bandpass4(FS, 300.0, 3400.0);
     let mut phase = 0f32;
     let mut out: Vec<f32> = env
@@ -237,7 +231,7 @@ fn voice(rng: &mut Prng, seconds: f32) -> Vec<f32> {
             } else {
                 0.0
             };
-            bp.process(pulse + 0.02 * uniform(rng)) * e
+            bp.process(pulse + 0.02 * rng.uniform()) * e
         })
         .collect();
     let k = VOICE_RMS / rms(&out);
@@ -248,7 +242,7 @@ fn voice(rng: &mut Prng, seconds: f32) -> Vec<f32> {
 /// Mains hum: harmonics `k` = 1.. up to 1 kHz at amplitude 1/k², fundamental at `rms`.
 fn hum(rng: &mut Prng, f: f32, rms: f32, n: usize) -> Vec<f32> {
     let harmonics: Vec<(f32, f32, f32)> = (1..=(1000.0 / f) as usize)
-        .map(|k| (k as f32 * f, rms * 2f32.sqrt() / (k * k) as f32, PI * uniform(rng)))
+        .map(|k| (k as f32 * f, rms * 2f32.sqrt() / (k * k) as f32, PI * rng.uniform()))
         .collect();
     (0..n)
         .map(|i| {
@@ -259,7 +253,9 @@ fn hum(rng: &mut Prng, f: f32, rms: f32, n: usize) -> Vec<f32> {
 }
 
 /// Trial `t`'s CTCSS tone into the wide transmitter: tones in turn, then the
-/// other deviation.
+/// other deviation. It is mixed into the transmit audio, so it passes the
+/// transmitter's audio chain and limiter with the rest; `vardefm_sim::Ctcss` adds a
+/// tone at the modulator instead, as a radio's tone encoder does.
 fn ctcss(t: u32, n: usize) -> Vec<f32> {
     let f = CTCSS_HZ[t as usize % CTCSS_HZ.len()];
     let dev = CTCSS_DEVIATION_HZ[t as usize / CTCSS_HZ.len() % CTCSS_DEVIATION_HZ.len()];
@@ -270,7 +266,7 @@ fn ctcss(t: u32, n: usize) -> Vec<f32> {
 /// White noise above the wide band (8th-order highpass at 7 kHz) at `HISS_RMS`.
 fn hiss_above(rng: &mut Prng, n: usize) -> Vec<f32> {
     let mut hp = Chain::highpass4(FS, 7000.0).then(Chain::highpass4(FS, 7000.0));
-    let mut h: Vec<f32> = (0..n).map(|_| hp.process(uniform(rng))).collect();
+    let mut h: Vec<f32> = (0..n).map(|_| hp.process(rng.uniform())).collect();
     let k = HISS_RMS / rms(&h);
     scale(&mut h, k);
     h

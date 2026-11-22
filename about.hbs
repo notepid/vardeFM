@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VardeFM third-party licenses</title>
+<style>
+  body { font-family: sans-serif; max-width: 60em; margin: 2em auto; padding: 0 1em; }
+  pre { white-space: pre-wrap; background: #f4f4f4; padding: 1em; }
+  li { margin: 0.2em 0; }
+  .by { color: #555; }
+</style>
+</head>
+<body>
+<h1>Third-party licenses</h1>
+<p>VardeFM itself is licensed under MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE).
+The vardefm program includes the following libraries, under these licenses.
+The source of every Rust crate is available on <a href="https://crates.io">crates.io</a>.</p>
+
+<p>Where a crate ships no license file that could be read, the standard license text is
+shown. The copyright holders are then the crate's authors as listed below, or those named
+under <a href="#holders">Additional copyright notices</a>.</p>
+
+<h2>Licenses used</h2>
+<ul>
+{{#each overview}}
+  <li>{{name}}</li>
+{{/each}}
+</ul>
+
+{{#each licenses}}
+<h2 id="license-{{@index}}">{{name}}</h2>
+<p>Used by:</p>
+<ul>
+{{#each used_by}}
+{{#if crate.source}}
+  <li><a href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a>{{#if crate.authors}} <span class="by">by {{#each crate.authors}}{{#unless @first}}, {{/unless}}{{this}}{{/each}}</span>{{else}}{{#if crate.repository}} <span class="by">(<a href="{{crate.repository}}">source</a>)</span>{{/if}}{{/if}}</li>
+{{/if}}
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/each}}
+
+<h2 id="holders">Additional copyright notices</h2>
+<ul>
+  <li>windows, windows-* and windows_* crates (<a href="https://github.com/microsoft/windows-rs">windows-rs</a>): Copyright (c) Microsoft Corporation.</li>
+  <li>objc2, objc2-* crates (<a href="https://github.com/madsmtm/objc2">objc2</a>): Copyright Mads Marquart.</li>
+</ul>
+
+<h2 id="hidapi-c">HIDAPI C library (macOS builds only)</h2>
+<p>On macOS the hidapi crate compiles the HIDAPI C library into the program. HIDAPI is
+offered under a choice of licenses; VardeFM uses it under the BSD-style license below.</p>
+<pre>
+Copyright (c) 2010, Alan Ott, Signal 11 Software
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * Neither the name of Signal 11 Software nor the names of its
+      contributors may be used to endorse or promote products derived from
+      this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+</pre>
+</body>
+</html>

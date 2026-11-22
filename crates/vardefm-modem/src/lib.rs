@@ -10,7 +10,7 @@ mod busy;
 mod header;
 mod receiver;
 
-pub use header::{Header, Kind, FLAG_POLL};
+pub use header::{Header, Kind, FLAG_POLL, FLAG_ROUTED, FLAG_UP, MAX_DIGIS};
 pub use receiver::{AudioLevel, Receiver, RxBurst};
 pub use vardefm_dsp::OfdmParams;
 
@@ -155,7 +155,7 @@ impl Modem {
     }
 
     fn leader_symbols(&self) -> usize {
-        (self.txdelay / self.ofdm.p.symbol_duration()).ceil() as usize
+        self.ofdm.leader_symbols(self.txdelay)
     }
 
     /// Length in samples of a burst.

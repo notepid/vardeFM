@@ -58,7 +58,7 @@ fn run(modem: &Arc<Modem>, audio: &[f32]) -> Run {
 
 /// Uniform noise with the given RMS (good enough for timing).
 fn noise(rng: &mut Prng, rms: f32) -> f32 {
-    (rng.next_u32() as f32 / u32::MAX as f32 * 2.0 - 1.0) * rms * 3f32.sqrt()
+    rng.uniform() * rms * 3f32.sqrt()
 }
 
 fn burst(modem: &Modem, level: u8, seed: u32) -> Burst {

@@ -293,6 +293,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
+name = "errno"
+version = "0.3.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -966,6 +976,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "signal-hook"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49f7447afd772ca79ad17ae0a3972a6b0df0cb4b80990fd82707593e9e012a74"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "simd_cesu8"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1145,19 +1175,20 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "vardefm-audio"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cpal",
 ]
 
 [[package]]
 name = "vardefm-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "ctrlc",
  "hound",
  "num-complex",
+ "signal-hook",
  "vardefm-audio",
  "vardefm-dsp",
  "vardefm-link",
@@ -1169,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-dsp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "num-complex",
  "rustfft",
@@ -1177,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-fec"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "toml",
@@ -1186,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-link"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "vardefm-dsp",
  "vardefm-modem",
@@ -1194,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-modem"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "toml",
@@ -1205,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-ptt"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "gpiocdev",
  "hidapi",
@@ -1214,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-sim"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "num-complex",
  "rand",
@@ -1224,7 +1255,7 @@ dependencies = [
 
 [[package]]
 name = "vardefm-tnc"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "hound",
  "vardefm-audio",

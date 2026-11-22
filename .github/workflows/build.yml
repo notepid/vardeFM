@@ -75,6 +75,21 @@ jobs:
             echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig"
           } >> "$GITHUB_ENV"
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      # One notices file covers every target listed in about.toml.
+      - name: Third-party licenses
+        shell: bash
+        run: |
+          # Comments are stripped first, so a commented-out target does not count.
+          if ! sed 's/#.*//' about.toml | grep -q '"${{ matrix.target }}"'; then
+            echo "::error::add ${{ matrix.target }} to targets in about.toml"
+            exit 1
+          fi
+          cargo about generate --locked --fail -m crates/vardefm-cli/Cargo.toml about.hbs -o THIRD-PARTY-LICENSES.html
+
       - name: Build
         run: cargo build --profile dist --locked --target ${{ matrix.target }} -p vardefm-cli
 
@@ -83,7 +98,7 @@ jobs:
         run: |
           dir="vardefm_${{ inputs.version }}_${{ matrix.name }}"
           mkdir -p "dist/$dir/docs"
-          cp LICENSE "dist/$dir/"
+          cp LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html "dist/$dir/"
           cp packaging/README.md "dist/$dir/README.md"   # the user guide, not the developer README
           cp docs/*.md "dist/$dir/docs/"
           cd dist
