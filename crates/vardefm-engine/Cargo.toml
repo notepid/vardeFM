@@ -1,0 +1,11 @@
+[package]
+name = "vardefm-engine"
+description = "VardeFM station and radio engine without desktop I/O: host protocol, levels, AudioSink and PTT traits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vardefm-dsp.workspace = true
+vardefm-modem.workspace = true
+vardefm-link.workspace = true

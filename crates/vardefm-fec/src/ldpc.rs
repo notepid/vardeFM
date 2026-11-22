@@ -162,6 +162,9 @@ pub fn info_degrees(n: usize, k: usize) -> Vec<usize> {
 /// when fewer checks are left unreached than the current level holds, each of them is
 /// tested against the level instead of expanding the level (same result, faster).
 fn peg(m: usize, degrees: &[usize], seed: u32) -> Vec<Vec<u32>> {
+    if cfg!(miri) {
+        return round_robin(m, degrees);
+    }
     let k = degrees.len();
     let mut rng = Prng::new(seed);
     let mut var_checks: Vec<Vec<u32>> = degrees.iter().map(|&d| Vec::with_capacity(d.min(m))).collect();
@@ -251,6 +254,23 @@ fn peg(m: usize, degrees: &[usize], seed: u32) -> Vec<Vec<u32>> {
             var_checks[j].push(c as u32);
             check_info[c].push(j as u32);
             cdeg[c] += 1;
+        }
+    }
+    check_info
+}
+
+/// Stand-in for [`peg`] under Miri only: each bit takes the next `d_j` checks in turn.
+///
+/// Miri needs hours to interpret the search for one payload code, and every modem
+/// builds four. Miri looks for undefined behaviour, not coding gain, so there any
+/// graph of the right shape will do. This is not the on-air code.
+fn round_robin(m: usize, degrees: &[usize]) -> Vec<Vec<u32>> {
+    let mut check_info: Vec<Vec<u32>> = vec![Vec::new(); m];
+    let mut c = 0;
+    for (j, &d) in degrees.iter().enumerate() {
+        for _ in 0..d.min(m) {
+            check_info[c].push(j as u32);
+            c = (c + 1) % m;
         }
     }
     check_info

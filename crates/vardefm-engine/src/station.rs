@@ -4,6 +4,7 @@
 //! it what to transmit, and collect its host output. It has no threads or clock.
 
 use crate::host::{parse, Command};
+use crate::VERSION;
 use std::sync::Arc;
 use vardefm_link::{Link, LinkConfig, LinkEvent, Node, TxInfo};
 use vardefm_modem::{Header, Modem, Receiver, RxBurst};
@@ -105,7 +106,7 @@ impl Station {
             }
             Command::Version => {
                 self.line("OK");
-                self.line(format!("VERSION {}", crate::VERSION));
+                self.line(format!("VERSION {VERSION}"));
             }
             Command::Ignored => self.line("OK"),
         }

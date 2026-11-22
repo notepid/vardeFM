@@ -262,6 +262,11 @@ journalctl -u vardefm -f        # watch the log
 
 More detail is in `docs/RADIO.md`.
 
+## Embedding
+
+Library builds for iOS and macOS (XCFramework) are documented in
+[docs/EMBEDDING.md](../docs/EMBEDDING.md). Desktop archives above are the CLI only.
+
 ## License
 
 VardeFM is free software, licensed under either the MIT license (`LICENSE-MIT`) or the

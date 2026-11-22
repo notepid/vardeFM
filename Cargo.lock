@@ -293,6 +293,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
+name = "errno"
+version = "0.3.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -966,6 +976,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "signal-hook"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49f7447afd772ca79ad17ae0a3972a6b0df0cb4b80990fd82707593e9e012a74"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "simd_cesu8"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1158,6 +1188,7 @@ dependencies = [
  "ctrlc",
  "hound",
  "num-complex",
+ "signal-hook",
  "vardefm-audio",
  "vardefm-dsp",
  "vardefm-link",
@@ -1176,12 +1207,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "vardefm-engine"
+version = "0.3.2"
+dependencies = [
+ "vardefm-dsp",
+ "vardefm-link",
+ "vardefm-modem",
+]
+
+[[package]]
 name = "vardefm-fec"
 version = "0.3.2"
 dependencies = [
  "serde",
  "toml",
  "vardefm-dsp",
+]
+
+[[package]]
+name = "vardefm-ffi"
+version = "0.3.2"
+dependencies = [
+ "vardefm-engine",
+ "vardefm-link",
+ "vardefm-modem",
 ]
 
 [[package]]
@@ -1229,6 +1278,7 @@ dependencies = [
  "hound",
  "vardefm-audio",
  "vardefm-dsp",
+ "vardefm-engine",
  "vardefm-link",
  "vardefm-modem",
  "vardefm-ptt",
