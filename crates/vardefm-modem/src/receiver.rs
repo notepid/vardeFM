@@ -3,9 +3,7 @@
 use crate::busy::BusyDetector;
 use crate::{Header, Modem, LEVELS};
 use std::sync::Arc;
-
-/// A received sample beyond this is a glitch: full scale is 1.
-const MAX_SAMPLE: f32 = 4.0;
+use vardefm_dsp::MAX_SAMPLE;
 
 /// A received burst.
 #[derive(Clone, Debug)]
@@ -216,11 +214,13 @@ impl Receiver {
         let p = &self.modem.ofdm.p;
         let l = p.symbol_len();
         // A pending frame still needs its audio from the start of preamble A, where
-        // `burst_level` measures from.
+        // `burst_level` measures from, and the next search the history it warms its
+        // filters on.
         let keep_from = match self.pending {
             Some(f) => self.search.min(f.b.saturating_sub(p.ncp + l)),
             None => self.search,
-        };
+        }
+        .saturating_sub(self.modem.ofdm.detect_history());
         if keep_from > 20 * l {
             self.buf.drain(..keep_from);
             self.base += keep_from as u64;

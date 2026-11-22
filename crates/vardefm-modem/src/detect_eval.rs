@@ -29,6 +29,17 @@
 //! The streaming receiver's CPU load on that audio, fed in 10 ms chunks like a sound
 //! card, is reported per detector too.
 //!
+//! A CTCSS pass counts decoded bursts with a sub-tone on the carrier: every EIA tone at
+//! 375, 750 and 1500 Hz deviation (the tables `busy_eval` uses), at each CTCSS CNR, on each
+//! receive path that can hear one ([`ctcss_cases`]), after a row without a tone. The
+//! simulated radio adds the tone at its modulator, after the deviation limiter. Each
+//! cell has a genie column too: where it decodes and a detector does not, detection
+//! lost the burst; where neither does, the tone broke demodulation. A tone once made
+//! Schmidl-Cox miss every burst for many tones (#12). At level 1 and 20 dB CNR nothing
+//! is lost now. At the knee, detection keeps its no-tone share of the genie's bursts.
+//! The tone still breaks demodulation: at the quieter, denser levels 5 and 6, and at
+//! the knee on narrow de-emphasised audio at 1500 Hz deviation.
+//!
 //! `cargo test --release -p vardefm-modem detector_eval -- --ignored --nocapture`
 //!
 //! Environment: `MODES` (narrow,wide), `TRIALS` per CNR (100), `LEVEL` (1), `NCW` (1),
@@ -40,14 +51,20 @@
 //! what the receiver expects (0), and `CTCSS`, the deviation in Hz of a CTCSS tone
 //! the sending radio adds at its modulator, after the deviation limiter (0 = none;
 //! wide mode only, as the narrow receive audio path filters sub-tones out).
+//!
+//! The separate CTCSS pass takes `CTCSS_TRIALS` per tone and deviation (10; 0 skips
+//! the pass; trial `t` has the same noise in every row, so the rows are paired and
+//! each rests on that many noise draws) and `CTCSS_CNRS` (dB list; 5,20 narrow and
+//! 7,20 wide: the knee and well above it).
 
 use super::*;
-use crate::busy_eval::CTCSS_HZ;
+use crate::busy_eval::CTCSS_DEVIATION_HZ;
 use std::f32::consts::PI;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 use vardefm_dsp::prng::Prng;
+use vardefm_dsp::CTCSS_HZ;
 use vardefm_sim::{transmit, Ctcss, FmChannelConfig};
 
 /// The detector every other one is compared with in the paired test. Every detector
@@ -205,6 +222,100 @@ pub(crate) fn through_channel(m: &Modem, mode: &str, cnr: f32, sent: &Burst, t: 
     let cfg =
         FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..FmChannelConfig::by_name(mode).unwrap() };
     transmit(&cfg, &m.modulate(sent))
+}
+
+/// How a CTCSS tone on the carrier reaches the modem's receive audio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CtcssTap {
+    /// Through the channel: the radio's tone encoder adds it at the modulator, and the
+    /// receive chain (de-emphasis, audio band) treats it as it treats the burst.
+    Channel,
+    /// Added flat at its deviation to the received audio while the carrier is up and
+    /// the squelch open, as at a discriminator tap that bypasses de-emphasis and the
+    /// audio filter. The burst still takes the channel's receive chain.
+    Discriminator,
+}
+
+/// A receive path for the CTCSS pass.
+pub(crate) struct CtcssCase {
+    pub name: &'static str,
+    pub tap: CtcssTap,
+    /// Low edge of the receive audio band in place of the channel's, Hz.
+    pub rx_low_hz: Option<f32>,
+}
+
+/// The receive paths that can hear a CTCSS tone, per mode. Wide mode's data port is
+/// flat down to 20 Hz. Narrow mode's mic/speaker channel filters the sub-tone out at
+/// 300 Hz, so it is heard only on a radio whose audio output passes it: either
+/// processed audio, de-emphasised (which lifts the tone by 10-13 dB relative to its
+/// deviation), or a discriminator tap.
+pub(crate) fn ctcss_cases(mode: &str) -> &'static [CtcssCase] {
+    const WIDE: &[CtcssCase] = &[CtcssCase { name: "data port", tap: CtcssTap::Channel, rx_low_hz: None }];
+    const NARROW: &[CtcssCase] = &[
+        CtcssCase { name: "de-emphasised audio", tap: CtcssTap::Channel, rx_low_hz: Some(20.0) },
+        CtcssCase { name: "discriminator", tap: CtcssTap::Discriminator, rx_low_hz: None },
+    ];
+    if mode == "narrow" {
+        NARROW
+    } else {
+        WIDE
+    }
+}
+
+/// Channel `cfg` with the receive band of case `c`.
+pub(crate) fn ctcss_channel(cfg: &FmChannelConfig, c: &CtcssCase) -> FmChannelConfig {
+    FmChannelConfig { rx_band: (c.rx_low_hz.unwrap_or(cfg.rx_band.0), cfg.rx_band.1), ..cfg.clone() }
+}
+
+/// What the receiver gets when `sent` goes over channel `cfg` (already set up for the
+/// case, see [`ctcss_channel`]) with a CTCSS tone of `f` Hz at `dev` Hz deviation,
+/// starting at phase `ph`, reaching the receiver through `tap`.
+pub(crate) fn with_ctcss(
+    m: &Modem,
+    cfg: &FmChannelConfig,
+    tap: CtcssTap,
+    sent: &Burst,
+    f: f32,
+    dev: f32,
+    ph: f32,
+) -> Vec<f32> {
+    let tx = m.modulate(sent);
+    let toneless = (tap == CtcssTap::Discriminator).then(|| transmit(cfg, &tx));
+    with_ctcss_on(cfg, tap, &tx, toneless.as_deref(), f, dev, ph)
+}
+
+/// [`with_ctcss`] for the modulated burst `tx`. A discriminator tap adds the tone to
+/// `toneless`, what the channel gives without one, so a caller trying several tones on
+/// one trial runs the channel once; the channel tap ignores it.
+fn with_ctcss_on(
+    cfg: &FmChannelConfig,
+    tap: CtcssTap,
+    tx: &[f32],
+    toneless: Option<&[f32]>,
+    f: f32,
+    dev: f32,
+    ph: f32,
+) -> Vec<f32> {
+    match tap {
+        CtcssTap::Channel => {
+            let ctcss = (dev > 0.0).then_some(Ctcss { hz: f, deviation_hz: dev, phase: ph });
+            transmit(&FmChannelConfig { ctcss, ..cfg.clone() }, tx)
+        }
+        CtcssTap::Discriminator => {
+            let mut rx = toneless.expect("a discriminator tap needs the toneless channel output").to_vec();
+            assert_eq!(cfg.clock_offset_ppm, 0.0, "the tone span assumes no clock offset");
+            // The tone starts at phase `ph` at carrier up, as `transmit` starts it, and
+            // is heard while the carrier is up and the squelch open.
+            let lead = (cfg.lead_silence_s * cfg.fs) as usize;
+            let open = lead + (cfg.keyup_delay_s * cfg.fs) as usize..(lead + tx.len()).min(rx.len());
+            let a = (dev / cfg.deviation_hz) as f64;
+            let w = 2.0 * std::f64::consts::PI * f as f64 / cfg.fs as f64;
+            for i in open {
+                rx[i] += (a * (w * (i - lead) as f64 + ph as f64).sin()) as f32;
+            }
+            rx
+        }
+    }
 }
 
 fn trial(link: &Link, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> Trial {
@@ -502,6 +613,79 @@ fn noise_seeds(seed: u32, case: usize, mode_index: usize) -> (u64, u32) {
     (channel, (channel ^ (channel >> 32)) as u32)
 }
 
+/// The CTCSS pass for one receive path: decoded bursts per detector and for the genie
+/// (decoding from the true position), out of `trials`, for every tone at every
+/// deviation, after a row without a tone. Where the genie decodes and a detector does
+/// not, detection lost the burst; where neither does, the tone broke demodulation.
+fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw: usize, trials: u32) {
+    let base = ctcss_channel(&FmChannelConfig::by_name(mode).unwrap(), case);
+    let clean = FmChannelConfig { cnr_db: None, ..base.clone() };
+    // The true position as in `link_position`: the best header timing over noiseless
+    // copies, which no detector defines.
+    let copies: Vec<Burst> = (0..BEST_TIMING_COPIES).map(|t| burst(level, ncw, payload_seed(t))).collect();
+    let rxs: Vec<Vec<f32>> = copies.iter().map(|b| transmit(&clean, &m.modulate(b))).collect();
+    let lead = (clean.lead_silence_s * clean.fs) as usize;
+    let nominal = lead + (m.leader_symbols() + 1) * m.ofdm.p.symbol_len() + m.ofdm.p.ncp;
+    let truth = best_timing(m, &rxs, nominal, &copies[0].header)
+        .unwrap_or_else(|| panic!("{mode}, {}: the noiseless burst does not demodulate", case.name));
+    // A receiver per detector, as in the main sweep.
+    let receivers: Vec<Arc<Modem>> = Detector::ALL.iter().map(|&d| eval_modem(mode, 0.0, d)).collect();
+    let names: Vec<&str> = Detector::ALL.iter().map(|d| d.name()).chain(["genie"]).collect();
+    println!(
+        "{mode}, {}: decoded bursts out of {trials} with a CTCSS tone, CNR {cnr} dB, at {CTCSS_DEVIATION_HZ:?} Hz \
+         deviation",
+        case.name
+    );
+    // The cells: no tone, then every tone at every deviation.
+    let cells: Vec<(f32, f32)> = std::iter::once((0.0, 0.0))
+        .chain(CTCSS_HZ.iter().flat_map(|&f| CTCSS_DEVIATION_HZ.iter().map(move |&dev| (f, dev))))
+        .collect();
+    // Per trial, per cell, per detector then the genie. A trial modulates its burst
+    // once, and on a discriminator tap runs the channel once for all its cells.
+    let res = on_every_core(trials, |t| {
+        let sent = burst(level, ncw, payload_seed(t));
+        let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: channel_seed(cnr, t), ..base.clone() };
+        let tx = m.modulate(&sent);
+        let toneless = transmit(&cfg, &tx);
+        cells
+            .iter()
+            .map(|&(f, dev)| {
+                let rx = if dev == 0.0 {
+                    toneless.clone()
+                } else {
+                    with_ctcss_on(&cfg, case.tap, &tx, Some(&toneless), f, dev, 0.7 * t as f32)
+                };
+                let genie = header_at(m, &rx, truth).is_some_and(|h| burst_ok(m, &rx, truth, &h, &sent));
+                receivers.iter().map(|r| received_ok(r, &rx, &sent)).chain([genie]).collect::<Vec<bool>>()
+            })
+            .collect::<Vec<_>>()
+    });
+    // Per detector then the genie, per deviation, for the cells `first..` of one row.
+    let row = |first: usize, devs: usize| -> Vec<Vec<u32>> {
+        (0..names.len())
+            .map(|d| (first..first + devs).map(|c| res.iter().filter(|r| r[c][d]).count() as u32).collect())
+            .collect()
+    };
+    let print = |label: String, counts: &[Vec<u32>]| {
+        let mut line = format!("  {label:9}");
+        for (name, c) in names.iter().zip(counts) {
+            line += &format!(" | {name}");
+            c.iter().for_each(|ok| line += &format!(" {ok:4}"));
+        }
+        println!("{line}");
+    };
+    print("no tone".into(), &row(0, 1));
+    let mut total = vec![vec![0u32; CTCSS_DEVIATION_HZ.len()]; names.len()];
+    for (i, f) in CTCSS_HZ.into_iter().enumerate() {
+        let counts = row(1 + i * CTCSS_DEVIATION_HZ.len(), CTCSS_DEVIATION_HZ.len());
+        for (t, c) in total.iter_mut().zip(&counts) {
+            t.iter_mut().zip(c).for_each(|(t, c)| *t += c);
+        }
+        print(format!("{f:6.1} Hz"), &counts);
+    }
+    print("all".into(), &total);
+}
+
 /// Detections and decoded headers in `rx`, scanning on after each detection.
 fn false_detections(m: &Modem, d: Detector, rx: &[f32]) -> (u32, u32) {
     let (mut dets, mut headers) = (0, 0);
@@ -551,6 +735,7 @@ fn detector_eval() {
     assert!(CHANNELS.contains(&chan), "CHANNEL: unknown channel {chan:?} (one of {})", CHANNELS.join(", "));
     assert!(tx_tilt.is_finite(), "TX_TILT={tx_tilt}: must be a finite dB/octave");
     assert!(ctcss.is_finite() && ctcss >= 0.0, "CTCSS={ctcss}: must be a deviation in Hz, 0 for none");
+    let ctcss_trials: u32 = env_or("CTCSS_TRIALS", 10);
     assert!((level as usize) < LEVELS.len(), "LEVEL {level}: levels are 0 to {}", LEVELS.len() - 1);
     assert!(trials > 0, "TRIALS must be at least 1");
     assert!(noise_s > 0.0 && noise_s.is_finite(), "NOISE_SECONDS={noise_s}: must be a finite number more than 0");
@@ -577,8 +762,19 @@ fn detector_eval() {
         }
         cnrs
     };
+    // At the sensitivity knee, where a tone that cost a dB or two would show, and well
+    // above it.
+    let ctcss_cnr_list = |mode: &str| -> Vec<f32> {
+        let default = if mode == "narrow" { "5,20" } else { "7,20" };
+        let cnrs: Vec<f32> = env_list("CTCSS_CNRS", default);
+        for c in &cnrs {
+            assert!(c.is_finite(), "CTCSS_CNRS: {c} is not a finite number of dB");
+        }
+        cnrs
+    };
     for mode in &modes {
         cnr_list(mode);
+        ctcss_cnr_list(mode);
     }
     const CSV_HEADER: &str = "mode,channel,tx_tilt,ctcss_hz,level,ncw,cnr_db,trials,detector,hits,bursts";
     // Any path the OS accepts, Unicode or not.
@@ -662,6 +858,13 @@ fn detector_eval() {
                     writeln!(f, "{mode},{chan},{tx_tilt},{ctcss},{level},{ncw},{cnr},{trials},genie,,{genie}").unwrap();
                 }
                 println!("{line}");
+            }
+        }
+        if ctcss_trials > 0 {
+            for cnr in ctcss_cnr_list(mode) {
+                for case in ctcss_cases(mode) {
+                    ctcss_pass(m, mode, case, cnr, level, ncw, ctcss_trials);
+                }
             }
         }
         println!("{mode}: per minute of audio without a burst, detections / decoded headers");

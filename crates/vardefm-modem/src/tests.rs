@@ -364,6 +364,34 @@ fn ctcss_tone_after_our_own_transmission_is_not_busy() {
     }
 }
 
+/// A burst sent with a CTCSS tone on the carrier decodes, on every receive path of
+/// `detector_eval`'s CTCSS pass. Each case missed the burst before detection was
+/// high-passed and confirmed on in-band energy (#12): 94.8 Hz is in antiphase at the
+/// wide lag of nfft/2 and keeps the Schmidl-Cox metric below threshold; 186.2 Hz is
+/// in phase and starts the plateau in the leader; in narrow mode, 141.3 Hz swells the
+/// energy that confirms preamble B.
+#[test]
+fn a_burst_with_a_ctcss_tone_decodes() {
+    use crate::detect_eval::{ctcss_cases, ctcss_channel, with_ctcss};
+    let mut missed = Vec::new();
+    for (mode, f, dev) in [("wide", 94.8, 1500.0), ("wide", 186.2, 1500.0), ("narrow", 141.3, 1500.0)] {
+        let m = modem(mode);
+        let b = burst(1, 1, 7);
+        for case in ctcss_cases(mode) {
+            let cfg = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
+            let audio = with_ctcss(&m, &ctcss_channel(&cfg, case), case.tap, &b, f, dev, 0.0);
+            let got = receive(&mut Receiver::new(m.clone()), &audio);
+            if !got
+                .iter()
+                .any(|g| g.header == b.header && g.payload.first().and_then(|p| p.as_ref()) == b.payload.first())
+            {
+                missed.push(format!("{mode}, {}: {f} Hz at {dev} Hz deviation, {} burst(s)", case.name, got.len()));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
 /// Busy holds for a while after the last loud audio, but not across our own
 /// transmission: the channel is not busy when reception resumes just because it was
 /// busy shortly before we keyed up.
@@ -452,10 +480,12 @@ fn chunking_does_not_change_what_is_received() {
             let m = modem_without_leader(mode, detector);
             let ncp = m.ofdm.p.ncp;
             let (b1, b2) = (burst(2, 1, 11), burst(1, 1, 12));
-            // Never 0 samples `after` the first burst: the search after it starts where
-            // it ends, and Schmidl-Cox misses a preamble A that starts right at the
-            // start of its search (narrow mode up to at least 32 samples in).
-            for (after, gap) in [(ncp / 2, ncp / 2), (ncp, 1), (m.ofdm.p.symbol_len(), ncp - 1)] {
+            // At least two cyclic prefixes `after` the first burst: the search after it
+            // starts where it ends, and Schmidl-Cox can miss a preamble A that starts
+            // closer than that to the start of its search (see
+            // `a_search_starting_just_before_a_frame_finds_it_in_a_tone` in vardefm-dsp).
+            let l = m.ofdm.p.symbol_len();
+            for (after, gap) in [(2 * ncp, ncp / 2), (3 * ncp, 1), (l, ncp - 1)] {
                 let mut audio = vec![0.0; 10_000];
                 audio.extend(m.modulate(&b1));
                 audio.extend(vec![0.0; after]);
@@ -465,7 +495,6 @@ fn chunking_does_not_change_what_is_received() {
                 // The case this test is for must happen: searching from the end of the
                 // first burst finds the cut-off burst before the second one, and its
                 // header fails.
-                let l = m.ofdm.p.symbol_len();
                 let b1_end = 10_000 + m.modulate(&b1).len();
                 let b2_at = b1_end + after + 2 * l + gap + l + ncp;
                 let false_at = m.ofdm.detect(&audio, b1_end).at;

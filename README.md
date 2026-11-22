@@ -30,6 +30,15 @@ Get the archive for your system from the [releases page](https://github.com/note
 | `darwin_arm64.tar.gz` | Mac with Apple Silicon (M1 or newer), macOS 11 or newer |
 | `darwin_amd64.tar.gz` | Intel Mac, macOS 11 or newer |
 
+Arch Linux users can install community-maintained packages from the AUR:
+[`vardefm`](https://aur.archlinux.org/packages/vardefm) (builds from source),
+[`vardefm-bin`](https://aur.archlinux.org/packages/vardefm-bin) (release binary), or
+[`vardefm-git`](https://aur.archlinux.org/packages/vardefm-git) (latest git master):
+
+```sh
+yay -S vardefm        # or vardefm-bin / vardefm-git
+```
+
 Each archive includes the user guide ([packaging/README.md](packaging/README.md)). It covers
 installation, connecting a radio, PTT, and setting up Pat, Winlink Express and HamBBS.
 [docs/RADIO.md](docs/RADIO.md) goes deeper into the radio setup.
@@ -45,6 +54,8 @@ Net rate includes error correction and burst overhead. The link picks the speed 
 from the measured signal quality.
 
 ## Development
+
+Want to contribute? Read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 ### Building
 
@@ -208,3 +219,5 @@ WB2OSZ.
 Unless you explicitly state otherwise, any contribution intentionally submitted for
 inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed
 as above, without any additional terms or conditions.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
