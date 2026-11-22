@@ -24,7 +24,7 @@ use vardefm_modem::{Burst, Kind, RxBurst};
 
 /// A session is forgotten after this long without a burst: longer than a quiet
 /// session goes before the called station probes it.
-const IDLE_EXPIRY_S: f64 = 600.0;
+pub(crate) const IDLE_EXPIRY_S: f64 = 600.0;
 /// After the closing DiscAck, kept this long after the last Disc or DiscAck we repeat,
 /// so a resent Disc and its answer still get through.
 const CLOSE_EXPIRY_S: f64 = 60.0;

@@ -75,13 +75,18 @@ crates/vardefm-dsp     OFDM modulator/demodulator, constellations, filters
 crates/vardefm-fec     LDPC codes, CRCs, scrambling, interleaving
 crates/vardefm-modem   bursts: header, speed levels, coded payload, streaming receiver
 crates/vardefm-link    ARQ link layer (connect, reliable byte stream, disconnect)
+crates/vardefm-engine  station + radio engine without desktop I/O (AudioSink / PTT traits)
+crates/vardefm-ffi     C ABI static library for embedding (see docs/EMBEDDING.md)
 crates/vardefm-sim     FM radio channel simulator
 crates/vardefm-tnc     VARA-compatible TCP interface, station logic, sim-pair, radio engine
 crates/vardefm-audio   sound card input/output (cpal)
 crates/vardefm-ptt     PTT: CM108/CM119/AIOC GPIO (after Dire Wolf), serial RTS/DTR, Hamlib rigctld, Linux GPIO
 crates/vardefm-cli     `vardefm` command-line tool
-packaging/             user guide and udev rules shipped in the release archives
+packaging/             user guide, udev rules, and Apple XCFramework packaging
 ```
+
+To embed the modem in another app (C ABI, no sound-card or TCP dependency), see
+[docs/EMBEDDING.md](docs/EMBEDDING.md).
 
 ### Virtual radio pair (`sim-pair`)
 
@@ -140,6 +145,9 @@ Useful options: `--txdelay` (leader length; it must exceed the radio's key-up ti
 - `crates/vardefm-link/src/tests.rs`: the ARQ link over a fake lossy channel.
 - `crates/vardefm-tnc/src/radio/tests.rs`: the real-radio engine with fake sound cards
   and PTT. It checks that audio only plays while keyed, the PTT tail, and the watchdog.
+- `crates/vardefm-ffi/tests/session.rs`: the C ABI: a session between two modems, and
+  calls made from inside callbacks. CI also runs these under Miri
+  (see [docs/EMBEDDING.md](docs/EMBEDDING.md)).
 - `crates/vardefm-tnc/tests/simpair.rs`: end to end. Two host clients talk over the VARA
   TCP interface through `sim-pair` and transfer 10 kB each way at several signal levels.
   Set `VARDEFM_SIM_VERBOSE=1` to print every transmission.

@@ -449,6 +449,229 @@ fn a_non_finite_sample_does_not_hide_a_burst() {
     }
 }
 
+/// A link, its channel, and the audio of a level 1 burst sent on it.
+struct Link {
+    name: &'static str,
+    chan: FmChannelConfig,
+    audio: Vec<f32>,
+}
+
+impl Link {
+    /// What the receiver gets at `cnr_db` (`None`: no noise) with noise `seed`.
+    fn received(&self, cnr_db: Option<f32>, seed: u64) -> Vec<f32> {
+        transmit(&FmChannelConfig { cnr_db, seed, ..self.chan.clone() }, &self.audio)
+    }
+
+    /// Where detection finds the burst without noise.
+    fn clean_position(&self, rx_modem: &Modem) -> usize {
+        let found = rx_modem.ofdm.detect(&self.received(None, 0), 0).at;
+        found.unwrap_or_else(|| panic!("{}: not detected without noise", self.name))
+    }
+}
+
+/// The matched link of `mode`, and links whose audio response differs from the one the
+/// sender shaped its audio for: emphasis at one end only, and a sender tilted
+/// 6 dB/octave off.
+fn links(mode: &str) -> Vec<Link> {
+    let us = FmChannelConfig::narrow().tx_emphasis_us;
+    let base = FmChannelConfig::by_name(mode).unwrap();
+    let links = [
+        ("matched", base.clone(), 0.0),
+        ("tx-pre-only", FmChannelConfig { tx_emphasis_us: us, rx_emphasis_us: None, ..base.clone() }, 0.0),
+        ("rx-de-only", FmChannelConfig { tx_emphasis_us: None, rx_emphasis_us: us, ..base.clone() }, 0.0),
+        ("tilt -6", base.clone(), -6.0),
+        ("tilt +6", base, 6.0),
+    ];
+    let sent = |tilt: f32| {
+        let mut p = OfdmParams::by_name(mode).unwrap();
+        p.tilt_db_per_octave += tilt;
+        Modem::new(p, 0.15).modulate(&burst(1, 1, 0))
+    };
+    links.into_iter().map(|(name, chan, tilt)| Link { name, chan, audio: sent(tilt) }).collect()
+}
+
+fn link<'a>(links: &'a [Link], name: &str) -> &'a Link {
+    links.iter().find(|l| l.name == name).unwrap_or_else(|| panic!("no link named {name}"))
+}
+
+/// Whether `at` is `want`, as near as timing has to be: within a quarter cyclic prefix.
+fn is_at(rx_modem: &Modem, at: usize, want: usize) -> bool {
+    at.abs_diff(want) <= rx_modem.ofdm.p.ncp / 4
+}
+
+/// A link whose audio response differs from the one the sender shaped its audio for
+/// (emphasis at one end only, or a sender tilted 6 dB/octave off) still has its burst
+/// found, and where the matched link's is. Detection's filters move the Schmidl-Cox
+/// plateau with the audio's tilt, and preamble B used to be looked for only one cyclic
+/// prefix either side of it: the two wide links that tilt down were never found without
+/// noise, and narrow with the sender tilted down was one sample from that.
+#[test]
+fn mismatched_links_are_detected_where_the_matched_link_is() {
+    for mode in ["narrow", "wide"] {
+        let rx_modem = modem(mode);
+        let links = links(mode);
+        let want = link(&links, "matched").clean_position(&rx_modem);
+        for l in &links {
+            // Noiseless, then strong signals with noise, which moves the plateau too.
+            let cases = [(None, 0), (Some(20.0), 1), (Some(20.0), 2), (Some(20.0), 3)];
+            for (cnr_db, seed) in cases {
+                let got = rx_modem.ofdm.detect(&l.received(cnr_db, seed), 0).at;
+                assert!(
+                    got.is_some_and(|b| is_at(&rx_modem, b, want)),
+                    "{mode} {} cnr {cnr_db:?} seed {seed}: found {got:?}, matched link at {want}",
+                    l.name
+                );
+            }
+        }
+    }
+}
+
+/// The two wide links whose audio tilts down are found 2 dB above the sensitivity knee
+/// too. Their plateau mostly puts preamble B more than a cyclic prefix late, so it has
+/// to reach the higher correlation asked for out there, and noise lowers what it
+/// reaches: a threshold much above what keeps other plateaus out would lose these links
+/// again.
+#[test]
+fn wide_links_that_tilt_down_are_detected_above_the_knee() {
+    let rx_modem = modem("wide");
+    let links = links("wide");
+    for name in ["rx-de-only", "tilt -6"] {
+        let l = link(&links, name);
+        let want = l.clean_position(&rx_modem);
+        let seeds = 1..=20;
+        let found = seeds
+            .clone()
+            .filter(|&seed| {
+                rx_modem.ofdm.detect(&l.received(Some(9.0), seed), 0).at.is_some_and(|b| is_at(&rx_modem, b, want))
+            })
+            .count();
+        assert!(found >= 18, "{name}: found {found} of {} bursts at 9 dB CNR", seeds.count());
+    }
+}
+
+/// What the preamble B search's span and thresholds in `vardefm-dsp` rest on
+/// (`FINE_TIMING_SPAN_NCP`, `MIN_FAR_PREAMBLE_CORR`): per link and CNR, how far from
+/// preamble B the Schmidl-Cox plateau puts it, and what correlation preamble B and
+/// other places reach within one cyclic prefix of that ("near") and further off
+/// ("far"). Prints; asserts nothing.
+///
+/// ```sh
+/// cargo test --release -p vardefm-modem preamble_b_search_eval -- --ignored --nocapture
+/// ```
+/// TRIALS bursts per link and CNR (200), NOISE_SECONDS of carrier without a burst (60),
+/// with noise seeds from SEED on (1000). The threshold was chosen on the default seeds
+/// and checked on SEED=50000 and SEED=90000.
+#[test]
+#[ignore]
+fn preamble_b_search_eval() {
+    use crate::detect_eval::{env_or, on_every_core};
+    use vardefm_dsp::ofdm::PlateauPeaks;
+    let trials: u32 = env_or("TRIALS", 200);
+    let noise_s: f32 = env_or("NOISE_SECONDS", 60.0);
+    let seed0: u64 = env_or("SEED", 1000);
+    assert!(noise_s > 0.0 && noise_s.is_finite(), "NOISE_SECONDS={noise_s}: must be a finite number more than 0");
+    assert!(trials > 0, "TRIALS must be at least 1");
+    let far_min = PlateauPeaks::MIN_FAR_CORR;
+    let max = |v: &[f32]| v.iter().copied().fold(0.0f32, f32::max);
+    // The value `f` of the way through sorted `v`.
+    let at = |v: &[f32], f: f32| v.get(((v.len() as f32 - 1.0) * f).round() as usize).copied().unwrap_or(f32::NAN);
+    for mode in ["narrow", "wide"] {
+        let rx_modem = modem(mode);
+        let ofdm = &rx_modem.ofdm;
+        let ncp = ofdm.p.ncp;
+        let knee = if mode == "narrow" { 5.0 } else { 7.0 };
+        println!("{mode}: cyclic prefix {ncp} samples, {trials} bursts per line, seeds from {seed0}");
+        println!("  plateau: where it puts preamble B, in prefixes late of where it is (lowest, median, highest)");
+        println!("  found: bursts detected at preamble B, of them by a far place; wrong: detected elsewhere");
+        println!("  far B: preamble B's correlation when it is far (lowest, 5th percentile), and bursts where it is below {far_min}");
+        println!("  shoulder: highest far correlation at a plateau whose near place is preamble B");
+        println!("  miss: highest correlation, near or far, at a plateau with preamble B inside its search but at neither place");
+        println!("  stray: highest correlation, near or far, at a plateau with preamble B outside its search");
+        // The highest correlation at a plateau that is not a frame's, over the mode.
+        let mut stray_all = 0.0f32;
+        for l in &links(mode) {
+            let truth = l.clean_position(&rx_modem);
+            let is_b = |at: usize| is_at(&rx_modem, at, truth);
+            for cnr_db in [None, Some(knee), Some(knee + 2.0), Some(20.0)] {
+                // Each burst: where it was detected, and every plateau looked at on the way.
+                let bursts = on_every_core(if cnr_db.is_none() { 1 } else { trials }, |t| {
+                    let mut plateaus = Vec::new();
+                    let got = ofdm.detect_traced(&l.received(cnr_db, seed0 + t as u64), 0, |p| plateaus.push(p));
+                    (got, plateaus)
+                });
+                let (mut late, mut far_b, mut shoulder, mut miss, mut stray) = (vec![], vec![], vec![], vec![], vec![]);
+                let (mut found, mut found_far, mut wrong, mut far_b_low) = (0, 0, 0, 0);
+                for (got, plateaus) in &bursts {
+                    match got {
+                        Some(b) if is_b(*b) => found += 1,
+                        Some(_) => wrong += 1,
+                        None => {}
+                    }
+                    // Detection stops at the plateau it confirms, so that one is the last.
+                    let by_far = plateaus.last().is_some_and(|p| Some(p.far.1) == *got);
+                    found_far += usize::from(got.is_some_and(is_b) && by_far);
+                    let mut low = false;
+                    for p in plateaus {
+                        if p.expected.abs_diff(truth) > PlateauPeaks::SPAN_NCP * ncp + ncp / 4 {
+                            stray.push(p.best_corr());
+                        } else {
+                            late.push((p.expected as f32 - truth as f32) / ncp as f32);
+                            if is_b(p.near.1) {
+                                shoulder.push(p.far.0);
+                            } else if is_b(p.far.1) {
+                                far_b.push(p.far.0);
+                                low |= p.far.0 < far_min;
+                            } else {
+                                miss.push(p.best_corr());
+                            }
+                        }
+                    }
+                    far_b_low += usize::from(low);
+                }
+                late.sort_by(f32::total_cmp);
+                far_b.sort_by(f32::total_cmp);
+                stray_all = stray_all.max(max(&stray));
+                println!(
+                    "  {:11} {:>7} | plateau {:+.2} {:+.2} {:+.2} | found {found:3} (far {found_far:3}) wrong {wrong} | far B {:.2} {:.2}, {far_b_low} below | shoulder {:.2} | miss {:.2} of {} | stray {:.2} of {}",
+                    l.name,
+                    cnr_db.map_or("clean".into(), |c| format!("{c} dB")),
+                    at(&late, 0.0),
+                    at(&late, 0.5),
+                    at(&late, 1.0),
+                    at(&far_b, 0.0),
+                    at(&far_b, 0.05),
+                    max(&shoulder),
+                    max(&miss),
+                    miss.len(),
+                    max(&stray),
+                    stray.len(),
+                );
+            }
+        }
+        // A carrier without a burst: every plateau is a stray one.
+        for cnr in [-10.0, 5.0, 25.0] {
+            let cfg = FmChannelConfig {
+                cnr_db: Some(cnr),
+                seed: seed0 + trials as u64,
+                ..FmChannelConfig::by_name(mode).unwrap()
+            };
+            let rx = transmit(&cfg, &vec![0.0; (noise_s * cfg.fs) as usize]);
+            let (mut stray, mut confirmed, mut from) = (Vec::new(), 0, 0);
+            while let Some(b) = ofdm.detect_traced(&rx, from, |p| stray.push(p.best_corr())) {
+                confirmed += 1;
+                from = b + ofdm.p.symbol_len();
+            }
+            stray_all = stray_all.max(max(&stray));
+            println!(
+                "  carrier, no burst, {cnr} dB: stray {:.2} of {}, {confirmed} confirmed",
+                max(&stray),
+                stray.len()
+            );
+        }
+        println!("  highest stray correlation in {mode}: {stray_all:.2}");
+    }
+}
+
 /// A modem whose bursts start straight with preamble A, without a leader, so that a
 /// test can place the preambles to the sample.
 fn modem_without_leader(mode: &str, detector: Detector) -> Arc<Modem> {
