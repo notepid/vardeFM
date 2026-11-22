@@ -238,8 +238,8 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
   back while the channel is busy, rechecked every 0.3 s. It also answers a repeated
   `ConnectReq` with its `ConnectAck`, but only one that names its caller, itself and its
   path: another is a different caller's that happens to use the same session id.
-- **Mixed versions:** a 0.3.x station as the caller connects on the called station's
-  first Data burst too. As the called station it does not resend its `ConnectAck`
+- **Mixed versions:** a 0.3.0 to 0.3.2 station as the caller connects on the called
+  station's first Data burst too. As the called station it does not resend its `ConnectAck`
   unprompted, so a caller of this version that missed it recovers only if a later
   `ConnectReq` gets through, and gives up more often on a lossy channel.
 - **Turns:** the called station may send first right after `ConnectAck`; the caller

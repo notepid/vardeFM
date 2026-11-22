@@ -208,8 +208,8 @@ To publish a release:
 2. Tag and push: `git tag v0.3.0; git push origin master v0.3.0`.
 
 The release workflow checks that the tag matches `Cargo.toml`, runs the tests, builds the
-six archives plus `checksums.txt`, and publishes the release with notes generated from the
-commits. A tag with a suffix such as `v0.3.0-rc1` becomes a pre-release.
+six program archives, the Apple XCFramework archive and `checksums.txt`, and publishes the
+release with notes generated from the commits. A tag with a suffix such as `v0.3.0-rc1` becomes a pre-release.
 
 ## License
 
