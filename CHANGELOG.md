@@ -14,6 +14,13 @@ run the same minor version.
   the high-pass corner and the optional low-pass corner, Hz. The high-pass cannot be
   turned off: library users who set `detect_lowpass_hz: Some(f)` now set
   `detect_band_hz: (lo, Some(f))` with the mode's corner (420 Hz narrow, 340 Hz wide). (#12)
+- **Headers decode about 1.7 dB lower.** The receiver estimated the channel for the
+  header from preamble B alone, one symbol, and the header limited level 0 in both
+  modes. The header's estimate is now a low-order fit across carriers to preamble B and
+  the pilots of every header symbol, after removing the timing slope found by a coherent
+  search. In the channel simulator, 10 % of headers fail at about 2.0 dB CNR in narrow
+  mode (was 3.7) and 4.1 dB in wide mode (was 5.9), now below level 0's codewords, and
+  the error curve is much steeper. Receiver only: on-air compatible. (#14)
 
 ### Fixed
 - A CTCSS tone in the received audio no longer hides bursts from detection. Detection
@@ -90,13 +97,6 @@ end stations and the digipeaters of a routed session should all run 0.3.2.
   changes nothing in the modem. (#6, thanks @mustig)
 
 ### Changed
-- **Headers decode about 1.7 dB lower.** The receiver estimated the channel for the
-  header from preamble B alone, one symbol, and the header limited level 0 in both
-  modes. The header's estimate is now a low-order fit across carriers to preamble B and
-  the pilots of every header symbol, after removing the timing slope found by a coherent
-  search. In the channel simulator, 10 % of headers fail at about 2.0 dB CNR in narrow
-  mode (was 3.7) and 4.1 dB in wide mode (was 5.9), now below level 0's codewords, and
-  the error curve is much steeper. Receiver only: on-air compatible. (#14)
 - **Busy detection measures only the carrier band** (422–2672 Hz narrow, 400–6000 Hz wide).
   A CTCSS tone, mains hum, a DC step or hiss above the band no longer reads as a busy
   channel, and no longer hides a signal inside the band. A keyed carrier with only a CTCSS
