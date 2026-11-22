@@ -1000,11 +1000,12 @@ fn mismatched_links_still_carry_strong_bursts() {
 
 /// The CTCSS path: the tone reaches the receiver at the deviation sent, and a
 /// wide-mode link with a tone still carries strong bursts to the genie and to every
-/// detector. A stronger tone costs Schmidl-Cox bursts at any CNR, so this keeps to
-/// 375 Hz.
+/// detector, for every standard tone at 1500 Hz deviation (twice the usual). Before
+/// #15 high-passed its search, Schmidl-Cox lost bursts to a tone of more than about
+/// 375 Hz deviation at any CNR.
 #[test]
 fn ctcss_tone_reaches_the_receiver_and_strong_bursts_get_through() {
-    let deviation_hz = 375.0;
+    let deviation_hz = 1500.0;
     let link = Link::matched("wide").with_ctcss(deviation_hz);
     for t in 0..2 {
         let cfg = link.trial_channel(25.0, t);
@@ -1024,9 +1025,11 @@ fn ctcss_tone_reaches_the_receiver_and_strong_bursts_get_through() {
         let want = (deviation_hz / cfg.deviation_hz) as f64;
         assert!((amp / want - 1.0).abs() < 0.25, "{} Hz tone received at {amp:.3}, sent at {want:.3}", tone.hz);
     }
-    for r in run_trials(&link, 25.0, 1, 1, 2) {
-        assert!(r.genie, "genie failed on a strong signal with CTCSS");
-        assert!(r.det.iter().all(|&(_, ok)| ok), "a detector missed a strong burst with CTCSS");
+    // Trial `t` has tone `t`: every standard tone once.
+    for (t, r) in run_trials(&link, 25.0, 1, 1, CTCSS_HZ.len() as u32).iter().enumerate() {
+        let hz = CTCSS_HZ[t];
+        assert!(r.genie, "genie failed on a strong signal with {hz} Hz CTCSS");
+        assert!(r.det.iter().all(|&(_, ok)| ok), "a detector missed a strong burst with {hz} Hz CTCSS");
     }
 }
 
