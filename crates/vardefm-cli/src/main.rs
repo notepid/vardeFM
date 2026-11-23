@@ -39,7 +39,8 @@ struct ModemArgs {
     #[arg(long, default_value_t = 0.1)]
     txdelay: f32,
     /// Simulated radio channel instead of the mode's own (sim and sweep only):
-    /// mic-12k5, mic-25k, data-25k or data-12k5, optionally with :dev=HZ and :if=HZ
+    /// mic-12k5, mic-25k, data-25k or data-12k5, optionally with :dev=HZ and :if=HZ, and with
+    /// interference as for `sim-pair --interference` (e.g. mic-12k5:tone=1000@-30)
     #[arg(long)]
     channel: Option<String>,
 }
@@ -269,6 +270,13 @@ enum Cmd {
         /// Extra seconds A and B wait per digipeater (0 to 10)
         #[arg(long, default_value_t = 0.5)]
         hop_margin: f64,
+        /// Interference during every transmission, separated by colons: spur=OFFSET_HZ@C/I_DB,
+        /// rfburst=PER_SECOND@MS@CNR_DB, tone=HZ@DBFS, pop=PER_SECOND@MS@DBFS
+        #[arg(long)]
+        interference: Option<String>,
+        /// Highest speed level (0-6) either station sends or asks for
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(0..=6))]
+        max_level: u8,
     },
 }
 
@@ -480,11 +488,16 @@ fn main() {
             record,
             digi,
             hop_margin,
+            interference,
+            max_level,
         } => {
             if keyup >= txdelay {
                 die("--txdelay must be longer than --keyup");
             }
             let digis = digi_calls(digi, vardefm_modem::MAX_DIGIS);
+            let fs = FmChannelConfig::by_name(&mode).unwrap_or_else(|| die("unknown mode")).fs;
+            let interference = vardefm_sim::parse_interference(interference.as_deref().unwrap_or(""), fs)
+                .unwrap_or_else(|e| die(&format!("--interference: {e}")));
             let cfg = SimPairConfig {
                 mode,
                 cnr_db: cnr,
@@ -500,6 +513,8 @@ fn main() {
                 verbose: true,
                 digis,
                 hop_margin_s: checked_hop_margin(hop_margin),
+                interference,
+                max_level,
             };
             let sp = SimPair::start(cfg.clone()).unwrap_or_else(|e| die(&e.to_string()));
             println!(

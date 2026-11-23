@@ -4,6 +4,7 @@
 //! TX audio filtering, pre-emphasis, deviation limiting, the FM modulator, RF noise,
 //! the IF filter, the discriminator (including threshold "clicks" at low signal),
 //! de-emphasis, RX audio filtering, squelch, TX key-up delay, and sound-card clock offset.
+//! Interference other than thermal noise is in [`interference`].
 
 use num_complex::Complex32;
 use rand::rngs::StdRng;
@@ -12,7 +13,10 @@ use rand_distr::{Distribution, Normal};
 use std::f32::consts::PI;
 use vardefm_dsp::filter::{design_lowpass_fir, fir_complex, resample_cubic, Chain, FirstOrder};
 
+pub mod interference;
 pub mod spectrum;
+
+pub use interference::{parse_interference, Interferer};
 
 #[derive(Clone, Debug)]
 pub struct FmChannelConfig {
@@ -40,6 +44,8 @@ pub struct FmChannelConfig {
     pub lead_silence_s: f32,
     pub trail_silence_s: f32,
     pub seed: u64,
+    /// Interference besides the thermal noise of `cnr_db`. Empty in every preset.
+    pub interference: Vec<Interferer>,
 }
 
 impl FmChannelConfig {
@@ -60,6 +66,7 @@ impl FmChannelConfig {
             lead_silence_s: 0.2,
             trail_silence_s: 0.2,
             seed: 1,
+            interference: Vec::new(),
         }
     }
 
@@ -110,9 +117,10 @@ impl FmChannelConfig {
         CHANNELS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
     }
 
-    /// A channel from `name[:dev=HZ][:if=HZ]`: a [`CHANNELS`] preset with its peak
-    /// deviation or IF bandwidth overridden, for sweeps. Rejects unknown names and
-    /// keys, and an RF signal the sample rate cannot hold.
+    /// A channel from `name[:dev=HZ][:if=HZ][:INTERFERER...]`: a [`CHANNELS`] preset
+    /// with its peak deviation or IF bandwidth overridden, for sweeps, and with any
+    /// number of interferers (as [`Interferer::from_str`], e.g. `spur=1000@20`).
+    /// Rejects unknown names and keys, and an RF signal the sample rate cannot hold.
     pub fn parse_channel(spec: &str) -> Result<Self, String> {
         let mut parts = spec.split(':');
         let name = parts.next().unwrap_or_default().trim();
@@ -122,10 +130,19 @@ impl FmChannelConfig {
         for part in parts {
             let (key, value) = part.split_once('=').ok_or_else(|| format!("{spec:?}: {part:?} is not key=value"))?;
             let key = key.trim();
+            if Interferer::KEYS.contains(&key) {
+                let i: Interferer = part.parse().map_err(|e| format!("{spec:?}: {e}"))?;
+                i.check(cfg.fs).map_err(|e| format!("{spec:?}: {key}: {e}"))?;
+                cfg.interference.push(i);
+                continue;
+            }
             let field = match key {
                 "dev" => &mut cfg.deviation_hz,
                 "if" => &mut cfg.if_bandwidth_hz,
-                k => return Err(format!("{spec:?}: unknown key {k:?} (dev or if)")),
+                k => {
+                    let known = Interferer::KEYS.join(", ");
+                    return Err(format!("{spec:?}: unknown key {k:?} (dev, if, {known})"));
+                }
             };
             if seen.contains(&key) {
                 return Err(format!("{spec:?}: {key} is given twice"));
@@ -224,12 +241,13 @@ pub fn modulate(cfg: &FmChannelConfig, audio: &[f32]) -> Rf {
     Rf { samples, carrier }
 }
 
-/// `rf` with the receiver's RF noise for `cfg.cnr_db`, seeded by `cfg.seed`.
+/// `rf` with the receiver's RF noise for `cfg.cnr_db`, seeded by `cfg.seed`, and the
+/// RF interference of `cfg.interference`.
 pub fn add_noise(cfg: &FmChannelConfig, rf: &Rf) -> Vec<Complex32> {
     let mut rng = StdRng::seed_from_u64(cfg.seed);
     let sigma = cfg.cnr_db.map(|c| cfg.noise_sigma(c));
     let normal = Normal::new(0.0f32, 1.0).unwrap();
-    (0..rf.samples.len())
+    let mut noisy: Vec<Complex32> = (0..rf.samples.len())
         .map(|i| {
             let mut z = rf.samples[i];
             if let Some(s) = sigma {
@@ -240,11 +258,14 @@ pub fn add_noise(cfg: &FmChannelConfig, rf: &Rf) -> Vec<Complex32> {
             }
             z
         })
-        .collect()
+        .collect();
+    interference::add_rf(cfg, &mut noisy);
+    noisy
 }
 
-/// The receiver: RF noise at `cfg.cnr_db`, IF filter, discriminator, de-emphasis,
-/// audio filter, squelch and sound-card clock.
+/// The receiver: RF noise at `cfg.cnr_db` and RF interference, IF filter,
+/// discriminator, de-emphasis, audio filter, squelch, audio interference and
+/// sound-card clock.
 pub fn receive(cfg: &FmChannelConfig, rf: &Rf) -> Vec<f32> {
     let fs = cfg.fs;
     let keyup = (cfg.keyup_delay_s * fs) as usize;
@@ -279,6 +300,7 @@ pub fn receive(cfg: &FmChannelConfig, rf: &Rf) -> Vec<f32> {
             *v = 0.0;
         }
     }
+    interference::add_audio(cfg, &mut out);
 
     if cfg.clock_offset_ppm != 0.0 {
         out = resample_cubic(&out, 1.0 + cfg.clock_offset_ppm as f64 * 1e-6);

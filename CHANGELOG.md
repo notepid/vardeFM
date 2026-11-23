@@ -15,6 +15,15 @@ run the same minor version.
   strength. A new ignored
   test, `occupied_bandwidth`, reports the occupied bandwidth and adjacent-channel power of
   real bursts. The modem itself is unchanged.
+- **Interference in the simulator.** Besides noise, the FM channel simulator can now add
+  a carrier beside ours (`spur`), bursts of RF noise (`rfburst`), an audio tone (`tone`)
+  and bursts of audio noise (`pop`). A channel spec takes them
+  (`--channel mic-12k5:tone=1000@-30`), and `vardefm sim-pair` takes `--interference`
+  and `--max-level`. Two new ignored tests measure what they cost: `interference_sweep`
+  (codewords lost and reported SNR per level) and `adaptation_gap` (a session's
+  throughput with the level free against capped at each level). The modem itself is
+  unchanged, and with no interference asked for the simulator's output is the same as
+  before.
 
 ### Changed
 - docs/RADIO.md says how the radio's own wide/narrow (25 / 12.5 kHz) setting fits each

@@ -6,6 +6,9 @@
 //! Every transmission goes through [`vardefm_sim::transmit`] (key-up delay,
 //! squelch tail, noise, clock offset). Stations are half-duplex: a station hears
 //! nothing while it transmits, and overlapping transmissions add up (collide).
+//!
+//! [`Headless`] is the same simulation without the ports, the thread and the clock,
+//! for measurements.
 
 use crate::host::valid_call;
 use crate::server::{HostIn, HostPort};
@@ -19,7 +22,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use vardefm_link::LinkConfig;
 use vardefm_modem::{Modem, OfdmParams, LEVELS, MAX_DIGIS};
-use vardefm_sim::{transmit, FmChannelConfig};
+use vardefm_sim::{transmit, FmChannelConfig, Interferer};
 
 /// Audio step: 10 ms.
 const STEP: usize = 480;
@@ -52,6 +55,11 @@ pub struct SimPairConfig {
     pub digis: Vec<String>,
     /// Extra wait per digipeater hop on A's and B's routed sessions.
     pub hop_margin_s: f64,
+    /// Interference on every hop, besides the noise of `cnr_db`. It reaches a
+    /// receiver only during a transmission (see `vardefm_sim::interference`).
+    pub interference: Vec<Interferer>,
+    /// Highest speed level any station sends or asks for.
+    pub max_level: u8,
 }
 
 impl Default for SimPairConfig {
@@ -71,6 +79,8 @@ impl Default for SimPairConfig {
             verbose: true,
             digis: Vec::new(),
             hop_margin_s: LinkConfig::default().hop_margin_s,
+            interference: Vec::new(),
+            max_level: LinkConfig::default().max_level,
         }
     }
 }
@@ -82,6 +92,8 @@ pub struct SimPairStats {
     /// Seconds each station has transmitted, in chain order: A, the digipeaters, B.
     pub airtime: Vec<f64>,
     pub bursts: Vec<u64>,
+    /// Codewords sent at each speed level, by all stations, repeats included.
+    pub codewords_by_level: Vec<u64>,
     pub log: Vec<String>,
 }
 
@@ -95,75 +107,16 @@ pub struct SimPair {
 
 impl SimPair {
     pub fn start(cfg: SimPairConfig) -> io::Result<Self> {
-        let params = OfdmParams::by_name(&cfg.mode)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "mode must be narrow or wide"))?;
-        let invalid = |what: &str| Err(io::Error::new(io::ErrorKind::InvalidInput, what));
-        if cfg.digis.len() > MAX_DIGIS {
-            return invalid("at most two digipeaters");
-        }
-        // No spaces or other padding gets past this, so upper case is all that can
-        // differ between two spellings of one call sign.
-        if let Some(c) = cfg.digis.iter().find(|c| !valid_call(c)) {
-            return invalid(&format!("digipeater {c:?}: not a valid call sign"));
-        }
-        // One station repeats for all its positions at once, so a second station with
-        // the same call sign would never see a burst it should repeat.
-        let calls: Vec<String> = cfg.digis.iter().map(|c| c.to_ascii_uppercase()).collect();
-        if calls.iter().enumerate().any(|(i, c)| calls[..i].contains(c)) {
-            return invalid("each digipeater needs its own call sign");
-        }
-        if !vardefm_link::valid_hop_margin(cfg.hop_margin_s) {
-            return invalid("hop margin must be from 0 to 10 seconds");
-        }
-        let channel = FmChannelConfig::by_name(&cfg.mode).unwrap();
+        let params = prepare(&cfg)?;
         let data_port = |p: u16| if p == 0 { 0 } else { p + 1 };
         let ports = [
             HostPort::bind(&cfg.host, cfg.a_port, data_port(cfg.a_port))?,
             HostPort::bind(&cfg.host, cfg.b_port, data_port(cfg.b_port))?,
         ];
         let addrs = [(ports[0].cmd_addr, ports[0].data_addr), (ports[1].cmd_addr, ports[1].data_addr)];
-        if let Some(dir) = &cfg.record {
-            std::fs::create_dir_all(dir)?;
-        }
-        let modem = Arc::new(Modem::new(params, cfg.txdelay_s));
-        let link = LinkConfig { hop_margin_s: cfg.hop_margin_s, ..LinkConfig::default() };
-        let count = cfg.digis.len() + 2;
-        let seed = cfg.seed as u32 * 2;
-        let mut stations = vec![Station::new("A", modem.clone(), link.clone(), seed + 1)];
-        for (i, call) in cfg.digis.iter().enumerate() {
-            let mut d = Station::new(&format!("D{}", i + 1), modem.clone(), link.clone(), seed + 3 + i as u32);
-            d.set_digi(std::slice::from_ref(call));
-            stations.push(d);
-        }
-        stations.push(Station::new("B", modem.clone(), link, seed + 2));
-        let stats = Arc::new(Mutex::new(SimPairStats {
-            airtime: vec![0.0; count],
-            bursts: vec![0; count],
-            ..SimPairStats::default()
-        }));
-        let stop = Arc::new(AtomicBool::new(false));
-        let [pa, pb] = ports;
-        let mut host_ports: Vec<Option<HostPort>> = (0..count).map(|_| None).collect();
-        host_ports[0] = Some(pa);
-        host_ports[count - 1] = Some(pb);
-        let engine = Engine {
-            stations,
-            ports: host_ports,
-            channel: FmChannelConfig {
-                cnr_db: cfg.cnr_db,
-                clock_offset_ppm: cfg.ppm,
-                keyup_delay_s: cfg.keyup_s,
-                lead_silence_s: 0.0,
-                ..channel
-            },
-            incoming: vec![Vec::new(); count],
-            tx_end: vec![None; count],
-            t: 0,
-            tx_count: 0,
-            stats: stats.clone(),
-            stop: stop.clone(),
-            cfg,
-        };
+        let modem = Modem::new(params, cfg.txdelay_s);
+        let engine = Engine::new(cfg, modem, Some(ports));
+        let (stats, stop) = (engine.stats.clone(), engine.stop.clone());
         let handle = thread::spawn(move || engine.run());
         Ok(Self { addrs, stats, stop, handle: Some(handle) })
     }
@@ -198,6 +151,90 @@ impl Drop for SimPair {
     }
 }
 
+/// The same simulation as [`SimPair`] without TCP ports, a thread or a clock: the
+/// caller plays the hosts and steps the time. A run then does not depend on how
+/// fast the computer is, so it repeats exactly. `speed`, `host` and the ports of
+/// the configuration are not used.
+pub struct Headless {
+    engine: Engine,
+}
+
+impl Headless {
+    pub fn new(cfg: SimPairConfig) -> io::Result<Self> {
+        let mut modem = Modem::new(prepare(&cfg)?, cfg.txdelay_s);
+        // Measurements run many simulations side by side; the thread count does not
+        // change what decodes.
+        modem.decode_threads = 1;
+        Ok(Self { engine: Engine::new(cfg, modem, None) })
+    }
+
+    /// Stations in chain order: A, the digipeaters, B.
+    pub fn stations(&self) -> usize {
+        self.engine.stations.len()
+    }
+
+    /// A command-port line from the host of station `i`.
+    pub fn host_line(&mut self, i: usize, line: &str) {
+        let now = self.now();
+        self.engine.stations[i].host_line(now, line);
+    }
+
+    /// Data-port bytes from the host of station `i`.
+    pub fn host_data(&mut self, i: usize, data: &[u8]) {
+        self.engine.stations[i].host_data(data);
+    }
+
+    /// Advance the simulation by 10 ms. Returns what each station (by index) said
+    /// to its host, in order.
+    pub fn step(&mut self) -> Vec<(usize, HostOut)> {
+        self.engine.step()
+    }
+
+    /// Simulated time, seconds.
+    pub fn now(&self) -> f64 {
+        self.engine.t as f64 / self.engine.fs()
+    }
+
+    pub fn stats(&self) -> SimPairStats {
+        self.engine.stats.lock().unwrap().clone()
+    }
+}
+
+/// Checks `cfg` and makes its recording folder. Returns the mode's waveform.
+fn prepare(cfg: &SimPairConfig) -> io::Result<OfdmParams> {
+    let params = OfdmParams::by_name(&cfg.mode)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "mode must be narrow or wide"))?;
+    let invalid = |what: &str| Err(io::Error::new(io::ErrorKind::InvalidInput, what));
+    if cfg.digis.len() > MAX_DIGIS {
+        return invalid("at most two digipeaters");
+    }
+    // No spaces or other padding gets past this, so upper case is all that can
+    // differ between two spellings of one call sign.
+    if let Some(c) = cfg.digis.iter().find(|c| !valid_call(c)) {
+        return invalid(&format!("digipeater {c:?}: not a valid call sign"));
+    }
+    // One station repeats for all its positions at once, so a second station with
+    // the same call sign would never see a burst it should repeat.
+    let calls: Vec<String> = cfg.digis.iter().map(|c| c.to_ascii_uppercase()).collect();
+    if calls.iter().enumerate().any(|(i, c)| calls[..i].contains(c)) {
+        return invalid("each digipeater needs its own call sign");
+    }
+    if !vardefm_link::valid_hop_margin(cfg.hop_margin_s) {
+        return invalid("hop margin must be from 0 to 10 seconds");
+    }
+    if cfg.max_level as usize >= LEVELS.len() {
+        return invalid("the highest level is 6");
+    }
+    let fs = FmChannelConfig::by_name(&cfg.mode).unwrap().fs;
+    if let Some(e) = cfg.interference.iter().find_map(|i| i.check(fs).err()) {
+        return invalid(&format!("interference: {e}"));
+    }
+    if let Some(dir) = &cfg.record {
+        std::fs::create_dir_all(dir)?;
+    }
+    Ok(params)
+}
+
 struct Engine {
     /// A, the digipeaters in order, B.
     stations: Vec<Station>,
@@ -217,6 +254,52 @@ struct Engine {
 }
 
 impl Engine {
+    /// The stations of `cfg`, all with `modem`; `ports` are the host ports of A and B.
+    fn new(cfg: SimPairConfig, modem: Modem, ports: Option<[HostPort; 2]>) -> Self {
+        let channel = FmChannelConfig::by_name(&cfg.mode).unwrap();
+        let modem = Arc::new(modem);
+        let link = LinkConfig { hop_margin_s: cfg.hop_margin_s, max_level: cfg.max_level, ..LinkConfig::default() };
+        let count = cfg.digis.len() + 2;
+        let seed = cfg.seed as u32 * 2;
+        let mut stations = vec![Station::new("A", modem.clone(), link.clone(), seed + 1)];
+        for (i, call) in cfg.digis.iter().enumerate() {
+            let mut d = Station::new(&format!("D{}", i + 1), modem.clone(), link.clone(), seed + 3 + i as u32);
+            d.set_digi(std::slice::from_ref(call));
+            stations.push(d);
+        }
+        stations.push(Station::new("B", modem.clone(), link, seed + 2));
+        let stats = Arc::new(Mutex::new(SimPairStats {
+            airtime: vec![0.0; count],
+            bursts: vec![0; count],
+            codewords_by_level: vec![0; LEVELS.len()],
+            ..SimPairStats::default()
+        }));
+        let mut host_ports: Vec<Option<HostPort>> = (0..count).map(|_| None).collect();
+        if let Some([pa, pb]) = ports {
+            host_ports[0] = Some(pa);
+            host_ports[count - 1] = Some(pb);
+        }
+        Engine {
+            stations,
+            ports: host_ports,
+            channel: FmChannelConfig {
+                cnr_db: cfg.cnr_db,
+                clock_offset_ppm: cfg.ppm,
+                keyup_delay_s: cfg.keyup_s,
+                lead_silence_s: 0.0,
+                interference: cfg.interference.clone(),
+                ..channel
+            },
+            incoming: vec![Vec::new(); count],
+            tx_end: vec![None; count],
+            t: 0,
+            tx_count: 0,
+            stats,
+            stop: Arc::new(AtomicBool::new(false)),
+            cfg,
+        }
+    }
+
     fn fs(&self) -> f64 {
         self.stations[0].modem().fs() as f64
     }
@@ -237,84 +320,8 @@ impl Engine {
     fn run(mut self) {
         let start = Instant::now();
         let fs = self.fs();
-        let n = self.stations.len();
         while !self.stop.load(Ordering::Relaxed) {
-            let now = self.t as f64 / fs;
-
-            // Host input.
-            for i in 0..n {
-                if let Some(port) = &self.ports[i] {
-                    while let Ok(msg) = port.inbox.try_recv() {
-                        match msg {
-                            HostIn::Line(l) => self.stations[i].host_line(now, &l),
-                            HostIn::Data(d) => self.stations[i].host_data(&d),
-                            HostIn::CmdClosed => self.stations[i].host_closed(now),
-                        }
-                    }
-                }
-                self.stations[i].tick(now);
-            }
-
-            // Transmissions that end now.
-            for i in 0..n {
-                if self.tx_end[i].is_some_and(|e| e <= self.t) {
-                    self.tx_end[i] = None;
-                    self.stations[i].tx_done(now);
-                }
-            }
-
-            // New transmissions.
-            for i in 0..n {
-                if self.tx_end[i].is_none() {
-                    if let Some(tx) = self.stations[i].poll_tx(now) {
-                        self.start_tx(i, now, tx);
-                    }
-                }
-            }
-
-            // Receive this step's audio.
-            for i in 0..n {
-                let mut chunk = vec![0f32; STEP];
-                let (a, b) = (self.t, self.t + STEP as u64);
-                for (s, audio) in &self.incoming[i] {
-                    let end = s + audio.len() as u64;
-                    if end <= a || *s >= b {
-                        continue;
-                    }
-                    for k in a.max(*s)..b.min(end) {
-                        chunk[(k - a) as usize] += audio[(k - s) as usize];
-                    }
-                }
-                self.incoming[i].retain(|(s, audio)| s + audio.len() as u64 > b);
-                for burst in self.stations[i].rx_audio(now, &chunk) {
-                    let h = burst.header;
-                    let ok = burst.payload.iter().filter(|p| p.is_some()).count();
-                    self.log(format!(
-                        "{now:8.2}s {} rx {:<10} cw {ok:>2}/{:<2} SNR {:5.1} dB",
-                        self.stations[i].name,
-                        format!("{:?}", h.kind),
-                        h.ncw,
-                        burst.snr_db
-                    ));
-                }
-            }
-
-            // Host output (digipeaters have no host; their lines are dropped).
-            for i in 0..n {
-                let out = self.stations[i].take_output();
-                if let Some(port) = &self.ports[i] {
-                    for o in out {
-                        match o {
-                            HostOut::Line(l) => port.send_line(&l),
-                            HostOut::Data(d) => port.send_data(&d),
-                        }
-                    }
-                }
-            }
-
-            self.t += STEP as u64;
-            self.stats.lock().unwrap().now = self.t as f64 / fs;
-
+            self.step();
             if self.cfg.speed > 0.0 {
                 let target = start + Duration::from_secs_f64(self.t as f64 / fs / self.cfg.speed);
                 let real = Instant::now();
@@ -323,6 +330,91 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// One audio step. Returns what each station said to its host, which has also
+    /// gone to the station's host port if it has one.
+    fn step(&mut self) -> Vec<(usize, HostOut)> {
+        let fs = self.fs();
+        let n = self.stations.len();
+        let now = self.t as f64 / fs;
+
+        // Host input.
+        for i in 0..n {
+            if let Some(port) = &self.ports[i] {
+                while let Ok(msg) = port.inbox.try_recv() {
+                    match msg {
+                        HostIn::Line(l) => self.stations[i].host_line(now, &l),
+                        HostIn::Data(d) => self.stations[i].host_data(&d),
+                        HostIn::CmdClosed => self.stations[i].host_closed(now),
+                    }
+                }
+            }
+            self.stations[i].tick(now);
+        }
+
+        // Transmissions that end now.
+        for i in 0..n {
+            if self.tx_end[i].is_some_and(|e| e <= self.t) {
+                self.tx_end[i] = None;
+                self.stations[i].tx_done(now);
+            }
+        }
+
+        // New transmissions.
+        for i in 0..n {
+            if self.tx_end[i].is_none() {
+                if let Some(tx) = self.stations[i].poll_tx(now) {
+                    self.start_tx(i, now, tx);
+                }
+            }
+        }
+
+        // Receive this step's audio.
+        for i in 0..n {
+            let mut chunk = vec![0f32; STEP];
+            let (a, b) = (self.t, self.t + STEP as u64);
+            for (s, audio) in &self.incoming[i] {
+                let end = s + audio.len() as u64;
+                if end <= a || *s >= b {
+                    continue;
+                }
+                for k in a.max(*s)..b.min(end) {
+                    chunk[(k - a) as usize] += audio[(k - s) as usize];
+                }
+            }
+            self.incoming[i].retain(|(s, audio)| s + audio.len() as u64 > b);
+            for burst in self.stations[i].rx_audio(now, &chunk) {
+                let h = burst.header;
+                let ok = burst.payload.iter().filter(|p| p.is_some()).count();
+                self.log(format!(
+                    "{now:8.2}s {} rx {:<10} cw {ok:>2}/{:<2} SNR {:5.1} dB",
+                    self.stations[i].name,
+                    format!("{:?}", h.kind),
+                    h.ncw,
+                    burst.snr_db
+                ));
+            }
+        }
+
+        // Host output (digipeaters have no host port).
+        let mut said = Vec::new();
+        for i in 0..n {
+            let out = self.stations[i].take_output();
+            if let Some(port) = &self.ports[i] {
+                for o in &out {
+                    match o {
+                        HostOut::Line(l) => port.send_line(l),
+                        HostOut::Data(d) => port.send_data(d),
+                    }
+                }
+            }
+            said.extend(out.into_iter().map(|o| (i, o)));
+        }
+
+        self.t += STEP as u64;
+        self.stats.lock().unwrap().now = self.t as f64 / fs;
+        said
     }
 
     fn start_tx(&mut self, i: usize, now: f64, tx: crate::station::TxStart) {
@@ -383,6 +475,7 @@ impl Engine {
         let mut st = self.stats.lock().unwrap();
         st.airtime[i] += tx.seconds as f64;
         st.bursts[i] += 1;
+        st.codewords_by_level[h.level as usize] += h.ncw as u64;
     }
 }
 

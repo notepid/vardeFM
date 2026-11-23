@@ -317,6 +317,9 @@ mod busy_eval;
 mod detect_eval;
 
 #[cfg(test)]
+mod interference_eval;
+
+#[cfg(test)]
 mod level_eval;
 
 #[cfg(test)]
