@@ -94,7 +94,7 @@ vardefm sim-pair --cnr 18 --ppm -40 --record wavs
 | `--seed <n>` | noise seed |
 | `--digi <call>` | put a digipeater between A and B (repeat for up to 2); A and B then hear only their neighbours |
 | `--hop-margin <s>` | extra wait per digipeater on A and B (default 0.5, at most 10) |
-| `--interference <list>` | interference during every transmission, separated by colons: `spur=OFFSET_HZ@C/I_DB` (a carrier beside ours), `rfburst=PER_SECOND@MS@CNR_DB` (bursts of RF noise), `tone=HZ@DBFS` (an audio tone), `pop=PER_SECOND@MS@DBFS` (bursts of audio noise). Example: `tone=1000@-30:pop=5@2@0` |
+| `--interference <list>` | interference, separated by colons; at RF it is there during transmissions, in the audio each station hears its own all the time: `spur=OFFSET_HZ@C/I_DB` (a carrier beside ours), `rfburst=PER_SECOND@MS@CNR_DB` (bursts of RF noise), `tone=HZ@DBFS` (an audio tone), `pop=PER_SECOND@MS@DBFS` (bursts of audio noise). Example: `tone=1000@-30:pop=5@2@0` |
 | `--max-level <0-6>` | highest speed level either station sends or asks for |
 
 It prints one line per transmission and per reception:

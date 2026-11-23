@@ -270,7 +270,7 @@ enum Cmd {
         /// Extra seconds A and B wait per digipeater (0 to 10)
         #[arg(long, default_value_t = 0.5)]
         hop_margin: f64,
-        /// Interference during every transmission, separated by colons: spur=OFFSET_HZ@C/I_DB,
+        /// Interference, separated by colons (RF: during transmissions; audio: all the time): spur=OFFSET_HZ@C/I_DB,
         /// rfburst=PER_SECOND@MS@CNR_DB, tone=HZ@DBFS, pop=PER_SECOND@MS@DBFS
         #[arg(long)]
         interference: Option<String>,

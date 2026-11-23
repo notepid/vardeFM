@@ -22,7 +22,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use vardefm_link::LinkConfig;
 use vardefm_modem::{Modem, OfdmParams, LEVELS, MAX_DIGIS};
-use vardefm_sim::{transmit, FmChannelConfig, Interferer};
+use vardefm_sim::{transmit, AudioInterference, FmChannelConfig, Interferer};
 
 /// Audio step: 10 ms.
 const STEP: usize = 480;
@@ -55,8 +55,9 @@ pub struct SimPairConfig {
     pub digis: Vec<String>,
     /// Extra wait per digipeater hop on A's and B's routed sessions.
     pub hop_margin_s: f64,
-    /// Interference on every hop, besides the noise of `cnr_db`. It reaches a
-    /// receiver only during a transmission (see `vardefm_sim::interference`).
+    /// Interference besides the noise of `cnr_db` (see `vardefm_sim::interference`).
+    /// RF interference is on every hop, during transmissions only. Audio interference
+    /// is at every station all the time, each station with its own.
     pub interference: Vec<Interferer>,
     /// Highest speed level any station sends or asks for.
     pub max_level: u8,
@@ -241,6 +242,8 @@ struct Engine {
     /// Host ports of A and B; digipeaters have none.
     ports: Vec<Option<HostPort>>,
     channel: FmChannelConfig,
+    /// Each station's audio interference.
+    audio: Vec<AudioInterference>,
     /// Audio on its way to each station: (start sample, samples).
     incoming: Vec<Vec<(u64, Vec<f32>)>>,
     /// Sample index at which each station's transmission ends.
@@ -257,8 +260,14 @@ impl Engine {
     /// The stations of `cfg`, all with `modem`; `ports` are the host ports of A and B.
     fn new(cfg: SimPairConfig, modem: Modem, ports: Option<[HostPort; 2]>) -> Self {
         let channel = FmChannelConfig::by_name(&cfg.mode).unwrap();
+        let channel_fs = channel.fs;
         let modem = Arc::new(modem);
-        let link = LinkConfig { hop_margin_s: cfg.hop_margin_s, max_level: cfg.max_level, ..LinkConfig::default() };
+        let link = LinkConfig {
+            hop_margin_s: cfg.hop_margin_s,
+            max_level: cfg.max_level,
+            start_level: LinkConfig::default().start_level.min(cfg.max_level),
+            ..LinkConfig::default()
+        };
         let count = cfg.digis.len() + 2;
         let seed = cfg.seed as u32 * 2;
         let mut stations = vec![Station::new("A", modem.clone(), link.clone(), seed + 1)];
@@ -287,9 +296,13 @@ impl Engine {
                 clock_offset_ppm: cfg.ppm,
                 keyup_delay_s: cfg.keyup_s,
                 lead_silence_s: 0.0,
-                interference: cfg.interference.clone(),
+                // The audio interference is each station's own, in `audio`.
+                interference: cfg.interference.iter().filter(|i| !i.is_audio()).cloned().collect(),
                 ..channel
             },
+            audio: (0..count)
+                .map(|i| AudioInterference::new(&cfg.interference, channel_fs, (cfg.seed << 8) | i as u64))
+                .collect(),
             incoming: vec![Vec::new(); count],
             tx_end: vec![None; count],
             t: 0,
@@ -384,6 +397,7 @@ impl Engine {
                 }
             }
             self.incoming[i].retain(|(s, audio)| s + audio.len() as u64 > b);
+            self.audio[i].add(&mut chunk);
             for burst in self.stations[i].rx_audio(now, &chunk) {
                 let h = burst.header;
                 let ok = burst.payload.iter().filter(|p| p.is_some()).count();

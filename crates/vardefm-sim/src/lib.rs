@@ -16,7 +16,7 @@ use vardefm_dsp::filter::{design_lowpass_fir, fir_complex, resample_cubic, Chain
 pub mod interference;
 pub mod spectrum;
 
-pub use interference::{parse_interference, Interferer};
+pub use interference::{parse_interference, AudioInterference, Interferer};
 
 #[derive(Clone, Debug)]
 pub struct FmChannelConfig {

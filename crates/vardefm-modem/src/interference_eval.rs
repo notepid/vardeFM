@@ -46,8 +46,11 @@ fn default_scenarios(p: &OfdmParams) -> Vec<String> {
     out.push(format!("tone={on_pilot}@-30"));
     out.extend([30, 20, 10].map(|db| format!("spur={on_data}@{db}")));
     for kind in ["pop", "rfburst"] {
-        // An RF burst 10 dB above the carrier; a pop at full scale, which within the
-        // modem's band is about as strong as the signal.
+        // An RF burst 10 dB above the carrier. A pop at full scale RMS (clipped at
+        // full scale, like all audio under audio interference): by the share of the
+        // sample rate that the carriers span, about as strong as the signal within
+        // narrow mode's band and up to some 4 dB stronger within wide mode's. That
+        // is an estimate from the bandwidths, not a measurement.
         let level = if kind == "pop" { 0 } else { -10 };
         out.extend([(1, 2), (5, 2), (1, 20), (5, 20)].map(|(rate, ms)| format!("{kind}={rate}@{ms}@{level}")));
     }
@@ -115,14 +118,19 @@ fn trial(m: &Arc<Modem>, channel: &FmChannelConfig, cnr: f32, level: u8, ncw: us
     }
 }
 
-/// `trials` trials of full-length bursts at `level` on the mode's own channel with
-/// the interference of `spec`.
-fn point(m: &Arc<Modem>, mode: &str, spec: &str, cnr: f32, level: u8, trials: u32) -> Tally {
+/// A scenario: its spec, for output, and the channel with its interference.
+type Scenario = (String, FmChannelConfig);
+
+/// The mode's own channel with the interference of `spec`.
+fn channel_with(mode: &str, spec: &str) -> Result<FmChannelConfig, String> {
     let base = FmChannelConfig::by_name(mode).unwrap();
-    let interference = parse_interference(spec, base.fs).unwrap_or_else(|e| panic!("INTERFERENCE: {e}"));
-    let channel = FmChannelConfig { interference, ..base };
+    Ok(FmChannelConfig { interference: parse_interference(spec, base.fs)?, ..base })
+}
+
+/// `trials` trials of full-length bursts at `level` on `channel`.
+fn point(m: &Arc<Modem>, channel: &FmChannelConfig, cnr: f32, level: u8, trials: u32) -> Tally {
     let ncw = m.max_ncw(level);
-    on_every_core(trials, |t| trial(m, &channel, cnr, level, ncw, t)).into_iter().fold(Tally::default(), Tally::add)
+    on_every_core(trials, |t| trial(m, channel, cnr, level, ncw, t)).into_iter().fold(Tally::default(), Tally::add)
 }
 
 #[test]
@@ -134,10 +142,19 @@ fn interference_sweep() {
     let trials: u32 = env_or("TRIALS", 40);
     let cnr: f32 = env_or("CNR", 30.0);
     let given: Option<Vec<String>> = std::env::var("INTERFERENCE").ok().map(|_| env_list("INTERFERENCE", ""));
-    for mode in &modes {
-        let m = modem(mode);
-        let scenarios = given.clone().unwrap_or_else(|| default_scenarios(&m.ofdm.p));
-        let width = scenarios.iter().map(|s| s.len()).max().unwrap_or(0).max(8);
+    // Every scenario is checked before anything runs.
+    let plan: Vec<(&String, Arc<Modem>, Vec<Scenario>)> = modes
+        .iter()
+        .map(|mode| {
+            let m = modem(mode);
+            let specs = given.clone().unwrap_or_else(|| default_scenarios(&m.ofdm.p));
+            let channel = |s: &String| channel_with(mode, s).unwrap_or_else(|e| panic!("INTERFERENCE: {e}"));
+            let scenarios = specs.iter().map(|s| (s.clone(), channel(s))).collect();
+            (mode, m, scenarios)
+        })
+        .collect();
+    for (mode, m, scenarios) in &plan {
+        let width = scenarios.iter().map(|(s, _)| s.len()).max().unwrap_or(0).max(8);
         println!("\n{mode}, CNR {cnr} dB, {trials} full-length bursts per point.");
         println!("Per level: codewords lost % (lost bursts included) / bursts lost % / reported SNR dB");
         print!("{:<width$}", "scenario");
@@ -145,10 +162,10 @@ fn interference_sweep() {
             print!(" | {:^16}", format!("L{l} x{}", m.max_ncw(l)));
         }
         println!();
-        for spec in &scenarios {
+        for (spec, channel) in scenarios {
             print!("{:<width$}", if spec.is_empty() { "none" } else { spec });
             for &l in &levels {
-                let t = point(&m, mode, spec, cnr, l, trials);
+                let t = point(m, channel, cnr, l, trials);
                 print!(" | {:5.1} {:4.0} {:5.1}", t.cer(), t.lost(), t.snr());
             }
             println!();
@@ -161,10 +178,11 @@ fn interference_sweep() {
 #[test]
 fn harness_loses_codewords_to_heavy_interference_only() {
     let m = modem("narrow");
-    let clean = point(&m, "narrow", "", 30.0, 4, 3);
+    let on = |spec: &str| channel_with("narrow", spec).unwrap();
+    let clean = point(&m, &on(""), 30.0, 4, 3);
     assert_eq!((clean.bursts, clean.lost, clean.failed), (3, 0, 0));
     assert!(clean.codewords == 3 * m.max_ncw(4) as u32 && clean.snr() > 15.0, "SNR {}", clean.snr());
-    let heavy = point(&m, "narrow", "rfburst=20@20@-20", 30.0, 4, 3);
+    let heavy = point(&m, &on("rfburst=20@20@-20"), 30.0, 4, 3);
     assert!(heavy.failed > 0, "nothing lost under RF bursts for 40 % of the time");
 }
 
