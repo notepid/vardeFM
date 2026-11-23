@@ -271,7 +271,7 @@ enum Cmd {
         #[arg(long, default_value_t = 0.5)]
         hop_margin: f64,
         /// Interference, separated by colons (RF: during transmissions; audio: all the time): spur=OFFSET_HZ@C/I_DB,
-        /// rfburst=PER_SECOND@MS@CNR_DB, tone=HZ@DBFS, pop=PER_SECOND@MS@DBFS
+        /// rfburst=PER_SECOND@MS@CNR_DB, tone=HZ@DBFS (peak), pop=PER_SECOND@MS@DBFS (RMS)
         #[arg(long)]
         interference: Option<String>,
         /// Highest speed level (0-6) either station sends or asks for
@@ -495,7 +495,7 @@ fn main() {
                 die("--txdelay must be longer than --keyup");
             }
             let digis = digi_calls(digi, vardefm_modem::MAX_DIGIS);
-            let fs = FmChannelConfig::by_name(&mode).unwrap_or_else(|| die("unknown mode")).fs;
+            let fs = FmChannelConfig::by_name(&mode).unwrap_or_else(|| die("mode must be narrow or wide")).fs;
             let interference = vardefm_sim::parse_interference(interference.as_deref().unwrap_or(""), fs)
                 .unwrap_or_else(|e| die(&format!("--interference: {e}")));
             let cfg = SimPairConfig {

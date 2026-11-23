@@ -183,7 +183,7 @@ fn harness_loses_codewords_to_heavy_interference_only() {
     assert_eq!((clean.bursts, clean.lost, clean.failed), (3, 0, 0));
     assert!(clean.codewords == 3 * m.max_ncw(4) as u32 && clean.snr() > 15.0, "SNR {}", clean.snr());
     let heavy = point(&m, &on("rfburst=20@20@-20"), 30.0, 4, 3);
-    assert!(heavy.failed > 0, "nothing lost under RF bursts for 40 % of the time");
+    assert!(heavy.failed > 0, "nothing lost under RF bursts for a third of the time");
 }
 
 #[test]

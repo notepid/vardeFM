@@ -115,6 +115,7 @@ impl SimPair {
             HostPort::bind(&cfg.host, cfg.b_port, data_port(cfg.b_port))?,
         ];
         let addrs = [(ports[0].cmd_addr, ports[0].data_addr), (ports[1].cmd_addr, ports[1].data_addr)];
+        make_record_dir(&cfg)?;
         let modem = Modem::new(params, cfg.txdelay_s);
         let engine = Engine::new(cfg, modem, Some(ports));
         let (stats, stop) = (engine.stats.clone(), engine.stop.clone());
@@ -163,6 +164,7 @@ pub struct Headless {
 impl Headless {
     pub fn new(cfg: SimPairConfig) -> io::Result<Self> {
         let mut modem = Modem::new(prepare(&cfg)?, cfg.txdelay_s);
+        make_record_dir(&cfg)?;
         // Measurements run many simulations side by side; the thread count does not
         // change what decodes.
         modem.decode_threads = 1;
@@ -201,7 +203,7 @@ impl Headless {
     }
 }
 
-/// Checks `cfg` and makes its recording folder. Returns the mode's waveform.
+/// Checks `cfg`. Returns the mode's waveform.
 fn prepare(cfg: &SimPairConfig) -> io::Result<OfdmParams> {
     let params = OfdmParams::by_name(&cfg.mode)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "mode must be narrow or wide"))?;
@@ -230,10 +232,15 @@ fn prepare(cfg: &SimPairConfig) -> io::Result<OfdmParams> {
     if let Some(e) = cfg.interference.iter().find_map(|i| i.check(fs).err()) {
         return invalid(&format!("interference: {e}"));
     }
-    if let Some(dir) = &cfg.record {
-        std::fs::create_dir_all(dir)?;
-    }
     Ok(params)
+}
+
+/// Makes the folder `cfg` records to, if it records.
+fn make_record_dir(cfg: &SimPairConfig) -> io::Result<()> {
+    match &cfg.record {
+        Some(dir) => std::fs::create_dir_all(dir),
+        None => Ok(()),
+    }
 }
 
 struct Engine {

@@ -92,6 +92,10 @@ impl Interferer {
                 finite("the level", level)?;
                 positive("the rate", rate_hz)?;
                 positive("the duration", duration_s)?;
+                // One event per sample is already continuous noise; more only costs time.
+                if rate_hz > fs {
+                    return Err(format!("the rate must be at most {fs} per second"));
+                }
             }
         }
         Ok(())
@@ -444,6 +448,7 @@ mod tests {
             "pop=1@2@3@4",
             "rfburst=5@0@-10",
             "rfburst=5@2",
+            "pop=1e9@1@0",
             "hum=50@-20",
         ] {
             assert!(parse_interference(bad, 48e3).is_err(), "{bad} parsed");
