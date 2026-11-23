@@ -110,6 +110,11 @@ and saves a round of review.
 4. Note in the PR what the review found, and what you dismissed and why.
 5. Mark the PR ready for review.
 
+CI runs the tests, the C ABI checks and the release builds on every push. The Miri run
+of the C ABI takes about 11 minutes, so it waits until the PR is ready for review, then
+runs again on each push that reaches the C ABI. A new push cancels the run still going
+for the push before it.
+
 The PR description follows the [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
 GitHub fills it in when you open a PR on the website. A PR opened with a ready-made
 description, for example with `gh pr create --body` or by an agent, does not get it

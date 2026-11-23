@@ -3,14 +3,26 @@ name: CI
 on:
   push:
     branches: [master]
+  # ready_for_review starts Miri when a draft is marked ready (see the changes job).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Weekly Miri run on master (see the miri job); the other jobs skip it.
+  schedule:
+    - cron: '41 3 * * 1'
 
 permissions:
   contents: read
 
+# A new push to a pull request cancels the run for the push before it. Every other
+# run gets a group of its own, so no master run is cancelled or dropped from the queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +52,7 @@ jobs:
 
   deny:
     name: cargo-deny (${{ matrix.checks }})
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -59,6 +72,7 @@ jobs:
   # on a macOS runner, so they only run for a release (build.yml).
   ffi:
     name: C ABI
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -94,10 +108,14 @@ jobs:
   # Whether this change can reach the code Miri tests: the workspace crates in
   # vardefm-ffi's dependency tree (read from cargo tree, so a new dependency is
   # picked up), Cargo.toml, Cargo.lock, the toolchain and cargo config, and this
-  # workflow. Runs Miri when unsure: no base to compare with (a force push to
-  # master, or another trigger), or a base missing from the clone.
+  # workflow. Runs Miri when unsure: no base to compare with, or a base missing
+  # from the clone.
+  # Pull requests that are ready for review only. Master takes changes only through
+  # pull requests, which ran Miri already, so the push after a merge skips this job
+  # and Miri with it. A draft skips it too; marking the PR ready runs it.
   changes:
     name: Changed paths
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     outputs:
       miri: ${{ steps.filter.outputs.miri }}
@@ -107,8 +125,8 @@ jobs:
           fetch-depth: 0
       - id: filter
         env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           run_miri() { echo "$1; running Miri."; echo "miri=true" >> "$GITHUB_OUTPUT"; exit 0; }
           if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
@@ -130,10 +148,14 @@ jobs:
 
   # Undefined behaviour at the C ABI (docs/EMBEDDING.md). The nightly is pinned so
   # that a new Miri cannot fail a build that changed nothing.
+  # Runs on a pull request when the changes job says so, and weekly on master. The
+  # weekly run checks what was merged since, and saves the Miri cache on master,
+  # where pull requests can restore it. !cancelled() lets it run on the schedule,
+  # when the changes job is skipped.
   miri:
     name: Miri (C ABI)
     needs: changes
-    if: needs.changes.outputs.miri == 'true'
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || needs.changes.outputs.miri == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -151,6 +173,7 @@ jobs:
 
   snapshot:
     name: Build all release targets
+    if: github.event_name != 'schedule'
     uses: ./.github/workflows/build.yml
     with:
       version: snapshot-${{ github.run_number }}
