@@ -94,10 +94,13 @@ jobs:
   # Whether this change can reach the code Miri tests: the workspace crates in
   # vardefm-ffi's dependency tree (read from cargo tree, so a new dependency is
   # picked up), Cargo.toml, Cargo.lock, the toolchain and cargo config, and this
-  # workflow. Runs Miri when unsure: no base to compare with (a force push to
-  # master, or another trigger), or a base missing from the clone.
+  # workflow. Runs Miri when unsure: no base to compare with, or a base missing
+  # from the clone.
+  # Pull requests only: master takes changes only through pull requests, which ran
+  # Miri already, so the push after a merge skips this job and Miri with it.
   changes:
     name: Changed paths
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       miri: ${{ steps.filter.outputs.miri }}
@@ -107,8 +110,8 @@ jobs:
           fetch-depth: 0
       - id: filter
         env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           run_miri() { echo "$1; running Miri."; echo "miri=true" >> "$GITHUB_OUTPUT"; exit 0; }
           if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
