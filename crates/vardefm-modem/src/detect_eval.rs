@@ -336,8 +336,13 @@ fn trial(link: &Link, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> 
 }
 
 /// Within this many dB of the best header SNR, a timing counts as among the best in
-/// [`best_timing`].
-const BEST_TIMING_MARGIN_DB: f32 = 0.5;
+/// [`best_timing`]. The noiseless SNR has a broad top that rises slowly towards its
+/// late edge and then falls off fast, so a narrow margin picks the late end of the
+/// top, a few samples before the cliff: in narrow mode 0.5 dB put the true position
+/// 16-32 samples before where noisy bursts stop decoding. 3 dB spans the top, and its
+/// middle lies near the middle of the timings that decode near the knee
+/// (`true_position_has_room_both_sides`).
+const BEST_TIMING_MARGIN_DB: f32 = 3.0;
 
 /// Noiseless copies, each with its own payload, that [`best_timing`] averages over.
 /// Where the link clips, the error depends on the payload; the average smooths it.
@@ -354,8 +359,10 @@ fn header_error(m: &Modem, rx: &[f32], b: usize, known: &[Vec<Complex32>]) -> Op
 
 /// The timing at which `m` demodulates the header `h` of the bursts in `rxs` cleanest,
 /// over all of them, searched within a cyclic prefix either side of `nominal`: the
-/// middle of the timings within [`BEST_TIMING_MARGIN_DB`] of the best. `None` if
-/// none demodulates.
+/// middle of the run of timings around the best that are all within
+/// [`BEST_TIMING_MARGIN_DB`] of it. Only that run counts, not a timing elsewhere that
+/// happens to come as close (on a clipping link one can, at the edge of the search).
+/// `None` if none demodulates.
 fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Option<usize> {
     let ncp = m.ofdm.p.ncp;
     let known = m.header_carriers(h);
@@ -370,9 +377,12 @@ fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Optio
             Some((b, 10.0 * (sig / f32::max(err, f32::MIN_POSITIVE)).log10()))
         })
         .collect();
-    let best = snr.iter().map(|s| s.1).fold(f32::NEG_INFINITY, f32::max);
-    let near: Vec<usize> = snr.iter().filter(|s| s.1 >= best - BEST_TIMING_MARGIN_DB).map(|s| s.0).collect();
-    near.get(near.len() / 2).copied()
+    let peak = (0..snr.len()).max_by(|&a, &b| snr[a].1.total_cmp(&snr[b].1))?;
+    let floor = snr[peak].1 - BEST_TIMING_MARGIN_DB;
+    let near = |i: usize| snr[i].1 >= floor;
+    let first = (0..peak).rev().take_while(|&i| near(i)).last().unwrap_or(peak);
+    let last = (peak + 1..snr.len()).take_while(|&i| near(i)).last().unwrap_or(peak);
+    Some((snr[first].0 + snr[last].0) / 2)
 }
 
 /// Where preamble B of a `level` burst of `ncw` codewords lands after the channel,
@@ -937,6 +947,50 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
         let audio = noise_case(mode, 0, 2.0, m.fs(), 1);
         for d in Detector::ALL {
             assert_eq!(false_detections(m, d, &audio).1, 0, "{mode}: {d} decoded a header from noise");
+        }
+    }
+}
+
+/// The true position is the best place to decode from, with room on both sides: below
+/// the knee, where the timing matters, the genie decodes about as many bursts
+/// there and a quarter cyclic prefix either side as at the best of the timings within
+/// half a cyclic prefix. A true position near either edge of the timings that decode
+/// fails: with [`BEST_TIMING_MARGIN_DB`] at 0.5 dB it sat 16-32 samples before the
+/// late edge in narrow mode, and a quarter prefix later lost about a third of the
+/// bursts there (108 of 400 against 159 at best).
+#[test]
+fn true_position_has_room_both_sides() {
+    const TRIALS: u32 = 400;
+    // 6 %: about two standard deviations of a count, plus what taking the best of nine
+    // noisy counts adds to the best.
+    const SLACK: usize = 24;
+    for (mode, chan, cnr) in [("narrow", "matched", 4.0), ("wide", "rx-de-only", 6.0)] {
+        let link = Link::new(mode, chan, 0.0);
+        let m = &*link.rx;
+        let ncp = m.ofdm.p.ncp as isize;
+        let (truth, _) = link_position(&link, 1, 1).unwrap();
+        let offsets: Vec<isize> = (-4..=4).map(|k| k * ncp / 8).collect();
+        let res = on_every_core(TRIALS, |t| {
+            let sent = burst(1, 1, payload_seed(t));
+            let rx = transmit(&link.trial_channel(cnr, t), &link.tx.modulate(&sent));
+            let decodes = |o: isize| {
+                let b = (truth as isize + o) as usize;
+                header_at(m, &rx, b).is_some_and(|h| burst_ok(m, &rx, b, &h, &sent))
+            };
+            offsets.iter().map(|&o| decodes(o)).collect::<Vec<bool>>()
+        });
+        let count = |i: usize| res.iter().filter(|r| r[i]).count();
+        let counts: Vec<usize> = (0..offsets.len()).map(count).collect();
+        let best = *counts.iter().max().unwrap();
+        // The genie must decode here at all, or the comparison proves nothing.
+        assert!(best >= TRIALS as usize / 4, "{mode} {chan} {cnr} dB: best timing decodes {best}; pick another CNR");
+        for o in [-ncp / 4, 0, ncp / 4] {
+            let got = counts[offsets.iter().position(|&x| x == o).unwrap()];
+            assert!(
+                got + SLACK >= best,
+                "{mode} {chan} {cnr} dB: {got} decoded {o:+} samples from the true position, {best} at best; \
+                 offsets {offsets:?}, counts {counts:?}"
+            );
         }
     }
 }
