@@ -6,22 +6,32 @@ run the same minor version.
 
 ## [Unreleased]
 
+On-air compatible with 0.3.0 to 0.3.2; see the note on mixed versions under "Connecting
+to a busy frequency" below.
+
 ### Added
 - **Embeddable engine and C ABI.** `vardefm-engine` holds the station and
   `RadioEngine` without sound-card, PTT-hardware or TCP dependencies.
   `vardefm-ffi` exposes a thread-free C API (`vfm_new`, `vfm_rx_audio`,
   `vfm_advance`, `vfm_tx_played`, host lines/data, optional TX/RX reports).
   Release builds include an Apple XCFramework (device, simulator, macOS). CI runs
-  the C ABI tests under Miri. See [docs/EMBEDDING.md](docs/EMBEDDING.md).
+  the C ABI tests under Miri. See [docs/EMBEDDING.md](docs/EMBEDDING.md). (#46, thanks
+  @georges)
 - **`RadioEngine::advance`.** Advances the sample clock without feeding audio, so
-  a host that gets no RX while keyed can still reach the PTT tail and watchdog.
+  a host that gets no RX while keyed can still reach the PTT tail and watchdog. (#46)
 - **Structured burst reports.** `RadioEngine::reports` carries per-burst TX/RX
-  stats; log lines are formatted from the same values.
+  stats; log lines are formatted from the same values. (#46)
+- **Third-party notices.** Each program archive now holds `THIRD-PARTY-LICENSES.html`, the
+  licenses of the libraries built into the program. The Apple XCFramework archive does not
+  hold it yet. CI checks every dependency's license on each push. (#48)
+- **Files for Linux packagers.** `packaging/` now holds a man page, a systemd unit, a
+  desktop entry and an icon, and the README lists the community AUR packages. The
+  release archives do not include these files. (#5, thanks @9M2PJU)
 
 ### Changed
 - **License.** VardeFM is now dual licensed under MIT OR Apache-2.0, at your option, so it
-  can be embedded as a library in any application, including closed-source ones (#19). Releases up to and including
-  0.3.2 remain available under GPL-3.0-or-later.
+  can be embedded as a library in any application, including closed-source ones.
+  Releases up to and including 0.3.2 remain available under GPL-3.0-or-later. (#19, #48)
 - **`OfdmParams::detect_lowpass_hz` is now `detect_band_hz`**, a `(f32, Option<f32>)`:
   the high-pass corner and the optional low-pass corner, Hz. The high-pass cannot be
   turned off: library users who set `detect_lowpass_hz: Some(f)` now set
@@ -32,31 +42,39 @@ run the same minor version.
   users who called `ofdm.detect(rx, from)` now read `.at`. New: the `Detector` enum
   (Schmidl-Cox only so far), `Ofdm::detect_with`, and `Ofdm::with_detector` /
   `Modem::with_detector`. The receiver searches on from `resume` and no longer looks
-  back three symbols while a header is still arriving. (#37)
+  back three symbols while a header is still arriving. (#37, thanks @mustig)
 - **`Ofdm::new` now panics on a cyclic prefix longer than 4/11 (0.36) of the FFT
   length**: detection's wider search for the second preamble (#61) does not cover a
   longer one. The built-in modes use 0.125.
+- **`RadioEngine` moved to `vardefm-engine`.** `vardefm-tnc` still exports `RadioEngine`,
+  `AudioSink`, `HostIn` and the `host`, `level` and `station` modules.
+  `RadioEngine::from_config` now takes an `EngineConfig`, which
+  `RadioConfig::engine_config()` gives; `RadioEngine` no longer has a `record` field; and
+  `LEVEL_WINDOW_S` is found only in `vardefm-engine`. (#46)
+- **Simulator: `FmChannelConfig::emphasis_us` is now `tx_emphasis_us` and
+  `rx_emphasis_us`**, so a link can model radios whose responses differ, and
+  `FmChannelConfig::ctcss` adds a CTCSS tone at the modulator. Both presets keep their
+  old values. (#36, thanks @mustig)
 
 ### Fixed
-- A CTCSS tone in the received audio no longer hides bursts from detection. Detection
-  now high-passes the audio (8th order, 420 Hz narrow, 340 Hz wide) and confirms
-  preamble B on the high-passed audio. Before, a tone at the usual 750 Hz deviation hid
-  every burst for 12 of the 21 EIA tones on the wide data port, and almost every burst
-  in narrow mode on a radio whose de-emphasised audio output passes the sub-tone. In narrow mode the
-  higher corner also detects weak bursts better. The tone still corrupts demodulation at
-  the higher speed levels; that is not fixed here. (#12)
-- **Wide mode missed bursts on audio that tilts down.** Since the CTCSS fix above,
-  wide mode detected no burst on a clean signal, and missed most on a noisy one, when the
-  receiving radio de-emphasises and the sender does not pre-emphasise, or when the
-  sender's audio is tilted 6 dB/octave lower than the receiver expects. Detection
-  looked for the second preamble too close to where its filtered audio put it. It now
-  looks three times as far. In the simulator this also detects more weak bursts in
-  both modes. (#61)
+- **A CTCSS tone hid bursts.** A CTCSS tone in the received audio no longer hides bursts
+  from detection. Detection now high-passes the audio (8th order, 420 Hz narrow, 340 Hz
+  wide) and confirms preamble B on the high-passed audio. Before, a tone at the usual
+  750 Hz deviation hid every burst for 12 of the 21 EIA tones on the wide data port, and
+  almost every burst in narrow mode on a radio whose de-emphasised audio output passes the
+  sub-tone. In narrow mode the higher corner also detects weak bursts better. Detection
+  also looks for the second preamble three times as far from where the filtered audio puts
+  it: without that, the high-pass made wide mode miss bursts on audio that tilts down (a
+  receiving radio that de-emphasises with a sender that does not pre-emphasise, or a
+  sender tilted 6 dB/octave lower than the receiver expects). In the simulator the wider
+  search also detects more weak bursts in both modes. The tone still corrupts demodulation
+  at the higher speed levels; that is not fixed here (#18). (#12, #15, #61, thanks
+  @mustig)
 - **Session id clash, partly.** A caller no longer picks a session id it has heard on
   the channel in the last 10 minutes. With a shared id, a caller could take the Data of
   a session it overheard as its own answer, report CONNECTED to a station that never
   answered, and disturb that session (#27). A session the caller cannot hear can still
-  share its id.
+  share its id. (#50, thanks @mustig)
 - **Connecting to a busy frequency.** A calling station took any Data burst with its
   session id as the answer to its request. When another session on the frequency used
   the same 1-byte id (1 call in 255), the caller reported CONNECTED, received that
@@ -64,28 +82,36 @@ run the same minor version.
   naming its request. A called station that has not heard from the caller since its
   ConnectAck resends the ConnectAck, not Data, when a burst goes unanswered, so a lost
   ConnectAck no longer leaves the session half open. A called station also answers a
-  repeated ConnectReq only from its own caller. Works with 0.3.x stations, but a caller
-  of this version connecting to a 0.3.x station gives up more often on a lossy channel:
-  0.3.x does not resend its ConnectAck unless asked, and its Data no longer stands in
-  for it.
-- A session whose peer went silent stayed connected forever if the channel then stayed
-  busy (a stuck carrier, or other stations' traffic): retries, keepalives and a pending
-  disconnect all wait for a free channel, so the retry limit was never reached. The
-  same held for a connect request. The session (or connect attempt) now ends, and the
-  host gets `DISCONNECTED`, once the channel has held back a burst we want to send for
-  `LinkConfig::busy_timeout_s` (default 60 s) with none of our own bursts going out and
-  nothing heard from the peer. A short quiet gap in the carrier, or a repeat sent as a
-  digipeater, does not restart that time. A dropped session sends one Disc once the
-  channel is quiet (if that comes within the same time again), so a peer that was there
-  but could not be heard learns of it. A shorter setting is raised to a floor chosen to
-  cover an exchange with the peer through the session's digipeaters, so the peer's own
-  bursts and their repeats do not end a working session. (#32, #49)
-
-### Fixed
+  repeated ConnectReq only from its own caller. Works with 0.3.0 to 0.3.2 stations, but
+  a caller of this version connecting to one of them gives up more often on a lossy
+  channel: they do not resend their ConnectAck unless asked, and their Data no longer
+  stands in for it. (#51, thanks @mustig)
+- **A busy channel kept a dead session open.** A session whose peer went silent stayed
+  connected forever if the channel then stayed busy (a stuck carrier, or other stations'
+  traffic): retries, keepalives and a pending disconnect all wait for a free channel, so
+  the retry limit was never reached. The same held for a connect request. The session (or
+  connect attempt) now ends, and the host gets `DISCONNECTED`, once the channel has held
+  back a burst we want to send for `LinkConfig::busy_timeout_s` (default 60 s) with none
+  of our own bursts going out and nothing heard from the peer. A short quiet gap in the
+  carrier, or a repeat sent as a digipeater, does not restart that time. A dropped session
+  sends one Disc once the channel is quiet (if that comes within the same time again), so
+  a peer that was there but could not be heard learns of it. A shorter setting is raised
+  to a floor chosen to cover an exchange with the peer through the session's digipeaters,
+  so the peer's own bursts and their repeats do not end a working session. (#32, #49,
+  thanks @mustig)
+- **Colliding retries on a direct session.** Two stations talking directly could drop
+  their session when both started a burst at the same moment. Both then retried after
+  the same wait, within 0.4 s of each other, and a retry did not give way to a busy
+  channel, so every retry collided. A retry now gives way, as it already did through
+  digipeaters, and answers the other end's burst instead. In the simulator this dropped
+  1 run in 4 with both ends sending at once. (#35, thanks @mustig)
+- **Duplicate `BUFFER` report.** A host write that changed the buffer length gave two
+  `BUFFER` lines, the second with nothing new. It now gives one. (#41, thanks @mustig)
 - **PTT on SIGTERM.** On Linux and macOS, `modem`, `tone`, `ptt-test` and `monitor` now
   stop cleanly on SIGTERM (`systemctl stop`, `kill`, system shutdown) as they do on
   Ctrl-C, and release PTT. Before, a stop during a transmission could leave the radio
-  keyed (#55).
+  keyed. SIGHUP is left alone, so a modem started with `nohup` keeps running. (#55,
+  #56)
 
 ## [0.3.2] - 2026-11-16
 
@@ -143,11 +169,6 @@ end stations and the digipeaters of a routed session should all run 0.3.2.
   at a faster level, the receiver acknowledged the longer copy but kept the shorter one,
   so the sender never sent the difference again. Only the receiving side changes: a
   station with this fix receives correctly from any version. (#29, thanks @mustig)
-- Two stations talking directly could drop their session when both started a burst at
-  the same moment. Both then retried after the same wait, within 0.4 s of each other,
-  and a retry did not give way to a busy channel, so every retry collided. A retry now
-  gives way, as it already did through digipeaters, and answers the other end's burst
-  instead. In the simulator this dropped 1 run in 4 with both ends sending at once.
 
 ## [0.3.1] - 2026-11-09
 

@@ -1,0 +1,17 @@
+# The actions in the workflows are pinned to a commit, so a moved tag cannot change
+# what a build runs. Dependabot proposes the updates once a month.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # Skip releases younger than a week: a hijacked release is usually found sooner.
+    cooldown:
+      default-days: 7
+    # Minor and patch updates share one pull request. A new major version gets its
+    # own: CI does not run release.yml, so read its release notes before merging.
+    groups:
+      actions:
+        patterns: ['*']
+        update-types: [minor, patch]
