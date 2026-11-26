@@ -9,13 +9,21 @@
 //! Each speed level is measured with its longest burst, twice:
 //! - clean: a strong signal, where every codeword decodes in a few iterations;
 //! - worst case: the payload is noise, so every codeword runs the decoder's
-//!   full iteration count and fails.
+//!   full iteration count and fails. A burst where a few codewords decode and the
+//!   rest fail costs more: the receiver decodes the failed ones again, up to
+//!   [`Modem::decode_passes`] times in all (at 16QAM and 64QAM). Such a burst
+//!   cannot be made from audio on demand, so the worst case adds to the measured
+//!   delay of the noise payload its failing decodes (that delay less the clean one)
+//!   once per later pass. That is an estimate: a later pass decodes only the
+//!   codewords still failing, at least one fewer, but on several threads one fewer
+//!   often takes as many rounds; and it demaps the payload again, which costs little
+//!   next to failing decodes and is not counted.
 
 use std::sync::Arc;
 use std::time::Instant;
 use vardefm_dsp::prng::Prng;
 use vardefm_link::LinkConfig;
-use vardefm_modem::{Burst, Header, Kind, Modem, OfdmParams, Receiver, LEVELS};
+use vardefm_modem::{Burst, Header, Kind, Modem, OfdmParams, Receiver, LEVELS, MAX_PASSES};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 const CHUNK: usize = 480; // 10 ms, as the sound card delivers it
@@ -100,6 +108,10 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
          may come too late.",
         link.turnaround_s, link.response_timeout_s
     );
+    println!(
+        "Worst case = a payload that fails to decode. At 16QAM and 64QAM its decoding is counted up to \
+         {MAX_PASSES} times (an estimate): when some codewords of a burst decode, the receiver decodes the failed ones again."
+    );
 
     for &mode in modes {
         let params = OfdmParams::by_name(mode).ok_or("mode must be narrow, wide or both")?;
@@ -130,9 +142,20 @@ pub fn bench(modes: &[&str], threads: Option<usize>) -> Result<(), String> {
             for x in &mut bad[hdr_end..] {
                 *x = noise(&mut rng, 0.3);
             }
-            let worst = run(&modem, &on_air(mode, &bad));
-
+            let bad_air = on_air(mode, &bad);
+            let mut worst = run(&modem, &bad_air);
+            // A mixed burst decodes its failed codewords up to decode_passes times.
+            // The failing decodes cost about the worst delay less the clean one (which
+            // holds demodulation and a few-iteration decode); the later passes repeat
+            // that part. A later pass decodes at least one codeword fewer, but the
+            // threads take codewords in rounds, so it is not counted as cheaper.
             let ncw = b.payload.len();
+            let failing_s = (worst.delay - clean.delay).max(0.0);
+            let extra_s = (Modem::decode_passes(level) - 1) as f64 * failing_s;
+            worst.delay += extra_s;
+            // Over the same audio as `run`'s load.
+            worst.load += extra_s / (bad_air.len() as f64 / modem.fs() as f64);
+
             let verdict = if clean.found == 0 || worst.found == 0 {
                 "burst not found!"
             } else if clean.decoded < ncw {
