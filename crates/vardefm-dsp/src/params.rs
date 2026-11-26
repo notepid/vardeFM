@@ -13,7 +13,9 @@ pub struct OfdmParams {
     /// Every n-th carrier is a pilot (the last carrier is always a pilot too).
     pub pilot_spacing: usize,
     /// Spectral tilt applied at TX, in dB per octave above the lowest carrier.
-    /// Negative values pre-compensate for the radio's pre-emphasis.
+    /// Negative values pre-compensate for the radio's pre-emphasis. The receiver's
+    /// matched filter expects preambles with this tilt, so both ends must agree on it:
+    /// it is part of the mode, not a per-station setting.
     pub tilt_db_per_octave: f32,
     /// Reference output RMS level (1.0 = full scale; peaks are clipped at full scale).
     /// Used when the caller does not choose a level, e.g. the `sim` and `tx-wav` tools.
@@ -29,6 +31,7 @@ pub struct OfdmParams {
     /// Band the received audio is filtered to before searching for preamble A: an
     /// 8th-order high-pass at the first frequency (Hz) and, if given, a 4th-order
     /// low-pass at the second. Preamble B is confirmed on the high-passed audio.
+    /// Only the Schmidl-Cox search uses this band; the matched filter does not.
     ///
     /// The high-pass attenuates CTCSS tones (67.0-254.1 Hz). A tone adds all its power
     /// to the Schmidl-Cox metric's energy term but only part of it, or a negative
