@@ -185,13 +185,10 @@ fn burst_ok(m: &Modem, rx: &[f32], b: usize, h: &Header, sent: &Burst) -> bool {
 
 /// Whether the streaming `Receiver` on `m` makes `sent` of recording `rx`: its
 /// first burst has the header sent and every codeword decoded as sent. The audio
-/// comes in 10 ms chunks, as a sound card delivers it, then a second of silence so
-/// that a burst at the very end completes.
+/// comes as [`crate::tests::receive`] feeds it: in 10 ms chunks, then a second of
+/// silence so that a burst at the very end completes.
 fn received_ok(m: &Arc<Modem>, rx: &[f32], sent: &Burst) -> bool {
-    let mut receiver = Receiver::new(m.clone());
-    let chunk = (m.fs() / 100.0) as usize;
-    let mut got: Vec<RxBurst> = rx.chunks(chunk).flat_map(|c| receiver.push(c)).collect();
-    got.extend(receiver.push(&vec![0.0; m.fs() as usize]));
+    let got = crate::tests::receive(&mut Receiver::new(m.clone()), rx);
     got.first().is_some_and(|g| {
         g.header == sent.header && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
     })
@@ -404,25 +401,39 @@ fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Optio
 /// in wide mode pre-emphasis without de-emphasis plus +6 dB/octave clips the burst.
 fn link_position(link: &Link, level: u8, ncw: usize) -> Result<(usize, Vec<Option<usize>>), String> {
     let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
+    let (truth, rx) = noiseless_position(&link.tx, &link.rx, &clean, level, ncw)?;
+    let found = Detector::ALL.iter().map(|&d| link.rx.ofdm.detect_with(d, &rx, 0).at).collect();
+    Ok((truth, found))
+}
+
+/// The true position of a `level` burst of `ncw` codewords that `tx` sends over the
+/// noiseless channel `clean` and `rx` receives, as [`link_position`] defines it, and
+/// the first noiseless copy. `Err` when the link cannot be measured.
+fn noiseless_position(
+    tx: &Modem,
+    rx: &Modem,
+    clean: &FmChannelConfig,
+    level: u8,
+    ncw: usize,
+) -> Result<(usize, Vec<f32>), String> {
+    assert_eq!(clean.cnr_db, None, "the true position is measured without noise");
     let sent: Vec<Burst> = (0..BEST_TIMING_COPIES).map(|t| burst(level, ncw, payload_seed(t))).collect();
-    let rxs: Vec<Vec<f32>> = sent.iter().map(|b| transmit(&clean, &link.tx.modulate(b))).collect();
-    let m = &*link.rx;
-    let ofdm = &m.ofdm;
+    let mut rxs: Vec<Vec<f32>> = sent.iter().map(|b| transmit(clean, &tx.modulate(b))).collect();
+    let ofdm = &rx.ofdm;
     let lead = (clean.lead_silence_s * clean.fs) as usize;
-    let nominal = lead + (link.tx.leader_symbols() + 1) * ofdm.p.symbol_len() + ofdm.p.ncp;
-    let Some(truth) = best_timing(m, &rxs, nominal, &sent[0].header) else {
+    let nominal = lead + (tx.leader_symbols() + 1) * ofdm.p.symbol_len() + ofdm.p.ncp;
+    let Some(truth) = best_timing(rx, &rxs, nominal, &sent[0].header) else {
         return Err("the noiseless burst does not demodulate near where it was sent".into());
     };
     let decoded = sent
         .iter()
         .zip(&rxs)
-        .filter(|(b, rx)| header_at(m, rx, truth).is_some_and(|h| burst_ok(m, rx, truth, &h, b)))
+        .filter(|(b, a)| header_at(rx, a, truth).is_some_and(|h| burst_ok(rx, a, truth, &h, b)))
         .count();
     if decoded < sent.len() {
         return Err(format!("the genie decodes {decoded} of {} noiseless bursts at the best timing", sent.len()));
     }
-    let found = Detector::ALL.iter().map(|&d| ofdm.detect_with(d, &rxs[0], 0).at).collect();
-    Ok((truth, found))
+    Ok((truth, rxs.swap_remove(0)))
 }
 
 /// What [`link_position`]'s detections say about each detector: a line for each one
@@ -645,14 +656,9 @@ fn noise_seeds(seed: u32, case: usize, mode_index: usize) -> (u64, u32) {
 fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw: usize, trials: u32) {
     let base = ctcss_channel(&FmChannelConfig::by_name(mode).unwrap(), case);
     let clean = FmChannelConfig { cnr_db: None, ..base.clone() };
-    // The true position as in `link_position`: the best header timing over noiseless
-    // copies, which no detector defines.
-    let copies: Vec<Burst> = (0..BEST_TIMING_COPIES).map(|t| burst(level, ncw, payload_seed(t))).collect();
-    let rxs: Vec<Vec<f32>> = copies.iter().map(|b| transmit(&clean, &m.modulate(b))).collect();
-    let lead = (clean.lead_silence_s * clean.fs) as usize;
-    let nominal = lead + (m.leader_symbols() + 1) * m.ofdm.p.symbol_len() + m.ofdm.p.ncp;
-    let truth = best_timing(m, &rxs, nominal, &copies[0].header)
-        .unwrap_or_else(|| panic!("{mode}, {}: the noiseless burst does not demodulate", case.name));
+    // The true position as in `link_position`, which no detector defines.
+    let (truth, _) =
+        noiseless_position(m, m, &clean, level, ncw).unwrap_or_else(|e| panic!("{mode}, {}: {e}", case.name));
     // A receiver per detector, as in the main sweep.
     let receivers: Vec<Arc<Modem>> = Detector::ALL.iter().map(|&d| eval_modem(mode, 0.0, d)).collect();
     let names: Vec<&str> = Detector::ALL.iter().map(|d| d.name()).chain(["genie"]).collect();
