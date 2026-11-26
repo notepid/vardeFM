@@ -66,6 +66,17 @@ to a busy frequency" below.
   `rx_emphasis_us`**, so a link can model radios whose responses differ, and
   `FmChannelConfig::ctcss` adds a CTCSS tone at the modulator. Both presets keep their
   old values. (#36, thanks @mustig)
+- **Headers decode about 1.7 dB lower.** The receiver estimated the channel for the
+  header from preamble B alone, one symbol, and the header limited level 0 in both
+  modes. The header's estimate is now a low-order fit across carriers to preamble B and
+  the pilots of every header symbol, after removing the timing slope found by a coherent
+  search. In the channel simulator, 10 % of headers fail at about 2.0 dB CNR in narrow
+  mode (was 3.7) and 4.1 dB in wide mode (was 5.9), now below level 0's codewords, and
+  the error curve is much steeper. Receiver only: on-air compatible. (#14)
+- **`Ofdm::new` also panics when `ncp × pilot_spacing` is not below `nfft`**: the header
+  fit's timing search then cannot reach half a cyclic prefix of timing error without
+  meeting an alias of the pilots. The built-in modes use 768 of 1024 (narrow) and 384
+  of 512 (wide). (#14)
 
 ### Fixed
 - **A CTCSS tone hid bursts.** A CTCSS tone in the received audio no longer hides bursts
