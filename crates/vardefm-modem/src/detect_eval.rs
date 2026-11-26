@@ -447,8 +447,10 @@ fn strict_link_position(link: &Link, level: u8, ncw: usize) -> usize {
     truth
 }
 
-/// Where preamble B of a `level` burst of `ncw` codewords lands after the `mode`
-/// channel, sent and received by `m`.
+/// Where `m`'s own detector (Schmidl-Cox by default) finds preamble B of a `level`
+/// burst of `ncw` codewords on a noiseless copy from the `mode` channel. `level_eval`
+/// decodes from it. Unlike [`link_position`], which this evaluation uses, it is a
+/// detector's position, so it favours that detector.
 pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usize {
     let clean = FmChannelConfig { cnr_db: None, ..FmChannelConfig::by_name(mode).unwrap() };
     let tx = m.modulate(&burst(level, ncw, payload_seed(0)));
@@ -918,12 +920,19 @@ fn detector_eval() {
 
 #[test]
 fn noise_seeds_stay_distinct_past_32_bits() {
-    // The default seed gives the generator what it always did.
-    assert_eq!(noise_seeds(1, 3, 1), (131, 131));
-    // Seeds whose channel seed passes 2^32 no longer lose its high half.
-    let seeds: Vec<u32> = [u32::MAX, u32::MAX - 1, 42_949_673, 42_949_674]
+    // The channel seed is seed, case and mode in decimal digits, and below 2^32 the
+    // generator gets it unchanged: the fold changes only what would be cut off.
+    for (seed, case, mode) in [(1, 3, 1), (7, 0, 1), (42_949_672, 4, 1)] {
+        let (channel, generator) = noise_seeds(seed, case, mode);
+        assert_eq!(channel, u64::from(seed) * 100 + case as u64 * 10 + mode as u64);
+        assert_eq!(u64::from(generator), channel, "seed {seed} case {case} mode {mode}");
+    }
+    // Seeds whose channel seed passes 2^32 still give every case and mode its own
+    // generator seed. Cutting off the high half would not: 100 shares a factor 4 with
+    // 2^32, so seeds 2^30 apart would get the same one.
+    let seeds: Vec<u32> = [1, 1 + (1 << 30), 1 + (1 << 31), 1 + 3 * (1 << 30), 7, 7 + (1 << 30)]
         .into_iter()
-        .flat_map(|s| (0..5).map(move |c| noise_seeds(s, c, 0).1))
+        .flat_map(|s| (0..5).flat_map(move |c| (0..2).map(move |m| noise_seeds(s, c, m).1)))
         .collect();
     let mut unique = seeds.clone();
     unique.sort();
