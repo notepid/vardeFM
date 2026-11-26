@@ -396,7 +396,12 @@ fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Optio
 /// around where preamble B starts in the sent audio. On a link whose response differs
 /// from the sender's that is the best point for decoding, whatever point a detector's
 /// fine timing prefers.
-/// `Err` when the noiseless copies do not demodulate there.
+///
+/// `Err` when the link cannot be measured: the genie, decoding from that timing, does
+/// not decode every noiseless copy (header and every codeword). Without noise a link
+/// that loses a burst there loses it whatever the detector, so its rows would say
+/// nothing about detection. Strong TX tilts do that (from about ±18 dB/octave), and
+/// in wide mode pre-emphasis without de-emphasis plus +6 dB/octave clips the burst.
 fn link_position(link: &Link, level: u8, ncw: usize) -> Result<(usize, Vec<Option<usize>>), String> {
     let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
     let sent: Vec<Burst> = (0..BEST_TIMING_COPIES).map(|t| burst(level, ncw, payload_seed(t))).collect();
@@ -408,6 +413,14 @@ fn link_position(link: &Link, level: u8, ncw: usize) -> Result<(usize, Vec<Optio
     let Some(truth) = best_timing(m, &rxs, nominal, &sent[0].header) else {
         return Err("the noiseless burst does not demodulate near where it was sent".into());
     };
+    let decoded = sent
+        .iter()
+        .zip(&rxs)
+        .filter(|(b, rx)| header_at(m, rx, truth).is_some_and(|h| burst_ok(m, rx, truth, &h, b)))
+        .count();
+    if decoded < sent.len() {
+        return Err(format!("the genie decodes {decoded} of {} noiseless bursts at the best timing", sent.len()));
+    }
     let found = Detector::ALL.iter().map(|&d| ofdm.detect_with(d, &rxs[0], 0).at).collect();
     Ok((truth, found))
 }
@@ -947,6 +960,24 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
         let audio = noise_case(mode, 0, 2.0, m.fs(), 1);
         for d in Detector::ALL {
             assert_eq!(false_detections(m, d, &audio).1, 0, "{mode}: {d} decoded a header from noise");
+        }
+    }
+}
+
+/// A link the genie cannot decode without noise is refused, not measured: here a TX
+/// tilt of -18 dB/octave in wide mode, and +24 in narrow mode. The links the CI tests
+/// use pass.
+#[test]
+fn link_position_refuses_a_link_the_genie_cannot_decode() {
+    for (mode, tilt) in [("wide", -18.0), ("narrow", 24.0)] {
+        let err = link_position(&Link::new(mode, "matched", tilt), 1, 1).expect_err("measured a link nothing decodes");
+        assert!(err.contains("noiseless bursts"), "{mode} tilt {tilt}: {err}");
+    }
+    let cases = CHANNELS.iter().map(|&c| (c, 0.0)).chain([("matched", -6.0), ("matched", 6.0)]);
+    for (chan, tilt) in cases {
+        for mode in OfdmParams::all().map(|p| p.name) {
+            let r = link_position(&Link::new(mode, chan, tilt), 1, 1);
+            assert!(r.is_ok(), "{mode} {chan} tilt {tilt}: {r:?}");
         }
     }
 }
