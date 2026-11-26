@@ -21,6 +21,7 @@
 use super::*;
 use crate::detect_eval::{env_list, env_modes, env_or, modem, on_every_core, through_channel, true_position};
 use crate::level_eval::trial_burst;
+use std::sync::Arc;
 use vardefm_dsp::Estimator;
 
 /// Header decoded with estimator `est` from the burst at `b`.
@@ -54,14 +55,30 @@ fn header_estimator_eval() {
     let orders: Vec<usize> = env_list("ORDERS", "2,4");
     let mut names = vec!["smooth".to_string(), "loo".to_string()];
     names.extend(orders.iter().map(|o| format!("fit{o}")));
-    for mode in &modes {
-        let m = modem(mode);
-        let default_cnrs = if mode == "narrow" { "1.5,2,2.5,3,3.5,4,5,10,30" } else { "3.5,4,4.5,5,5.5,6,7,10,30" };
-        let cnrs: Vec<f32> = env_list("CNRS", default_cnrs);
+    // Checked for every mode up front, so that a bad value does not fail after the
+    // first mode has run, nor fill a table with failures.
+    let runs: Vec<(&str, Arc<Modem>, Vec<f32>)> = modes
+        .iter()
+        .map(|mode| {
+            let m = modem(mode);
+            let pilots = m.ofdm.pilot_idx.len();
+            for &order in &orders {
+                assert!(order < pilots, "ORDERS: {order} needs more than the {pilots} pilots of {mode} mode");
+            }
+            let default_cnrs = if mode == "narrow" { "1.5,2,2.5,3,3.5,4,5,10,30" } else { "3.5,4,4.5,5,5.5,6,7,10,30" };
+            let cnrs: Vec<f32> = env_list("CNRS", default_cnrs);
+            for &c in &cnrs {
+                assert!(c.is_finite(), "CNRS: {c} is not a finite number of dB");
+            }
+            (mode.as_str(), m, cnrs)
+        })
+        .collect();
+    for (mode, m, cnrs) in &runs {
+        let (mode, m) = (*mode, Arc::clone(m));
         let truth = true_position(&m, mode, 0, 1);
         println!("{mode}: header error rate, {trials} trials per CNR, level 0 drive");
         println!("{:>6} {}", "CNR", names.iter().map(|n| format!("{n:>8}")).collect::<String>());
-        for &cnr in &cnrs {
+        for &cnr in cnrs {
             let fails: Vec<Vec<bool>> = on_every_core(trials, |t| {
                 let sent = trial_burst(0, 1, t);
                 let rx = through_channel(&m, mode, cnr, &sent, t);

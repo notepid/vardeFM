@@ -62,6 +62,10 @@ to a busy frequency" below.
   search. In the channel simulator, 10 % of headers fail at about 2.0 dB CNR in narrow
   mode (was 3.7) and 4.1 dB in wide mode (was 5.9), now below level 0's codewords, and
   the error curve is much steeper. Receiver only: on-air compatible. (#14)
+- **`Ofdm::new` also panics when `ncp × pilot_spacing` is not below `nfft`**: the header
+  fit's timing search then cannot reach half a cyclic prefix of timing error without
+  meeting an alias of the pilots. The built-in modes use 768 of 1024 (narrow) and 384
+  of 512 (wide). (#14)
 
 ### Fixed
 - **A CTCSS tone hid bursts.** A CTCSS tone in the received audio no longer hides bursts

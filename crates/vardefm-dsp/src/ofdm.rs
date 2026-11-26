@@ -57,6 +57,8 @@ const SCALE_THRESHOLD: f32 = 2.0;
 /// on the known header in the channel simulator; 4 leaves room for band edges
 /// steeper than its 4th-order audio filters, at under 0.1 dB.
 const HEADER_FIT_ORDER: usize = 4;
+/// How [`Ofdm::demodulate_header`] estimates the channel.
+const HEADER_ESTIMATOR: Estimator = Estimator::Fit { order: HEADER_FIT_ORDER };
 /// TX low-pass cutoff relative to the top carrier frequency.
 const TX_LOWPASS_FACTOR: f32 = 1.15;
 /// Clip-and-filter passes before the final clamp.
@@ -206,7 +208,8 @@ impl PlateauPeaks {
 }
 
 impl Ofdm {
-    /// Panics if the cyclic prefix is longer than 4/11 (0.36) of the FFT length.
+    /// Panics if the cyclic prefix is longer than 4/11 (0.36) of the FFT length, or
+    /// if `ncp * pilot_spacing` is not below `nfft` (see [`max_timing_slope`]).
     pub fn new(p: OfdmParams) -> Self {
         // Detection waits for `nfft + 2 symbol_len()` samples past a plateau's end. The
         // plateau puts preamble B at most `nfft + 1.75 ncp` past it (the shortest
@@ -219,6 +222,16 @@ impl Ofdm {
             (4 * FINE_TIMING_SPAN_NCP - 1) * p.ncp <= 4 * p.nfft,
             "ncp {} with nfft {}: the cyclic prefix is too long for the preamble B search",
             p.ncp,
+            p.nfft
+        );
+        // The header fit's timing search must reach a timing error of half a prefix,
+        // a slope of 2π·(ncp/2)/nfft per carrier, while it stays within
+        // π/pilot_spacing, short of the pilots' first alias.
+        assert!(
+            p.ncp * p.pilot_spacing < p.nfft,
+            "ncp {} with pilot spacing {} and nfft {}: the pilots alias within half a cyclic prefix of timing",
+            p.ncp,
+            p.pilot_spacing,
             p.nfft
         );
         let mut planner = FftPlanner::new();
@@ -592,7 +605,7 @@ impl Ofdm {
     /// is far below the header's noise, but would limit dense constellations, so
     /// payload symbols use [`demodulate_known`](Self::demodulate_known).
     pub fn demodulate_header(&self, rx: &[f32], b_start: usize, nsym: usize) -> Option<Frame> {
-        self.demodulate_with(rx, b_start, nsym, &[], Estimator::Fit { order: HEADER_FIT_ORDER })
+        self.demodulate_with(rx, b_start, nsym, &[], HEADER_ESTIMATOR)
     }
 
     /// Like [`demodulate`](Self::demodulate), but the data-carrier values of the first
@@ -617,11 +630,23 @@ impl Ofdm {
             return None;
         }
         let (base, yb, ys) = self.frame_carriers(rx, b_start, nsym)?;
-        let (hb, est_noise) = match est {
-            Estimator::Smooth => self.estimate_smooth(&yb, &ys, known),
-            Estimator::Fit { order } => self.estimate_fit(&yb, &ys, known, order),
-        };
+        let (hb, est_noise) = self.estimate(&yb, &ys, known, est);
         self.equalize(ys, hb, &est_noise, base, nsym)
+    }
+
+    /// Channel estimate with `est` and, per carrier, its noise relative to one
+    /// symbol's.
+    fn estimate(
+        &self,
+        yb: &[Complex32],
+        ys: &[Vec<Complex32>],
+        known: &[Option<&[Complex32]>],
+        est: Estimator,
+    ) -> (Vec<Complex32>, Vec<f32>) {
+        match est {
+            Estimator::Smooth => self.estimate_smooth(yb, ys, known),
+            Estimator::Fit { order } => self.estimate_fit(yb, ys, known, order),
+        }
     }
 
     /// The carriers of preamble B and of `nsym` symbols after it, for a frame whose
@@ -1367,10 +1392,11 @@ mod tests {
         }
     }
 
-    /// The header fit's channel estimate for the frame at `b`.
+    /// The channel estimate [`Ofdm::demodulate_header`] equalizes the frame at `b`
+    /// with.
     fn header_estimate(ofdm: &Ofdm, rx: &[f32], b: usize, nsym: usize) -> Vec<Complex32> {
         let (_, yb, ys) = ofdm.frame_carriers(rx, b, nsym).unwrap();
-        ofdm.estimate_fit(&yb, &ys, &[], HEADER_FIT_ORDER).0
+        ofdm.estimate(&yb, &ys, &[], HEADER_ESTIMATOR).0
     }
 
     #[test]
@@ -1970,5 +1996,20 @@ mod tests {
         // 3/8 of the FFT length: just over the 4/11 the search covers.
         let p = OfdmParams::wide();
         Ofdm::new(OfdmParams { ncp: 3 * p.nfft / 8, ..p });
+    }
+
+    #[test]
+    #[should_panic(expected = "the pilots alias")]
+    fn a_cyclic_prefix_the_header_fits_timing_search_cannot_cover_is_refused() {
+        // 86 of 512 with pilots every 6th carrier: 516, just past nfft.
+        let p = OfdmParams::wide();
+        Ofdm::new(OfdmParams { ncp: 86, ..p });
+    }
+
+    #[test]
+    fn the_longest_cyclic_prefix_the_header_fits_timing_search_covers_is_taken() {
+        // 85 of 512 with pilots every 6th carrier: 510, just below nfft.
+        let p = OfdmParams::wide();
+        Ofdm::new(OfdmParams { ncp: 85, ..p });
     }
 }
