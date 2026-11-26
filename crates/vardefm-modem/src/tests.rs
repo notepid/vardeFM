@@ -202,9 +202,10 @@ fn survives_a_click() {
     assert!(scale.iter().enumerate().all(|(i, &s)| i == hit || s < scale[hit] / 10.0), "scales {scale:?}");
     let ok = m.decode_payload(&b.header, &frame).iter().filter(|p| p.is_some()).count();
     assert_eq!(ok, ncw);
-    // Without the scale the click symbol's LLRs are far too confident.
+    // Without the scale the click symbol's LLRs are far too confident. One pass only:
+    // the later passes must not get to rescue what the missing scale loses.
     frame.symbol_noise_scale.iter_mut().for_each(|s| *s = 1.0);
-    let ok_flat = m.decode_payload(&b.header, &frame).iter().filter(|p| p.is_some()).count();
+    let ok_flat = m.decode_payload_passes(&b.header, &frame, 1).data.iter().filter(|p| p.is_some()).count();
     assert!(ok_flat < ncw, "{ok_flat} codewords decode even without the per-symbol scale");
 
     // And the same through the streaming receiver.
