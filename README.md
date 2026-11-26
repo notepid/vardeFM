@@ -148,7 +148,8 @@ print per-carrier SNR.
 - `crates/vardefm-tnc/src/radio/tests.rs`: the real-radio engine with fake sound cards
   and PTT. It checks that audio only plays while keyed, the PTT tail, and the watchdog.
 - `crates/vardefm-ffi/tests/session.rs`: the C ABI: a session between two modems, and
-  calls made from inside callbacks. CI also runs these under Miri
+  calls made from inside callbacks. CI also runs these under Miri when the C ABI or a crate it
+  depends on changes
   (see [docs/EMBEDDING.md](docs/EMBEDDING.md)).
 - `crates/vardefm-tnc/tests/simpair.rs`: end to end. Two host clients talk over the VARA
   TCP interface through `sim-pair` and transfer 10 kB each way at several signal levels.
@@ -209,8 +210,8 @@ To publish a release:
 2. Tag and push: `git tag v0.3.0; git push origin master v0.3.0`.
 
 The release workflow checks that the tag matches `Cargo.toml`, runs the tests, builds the
-six archives plus `checksums.txt`, and publishes the release with notes generated from the
-commits. A tag with a suffix such as `v0.3.0-rc1` becomes a pre-release.
+six program archives, the Apple XCFramework archive and `checksums.txt`, and publishes the
+release with notes generated from the commits. A tag with a suffix such as `v0.3.0-rc1` becomes a pre-release.
 
 ## License
 
