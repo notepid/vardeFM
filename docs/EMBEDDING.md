@@ -135,7 +135,8 @@ pull requests only check the header, the dependency tree and a C link test.
 
 ## Checking the C ABI for undefined behaviour
 
-CI runs the C ABI tests under [Miri](https://github.com/rust-lang/miri). To do the same:
+CI runs the C ABI tests under [Miri](https://github.com/rust-lang/miri) when `vardefm-ffi`
+or a crate it depends on changes. To do the same:
 
 ```sh
 rustup toolchain install nightly --component miri,rust-src
