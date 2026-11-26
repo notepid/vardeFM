@@ -757,7 +757,7 @@ impl Ofdm {
             // `remove_slope` takes it) multiplies two noisy observations, and at the
             // header's SNR its error, which grows across the band, cost most of what
             // the fit gains.
-            let slope = delay_search(&mean, &cnt);
+            let slope = delay_search(&mean, &cnt, max_timing_slope(&self.p));
             let flat: Vec<Complex32> =
                 mean.iter().enumerate().map(|(k, &h)| h * Complex32::from_polar(1.0, -slope * k as f32)).collect();
             let fit = weighted_fit(&basis, &flat, &cnt);
@@ -890,16 +890,29 @@ pub enum Estimator {
     Fit { order: usize },
 }
 
-/// Phase slope per carrier (the timing offset) that best lines up `h` (carrier
-/// means, `w` observations each): the peak of `|Σ w h e^{-j s k}|` on a grid 8 times
-/// finer than the carriers resolve. It sums the observations coherently, so unlike
-/// products of neighbours it holds up at low SNR.
-fn delay_search(h: &[Complex32], w: &[f32]) -> f32 {
+/// The largest timing slope, radians per carrier, that [`delay_search`] looks for.
+/// Pilots on every `pilot_spacing`-th carrier look the same at slopes
+/// 2π/`pilot_spacing` apart, so only the data carriers of preamble B tell the
+/// timing from those aliases, and a click on preamble B weights them down. The
+/// search stays within half that spacing. The FFT window sits in the middle of the
+/// cyclic prefix, so a timing error that leaves it inside the prefix, `ncp/2`
+/// samples, is a slope of 2π·(ncp/2)/nfft = 0.39 rad/carrier in both modes, inside
+/// the 0.52 that a pilot spacing of 6 allows.
+fn max_timing_slope(p: &OfdmParams) -> f32 {
+    std::f32::consts::PI / p.pilot_spacing as f32
+}
+
+/// Phase slope per carrier (the timing offset), within ±`max`, that best lines up
+/// `h` (carrier means, `w` observations each): the peak of `|Σ w h e^{-j s k}|` on a
+/// grid 8 times finer than the carriers resolve. It sums the observations
+/// coherently, so unlike products of neighbours it holds up at low SNR.
+fn delay_search(h: &[Complex32], w: &[f32], max: f32) -> f32 {
     let n = h.len();
-    let steps = 8 * n;
+    let step = 2.0 * std::f32::consts::PI / (8 * n) as f32;
+    let steps = (2.0 * max / step).ceil() as usize;
     let mut best = (0f32, 0f32);
     for i in 0..steps {
-        let s = -std::f32::consts::PI + 2.0 * std::f32::consts::PI * i as f32 / steps as f32;
+        let s = -max + step * i as f32;
         let rot = Complex32::from_polar(1.0, -s);
         let mut z = Complex32::new(1.0, 0.0);
         let mut acc = Complex32::new(0.0, 0.0);
@@ -1270,8 +1283,23 @@ mod tests {
     fn delay_search_finds_a_timing_slope() {
         let h: Vec<Complex32> =
             (0..62).map(|k| Complex32::from_polar(1.0 + 0.01 * k as f32, -0.39 * k as f32)).collect();
-        let s = delay_search(&h, &vec![1.0; 62]);
+        let s = delay_search(&h, &vec![1.0; 62], max_timing_slope(&OfdmParams::wide()));
         assert!((s + 0.39).abs() < 0.01, "slope {s}");
+    }
+
+    /// With preamble B weighted down to nothing (a click on it), only the pilots
+    /// remain. On every 6th carrier they look the same at slopes 2π/6 apart, so a
+    /// search over the whole circle cannot tell the timing from its aliases.
+    #[test]
+    fn delay_search_on_pilots_alone_finds_the_timing_not_an_alias() {
+        let p = OfdmParams::narrow();
+        let nc = p.num_carriers;
+        for slope in [-0.39f32, -0.2, 0.0, 0.2, 0.39] {
+            let h: Vec<Complex32> = (0..nc).map(|k| Complex32::from_polar(1.0, slope * k as f32)).collect();
+            let w: Vec<f32> = (0..nc).map(|k| if k % p.pilot_spacing == 0 { 10.0 } else { 0.0 }).collect();
+            let s = delay_search(&h, &w, max_timing_slope(&p));
+            assert!((s - slope).abs() < 0.01, "slope {slope}: found {s}");
+        }
     }
 
     /// Slope from neighbouring carriers, weighted by the smaller count, as the fit
@@ -1285,7 +1313,8 @@ mod tests {
         // Narrow mode's header: preamble B on every carrier plus 10 pilot
         // observations on every 6th, each at Es/N0 -5 dB, around a 0.39 rad/carrier
         // slope. Gaussian noise from the Box-Muller transform.
-        let (nc, slope) = (49, -0.39f32);
+        let p = OfdmParams::narrow();
+        let (nc, slope) = (p.num_carriers, -0.39f32);
         let w: Vec<f32> = (0..nc).map(|k| if k % 6 == 0 { 11.0 } else { 1.0 }).collect();
         let sigma = 10f32.powf(5.0 / 20.0) / SQRT_2;
         let mut rng = Prng::new(77);
@@ -1302,7 +1331,7 @@ mod tests {
                     Complex32::from_polar(1.0, slope * k as f32) + Complex32::from_polar(r, t)
                 })
                 .collect();
-            search_err += wrap(delay_search(&h, &w) - slope).powi(2);
+            search_err += wrap(delay_search(&h, &w, max_timing_slope(&p)) - slope).powi(2);
             neighbour_err += wrap(neighbour_slope(&h, &w) - slope).powi(2);
         }
         let (search, neighbour) = ((search_err / trials as f32).sqrt(), (neighbour_err / trials as f32).sqrt());
@@ -1364,6 +1393,38 @@ mod tests {
             // 0.26 (narrow) and 1.7 (wide) of the channel; weighted, by 0.0015 and 0.011.
             let moved = clean.iter().zip(&clicked).map(|(a, c)| (c / a - 1.0).norm()).fold(0.0, f32::max);
             assert!(moved < 0.03, "{}: the click moves the estimate by {moved}", ofdm.p.name);
+        }
+    }
+
+    /// A click on preamble B weights down the only training group on the data
+    /// carriers, which leaves the fit (and the timing search, see
+    /// [`max_timing_slope`]) to the pilots. The header still decodes cleanly.
+    #[test]
+    fn header_fit_shrugs_off_a_click_on_preamble_b() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Bpsk, 10, 4);
+            let mut rx = vec![0.0; 555];
+            rx.extend(ofdm.modulate(&data));
+            rx.extend(vec![0.0; 2000]);
+            let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
+            // A 1 ms click of 10 times the signal's RMS in preamble B's FFT window.
+            let at = b - ofdm.p.ncp / 2 + ofdm.p.nfft / 3;
+            let width = (ofdm.p.fs / 1000.0) as usize;
+            rx[at..at + width].iter_mut().for_each(|x| *x += 2.5);
+            let f = ofdm.demodulate_header(&rx, b, data.len()).expect("demod failed");
+            let n = f.symbols.iter().flatten().count() as f32;
+            let err = f.symbols.iter().flatten().zip(data.iter().flatten()).map(|(g, s)| (g - s).norm_sqr());
+            let error_db = 10.0 * (err.sum::<f32>() / n).log10();
+            println!("{}: error {error_db:.1} dB with a click on preamble B", ofdm.p.name);
+            // Weighted down, preamble B leaves the low edge carriers to the pilots and
+            // the fit's bias there: in wide mode, where the channel is weakest at the
+            // low edge, the estimate moves by up to 0.09 of the channel on carrier 0.
+            // On this clean channel, what weight preamble B keeps still picks the
+            // right timing even over the whole circle; the aliases a search over it
+            // can find are pinned by
+            // `delay_search_on_pilots_alone_finds_the_timing_not_an_alias`.
+            assert!(error_db < -20.0, "{}: error {error_db:.1} dB", ofdm.p.name);
         }
     }
 
