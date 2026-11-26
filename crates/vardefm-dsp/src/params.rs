@@ -46,6 +46,10 @@ pub struct OfdmParams {
     ///
     /// The low-pass is for the flat data port, where FM noise rises with frequency, so
     /// the lower part of the band gives a much cleaner detection metric.
+    ///
+    /// These filters delay the Schmidl-Cox plateau, by more the lower the audio tilts.
+    /// How far from the plateau detection looks for preamble B is sized for this band:
+    /// after changing it, run `preamble_b_search_eval` in `vardefm-modem`.
     pub detect_band_hz: (f32, Option<f32>),
 }
 

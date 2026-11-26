@@ -1207,12 +1207,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "vardefm-engine"
+version = "0.3.2"
+dependencies = [
+ "vardefm-dsp",
+ "vardefm-link",
+ "vardefm-modem",
+]
+
+[[package]]
 name = "vardefm-fec"
 version = "0.3.2"
 dependencies = [
  "serde",
  "toml",
  "vardefm-dsp",
+]
+
+[[package]]
+name = "vardefm-ffi"
+version = "0.3.2"
+dependencies = [
+ "vardefm-engine",
+ "vardefm-link",
+ "vardefm-modem",
 ]
 
 [[package]]
@@ -1260,6 +1278,7 @@ dependencies = [
  "hound",
  "vardefm-audio",
  "vardefm-dsp",
+ "vardefm-engine",
  "vardefm-link",
  "vardefm-modem",
  "vardefm-ptt",

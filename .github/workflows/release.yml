@@ -17,9 +17,11 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install ALSA headers
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - name: Tag matches Cargo.toml
@@ -40,6 +42,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.check.outputs.version }}
+      xcframework: true
 
   publish:
     name: Publish release
@@ -48,8 +51,8 @@ jobs:
     permissions:
       contents: write # create the GitHub release and upload assets
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: vardefm_*  # only the release archives

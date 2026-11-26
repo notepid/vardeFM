@@ -39,37 +39,37 @@ impl AudioLevel {
     }
 }
 
-/// A burst detector: search `rx` from `from`, return where the body of preamble B starts.
-/// A position it returns must be more than `from`: the receiver searches on from a
-/// detection whose header fails, so one that returned `from` would search forever.
-pub(crate) type DetectFn = fn(&Modem, &[f32], usize) -> Option<usize>;
-
-/// The detector the receiver searches with.
-const OFDM_DETECT: DetectFn = |m, rx, from| m.ofdm.detect(rx, from);
+/// A frame waiting for its payload.
+#[derive(Clone, Copy)]
+struct Pending {
+    /// Where the body of preamble B starts (index into `buf`).
+    b: usize,
+    /// Where to search on if the frame cannot be demodulated after all.
+    resume: usize,
+    header: Header,
+}
 
 pub struct Receiver {
     modem: Arc<Modem>,
     buf: Vec<f32>,
     /// Absolute sample index of `buf[0]`.
     base: u64,
-    /// Where to continue searching for preambles (index into `buf`).
+    /// Where to continue searching for preambles (index into `buf`). It only moves
+    /// forward, to where the detector says it can resume, so audio already ruled out is
+    /// never searched again.
     search: usize,
-    /// A frame whose header decoded but whose payload has not fully arrived: (preamble-B index, header).
-    pending: Option<(usize, Header)>,
+    /// A frame whose header decoded but whose payload has not fully arrived.
+    pending: Option<Pending>,
     /// Whether something louder than the background is heard.
     detector: BusyDetector,
     /// The last good sample pushed.
     last: f32,
-    /// The burst detector `step` searches with: always `Ofdm::detect` outside tests.
-    /// Tests replace it, so that the detector evaluation can check its offline receiver
-    /// against this one for every detector it scores.
-    pub(crate) detect: DetectFn,
 }
 
 impl Receiver {
     pub fn new(modem: Arc<Modem>) -> Self {
         let detector = BusyDetector::new(&modem.ofdm.p);
-        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector, last: 0.0, detect: OFDM_DETECT }
+        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector, last: 0.0 }
     }
 
     /// Absolute index of the next sample to be pushed.
@@ -140,7 +140,7 @@ impl Receiver {
     fn step(&mut self, out: &mut Vec<RxBurst>) -> Option<bool> {
         let m = &self.modem;
         let hdr_syms = m.header_symbols();
-        if let Some((b, h)) = self.pending {
+        if let Some(Pending { b, resume, header: h }) = self.pending {
             let nsym = hdr_syms + h.ncw as usize * m.symbols_per_codeword(h.level);
             if self.buf.len() < self.needed(b, nsym) {
                 return Some(false);
@@ -150,7 +150,7 @@ impl Receiver {
             // train the channel estimate for the payload.
             let known = m.header_carriers(&h);
             let Some(frame) = m.ofdm.demodulate_known(&self.buf, b, nsym, &known) else {
-                self.search = b;
+                self.search = resume;
                 return Some(true);
             };
             let payload = m.decode_payload(&h, &frame);
@@ -166,29 +166,19 @@ impl Receiver {
             return Some(true);
         }
 
-        let l = m.ofdm.p.symbol_len();
-        let found = (self.detect)(m, &self.buf, self.search);
-        // A replaced detector that does not move past `search` would make `step`
-        // search from the same place forever after a failed header: fail instead.
-        #[cfg(test)]
-        if let Some(b) = found {
-            assert!(
-                b > self.search,
-                "detector returned {b} when searching from {}: the receiver would loop",
-                self.search
-            );
-        }
-        match found {
+        let found = m.ofdm.detect(&self.buf, self.search);
+        match found.at {
             Some(b) => {
                 if self.buf.len() < self.needed(b, hdr_syms) {
-                    // Come back when the header has arrived; re-detect from just before it.
-                    self.search = b.saturating_sub(3 * l);
+                    // Come back when the header has arrived. The same search then finds
+                    // the same frame, as it starts at the same place and Schmidl-Cox
+                    // scans no further than its fine timing needs.
                     return Some(false);
                 }
                 let header =
                     m.ofdm.demodulate_header(&self.buf, b, hdr_syms).and_then(|f| m.decode_header(&f).map(|h| (h, f)));
                 match header {
-                    None => self.search = b,
+                    None => self.search = found.resume,
                     Some((h, f)) if h.ncw == 0 => {
                         // Measure the SNR the way a data burst does (with the header as
                         // training), so that rate adaptation sees the same numbers.
@@ -206,25 +196,28 @@ impl Receiver {
                     }
                     Some((h, _)) => {
                         debug_assert!((h.level as usize) < LEVELS.len());
-                        self.pending = Some((b, h));
+                        self.pending = Some(Pending { b, resume: found.resume, header: h });
                     }
                 }
                 Some(true)
             }
             None => {
-                // Nothing found. Keep enough history to catch a preamble that is still arriving.
-                let keep = 3 * l + 2 * m.ofdm.p.nfft;
-                self.search = self.search.max(self.buf.len().saturating_sub(keep));
+                // Nothing found yet; the detector says how much to search again once
+                // more audio is in, for a preamble that is still arriving.
+                self.search = found.resume;
                 Some(false)
             }
         }
     }
 
     fn trim(&mut self) {
-        let l = self.modem.ofdm.p.symbol_len();
-        // Keep the history the next search warms its filters on.
+        let p = &self.modem.ofdm.p;
+        let l = p.symbol_len();
+        // A pending frame still needs its audio from the start of preamble A, where
+        // `burst_level` measures from, and the next search the history it warms its
+        // filters on.
         let keep_from = match self.pending {
-            Some((b, _)) => b.saturating_sub(3 * l),
+            Some(f) => self.search.min(f.b.saturating_sub(p.ncp + l)),
             None => self.search,
         }
         .saturating_sub(self.modem.ofdm.detect_history());
@@ -232,8 +225,9 @@ impl Receiver {
             self.buf.drain(..keep_from);
             self.base += keep_from as u64;
             self.search -= keep_from;
-            if let Some((b, _)) = &mut self.pending {
-                *b -= keep_from;
+            if let Some(f) = &mut self.pending {
+                f.b -= keep_from;
+                f.resume -= keep_from;
             }
         }
     }

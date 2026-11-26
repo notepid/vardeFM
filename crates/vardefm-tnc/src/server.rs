@@ -25,15 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Debug)]
-pub enum HostIn {
-    /// One command line (without the terminator).
-    Line(String),
-    /// Bytes written to the data port.
-    Data(Vec<u8>),
-    /// The command-port client went away.
-    CmdClosed,
-}
+pub use vardefm_engine::HostIn;
 
 type Slot = Arc<Mutex<Option<TcpStream>>>;
 

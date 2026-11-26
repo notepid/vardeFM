@@ -4,10 +4,7 @@
 //! and can be tested with McNemar's exact test instead of comparing two noisy rates.
 //! For each CNR it reports, per detector:
 //! - `burst`, the measure that counts: the whole burst (header and every codeword)
-//!   decoded by an offline equivalent of `Receiver::step`. It tries the header at each
-//!   detection in turn, searches on after one that fails, and keeps the first header
-//!   that decodes. A test checks it against the streaming `Receiver` searching with
-//!   the same detector, for every detector here;
+//!   decoded by the streaming `Receiver`, fed in 10 ms chunks;
 //! - `hit`: the detector's first detection, whatever its header does, lies within
 //!   ±ncp/4 samples of the true position, which is where Schmidl-Cox's preamble-B fine
 //!   timing lands on a noiseless copy. A detector that always picks another point
@@ -59,7 +56,6 @@
 
 use super::*;
 use crate::busy_eval::CTCSS_DEVIATION_HZ;
-use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::io::Write;
 use std::sync::Arc;
@@ -67,10 +63,17 @@ use vardefm_dsp::prng::Prng;
 use vardefm_dsp::CTCSS_HZ;
 use vardefm_sim::{transmit, Ctcss, FmChannelConfig};
 
-pub(crate) use crate::receiver::DetectFn;
+/// A burst detector: search `rx` from `from`, return where the body of preamble B starts.
+/// A position it returns must be more than `from`: the evaluation searches on from a
+/// detection, so one that returned `from` would search forever.
+pub(crate) type DetectFn = fn(&Modem, &[f32], usize) -> Option<usize>;
 
 /// Detectors under evaluation. The first one is the reference for the paired tests.
-pub(crate) const DETECTORS: &[(&str, DetectFn)] = &[("sc", |m, rx, from| m.ofdm.detect(rx, from))];
+/// `burst` is judged by the modem's own `Receiver`, which uses `Ofdm::detect`, so
+/// every entry here must be that detector.
+pub(crate) const DETECTORS: &[(&str, DetectFn)] = &[("sc", |m, rx, from| m.ofdm.detect(rx, from).at)];
+// A second entry would get the first one's `burst` result.
+const _: () = assert!(DETECTORS.len() == 1, "burst is judged with the modem's own detector only");
 
 /// Leader length used by the evaluation, seconds (the `vardefm modem` default).
 const TXDELAY: f32 = 0.15;
@@ -113,41 +116,18 @@ fn burst_ok(m: &Modem, rx: &[f32], b: usize, h: &Header, sent: &Burst) -> bool {
     m.decode_payload(h, &frame).into_iter().zip(&sent.payload).all(|(got, want)| got.as_ref() == Some(want))
 }
 
-/// What decoding one recording at a preamble-B position gives, by position: `None`
-/// when the header fails, else whether the burst came out as sent. The genie and the
-/// detectors often land on the same position, and a decode is the costly part of a
-/// trial, so each position is decoded once per recording.
-type Decodes = HashMap<usize, Option<bool>>;
-
-/// [`header_at`], then [`burst_ok`] if the header decodes, remembered in `cache`.
-fn decode_at(m: &Modem, rx: &[f32], b: usize, sent: &Burst, cache: &mut Decodes) -> Option<bool> {
-    *cache.entry(b).or_insert_with(|| header_at(m, rx, b).map(|h| burst_ok(m, rx, b, &h, sent)))
-}
-
-/// What the receiver makes of one recording with a given detector.
-struct Outcome {
-    /// Where the detector first pointed, header decoded or not.
-    first: Option<usize>,
-    /// Whether the burst came out as sent.
-    ok: bool,
-}
-
-/// Offline equivalent of `Receiver::step` with detector `f`: decode the header at
-/// each detection in turn, searching on from a detection whose header fails, and
-/// judge the burst of the first header that decodes. The test
-/// `offline_receive_matches_the_streaming_receiver` checks it against `Receiver`.
-/// `cache` holds the decodes of `rx` made so far.
-fn receive(m: &Modem, f: DetectFn, rx: &[f32], sent: &Burst, cache: &mut Decodes) -> Outcome {
-    let first = advance(m, f, rx, 0);
-    let mut next = first;
-    while let Some(b) = next {
-        if let Some(ok) = decode_at(m, rx, b, sent, cache) {
-            return Outcome { first, ok };
-        }
-        // As `Receiver::step`: search on from the failed detection itself.
-        next = advance(m, f, rx, b);
-    }
-    Outcome { first, ok: false }
+/// Whether the streaming `Receiver` on `m` makes `sent` of recording `rx`: its
+/// first burst has the header sent and every codeword decoded as sent. The audio
+/// comes in 10 ms chunks, as a sound card delivers it, then a second of silence so
+/// that a burst at the very end completes.
+fn received_ok(m: &Arc<Modem>, rx: &[f32], sent: &Burst) -> bool {
+    let mut receiver = Receiver::new(m.clone());
+    let chunk = (m.fs() / 100.0) as usize;
+    let mut got: Vec<RxBurst> = rx.chunks(chunk).flat_map(|c| receiver.push(c)).collect();
+    got.extend(receiver.push(&vec![0.0; m.fs() as usize]));
+    got.first().is_some_and(|g| {
+        g.header == sent.header && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
+    })
 }
 
 /// `f` searching `rx` from `from`, which must return more than `from` ([`DetectFn`]):
@@ -290,18 +270,12 @@ fn with_ctcss_on(
     }
 }
 
-fn trial(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> Trial {
+fn trial(m: &Arc<Modem>, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, t: u32) -> Trial {
     let (sent, rx) = received(m, mode, cnr, level, ncw, t);
     let tol = m.ofdm.p.ncp / 4;
-    let mut cache = Decodes::new();
-    let det = DETECTORS
-        .iter()
-        .map(|(_, f)| {
-            let o = receive(m, *f, &rx, &sent, &mut cache);
-            (o.first.is_some_and(|b| b.abs_diff(truth) <= tol), o.ok)
-        })
-        .collect();
-    let genie = decode_at(m, &rx, truth, &sent, &mut cache) == Some(true);
+    let ok = received_ok(m, &rx, &sent);
+    let det = DETECTORS.iter().map(|(_, f)| (f(m, &rx, 0).is_some_and(|b| b.abs_diff(truth) <= tol), ok)).collect();
+    let genie = header_at(m, &rx, truth).is_some_and(|h| burst_ok(m, &rx, truth, &h, &sent));
     Trial { det, genie }
 }
 
@@ -315,7 +289,7 @@ pub(crate) fn true_position(m: &Modem, mode: &str, level: u8, ncw: usize) -> usi
 /// The true position in `rx`, a noiseless copy from [`clean_copy`]: where the
 /// reference detector finds preamble B.
 fn clean_position(m: &Modem, rx: &[f32]) -> usize {
-    m.ofdm.detect(rx, 0).expect("burst not found on a clean channel")
+    m.ofdm.detect(rx, 0).at.expect("burst not found on a clean channel")
 }
 
 /// The `level` burst of `ncw` codewords with payload `t` as modulated, and as a
@@ -369,7 +343,7 @@ pub(crate) fn on_every_core<R: Send>(trials: u32, f: impl Fn(u32) -> R + Sync) -
 
 /// Run `trials` trials of a `level` burst of `ncw` codewords on every core, with
 /// preamble B at `truth` ([`true_position`]).
-fn run_trials(m: &Modem, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, trials: u32) -> Vec<Trial> {
+fn run_trials(m: &Arc<Modem>, mode: &str, cnr: f32, level: u8, ncw: usize, truth: usize, trials: u32) -> Vec<Trial> {
     on_every_core(trials, |t| trial(m, mode, cnr, level, ncw, truth, t))
 }
 
@@ -494,7 +468,7 @@ fn noise_case(mode: &str, case: usize, seconds: f32, fs: f32) -> Vec<f32> {
 /// (decoding from the true position), out of `trials`, for every tone at every
 /// deviation, after a row without a tone. Where the genie decodes and a detector does
 /// not, detection lost the burst; where neither does, the tone broke demodulation.
-fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw: usize, trials: u32) {
+fn ctcss_pass(m: &Arc<Modem>, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw: usize, trials: u32) {
     let base = ctcss_channel(&FmChannelConfig::by_name(mode).unwrap(), case);
     let clean = FmChannelConfig { cnr_db: None, ..base.clone() };
     let truth = clean_position(m, &transmit(&clean, &m.modulate(&burst(level, ncw, payload_seed(0)))));
@@ -523,13 +497,11 @@ fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw:
                 } else {
                     with_ctcss_on(&cfg, case.tap, &tx, Some(&toneless), f, dev, 0.7 * t as f32)
                 };
-                let mut cache = Decodes::new();
-                let genie = decode_at(m, &rx, truth, &sent, &mut cache) == Some(true);
-                DETECTORS
-                    .iter()
-                    .map(|(_, d)| receive(m, *d, &rx, &sent, &mut cache).ok)
-                    .chain([genie])
-                    .collect::<Vec<bool>>()
+                let genie = header_at(m, &rx, truth).is_some_and(|h| burst_ok(m, &rx, truth, &h, &sent));
+                // Judged by the streaming receiver, as in the main sweep; DETECTORS holds
+                // only the modem's own detector.
+                let ok = received_ok(m, &rx, &sent);
+                DETECTORS.iter().map(|_| ok).chain([genie]).collect::<Vec<bool>>()
             })
             .collect::<Vec<_>>()
     });
@@ -561,9 +533,11 @@ fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw:
 
 /// Detections and decoded headers in `rx`, scanning on after each detection.
 ///
-/// It searches on from each detection itself, as `receive` and `Receiver::step` do
-/// after a header that fails, so a detector is scored here on the searches it makes
-/// in the receiver. After a header that decodes the receiver skips the frame it
+/// It searches on from each detection itself. `DetectFn` gives only `Detection::at`,
+/// so this takes `at` as the resume point, which holds for Schmidl-Cox only: its
+/// `resume` is its detection, so `Receiver::step` searches on from there too after a
+/// header that fails, and the detector is scored here on the searches it makes in
+/// the receiver. After a header that decodes the receiver skips the frame it
 /// announces; this pass searches on from the detection instead, so that every
 /// detection in the audio is counted.
 fn false_detections(m: &Modem, f: DetectFn, rx: &[f32]) -> (u32, u32) {
@@ -751,63 +725,4 @@ fn mcnemar_matches_known_values() {
     // z = 4.26 with continuity correction; the exact value is about 2e-5.
     let p = mcnemar(1000, 1200);
     assert!(p > 1e-6 && p < 1e-4, "p {p}");
-}
-
-/// `receive` must judge each recording the way the streaming `Receiver` does when
-/// it is fed the same audio in 10 ms chunks, including the recordings where the
-/// detector or the header fails. It runs for every entry of `DETECTORS`, with the
-/// receiver searching through the same detector (`Receiver::detect`): `receive`
-/// gives a detector the whole recording, the receiver a growing buffer it trims, and
-/// a detector that depends on how much audio it is given could score well here and
-/// differently in the receiver. Only the burst outcome is compared; `hit` and the
-/// false-detection pass are offline only.
-///
-/// Each seed runs at three CNRs per mode. At the lowest even genie decodes nothing
-/// and at the highest every detector so far decodes almost everything, so both
-/// outcomes occur whatever the detector is, and `STREAM_SEEDS=1` works.
-/// 12 seeds per mode by default.
-#[test]
-fn offline_receive_matches_the_streaming_receiver() {
-    let seeds: u64 = env_or("STREAM_SEEDS", 12);
-    for (mode, cnrs) in [("narrow", [3.0, 5.0, 8.0]), ("wide", [5.0, 7.0, 10.0])] {
-        let m = modem(mode);
-        let sent = burst(1, 1, 7);
-        let tx = m.modulate(&sent);
-        let (mut total, mut ok) = (0, vec![0; DETECTORS.len()]);
-        for seed in 0..seeds {
-            for cnr in cnrs {
-                let cfg =
-                    FmChannelConfig { cnr_db: Some(cnr), seed: 1000 + seed, ..FmChannelConfig::by_name(mode).unwrap() };
-                let mut rx = transmit(&cfg, &tx);
-                rx.extend(vec![0.0; m.fs() as usize]);
-                // Shared by the detectors, as in a trial: they all decode the same recording.
-                let mut cache = Decodes::new();
-                for (d, (name, f)) in DETECTORS.iter().enumerate() {
-                    // Offline first: a detector that does not move forward on the whole
-                    // recording fails there; one that stalls only on the receiver's
-                    // buffer fails in `Receiver::step`.
-                    let offline = receive(&m, *f, &rx, &sent, &mut cache).ok;
-                    let mut receiver = Receiver::new(m.clone());
-                    receiver.detect = *f;
-                    // 10 ms chunks, as a sound card delivers them.
-                    let chunk = (m.fs() / 100.0) as usize;
-                    let got: Vec<RxBurst> = rx.chunks(chunk).flat_map(|c| receiver.push(c)).collect();
-                    let streamed = got.first().is_some_and(|g| {
-                        g.header == sent.header
-                            && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
-                    });
-                    assert_eq!(
-                        offline, streamed,
-                        "{mode} {name} {cnr} dB seed {seed}: offline {offline}, streaming {streamed}"
-                    );
-                    ok[d] += streamed as u32;
-                }
-                total += 1;
-            }
-        }
-        // Both outcomes must occur, or the comparison proves little.
-        for ((name, _), ok) in DETECTORS.iter().zip(ok) {
-            assert!(ok > 0 && ok < total, "{mode} {name}: {ok} of {total} bursts decoded");
-        }
-    }
 }

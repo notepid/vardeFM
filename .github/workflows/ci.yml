@@ -18,11 +18,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install ALSA headers
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
@@ -49,10 +50,104 @@ jobs:
         checks: [advisories, bans licenses sources]
     continue-on-error: ${{ matrix.checks == 'advisories' }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
         with:
           command: check ${{ matrix.checks }}
+
+  # The C ABI on every push. The XCFramework and the Swift tests need five LTO builds
+  # on a macOS runner, so they only run for a release (build.yml).
+  ffi:
+    name: C ABI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ffi
+      # The version is written into the header, so --verify needs the one that generated it.
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked --version 0.29.4
+      - name: FFI has no desktop dependencies
+        run: |
+          tree="$(cargo tree -p vardefm-ffi --prefix none --locked)"
+          echo "$tree"
+          for bad in cpal hidapi serialport hound vardefm-ptt vardefm-audio vardefm-tnc vardefm-sim; do
+            if echo "$tree" | grep -E "^${bad} " >/dev/null; then
+              echo "::error::$bad must not appear in vardefm-ffi's dependency tree"
+              exit 1
+            fi
+          done
+      - name: Verify C header
+        run: cbindgen -c crates/vardefm-ffi/cbindgen.toml -o crates/vardefm-ffi/include/CVardeFM/vardefm.h crates/vardefm-ffi --verify
+      - name: C smoke test
+        run: |
+          cargo build --locked -p vardefm-ffi
+          cc -I crates/vardefm-ffi/include -o /tmp/vfm_smoke \
+            crates/vardefm-ffi/tests/smoke.c target/debug/libvardefm.a \
+            -lpthread -ldl -lm
+          /tmp/vfm_smoke
+
+  # Whether this change can reach the code Miri tests: the workspace crates in
+  # vardefm-ffi's dependency tree (read from cargo tree, so a new dependency is
+  # picked up), Cargo.toml, Cargo.lock, the toolchain and cargo config, and this
+  # workflow. Runs Miri when unsure: no base to compare with (a force push to
+  # master, or another trigger), or a base missing from the clone.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      miri: ${{ steps.filter.outputs.miri }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          run_miri() { echo "$1; running Miri."; echo "miri=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
+            run_miri "No base commit"
+          fi
+          files="$(git diff --name-only "$BASE...$HEAD" 2>/dev/null)" || run_miri "Cannot diff $BASE...$HEAD"
+          # Workspace crates sit under crates/<name>; cargo tree prints them with their path.
+          crates="$(cargo tree -p vardefm-ffi -e normal,build,dev --prefix none --locked \
+            | sed -n 's|^\([a-z0-9_-]*\) v[^ ]* (.*/crates/\1)$|\1|p' | sort -u | paste -sd '|')"
+          [ -n "$crates" ] || run_miri "No workspace crates found in vardefm-ffi's tree"
+          echo "Crates Miri builds: $crates"
+          echo "Changed files:"
+          echo "$files"
+          if echo "$files" | grep -E "^(crates/($crates)/|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|\.github/workflows/ci\.yml$)" >/dev/null; then
+            echo "miri=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "miri=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Undefined behaviour at the C ABI (docs/EMBEDDING.md). The nightly is pinned so
+  # that a new Miri cannot fail a build that changed nothing.
+  miri:
+    name: Miri (C ABI)
+    needs: changes
+    if: needs.changes.outputs.miri == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: nightly-2026-11-17
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: miri
+      - name: C ABI tests under Miri
+        run: cargo miri test -p vardefm-ffi --locked
+
 
   snapshot:
     name: Build all release targets

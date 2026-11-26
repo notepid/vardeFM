@@ -21,6 +21,34 @@ const DETECT_THRESHOLD: f64 = 0.3;
 /// Pilots are averaged over this many symbols either side.
 const TRACK_HALF_WINDOW: usize = 4;
 const MIN_PREAMBLE_CORR: f32 = 0.3;
+/// Preamble B is looked for this many cyclic prefixes either side of where the
+/// Schmidl-Cox plateau puts it.
+///
+/// The plateau is found on the detection band's filtered audio
+/// ([`OfdmParams::detect_band_hz`]), and its middle moves with the filters' delay and
+/// with the audio's tilt: on a noiseless channel it puts preamble B from 0.8 prefixes
+/// early (wide, sender tilted 6 dB/octave up) to 1.6 late (wide, sender tilted
+/// 6 dB/octave down), and noise spreads that further. Within one prefix, the two wide
+/// links whose audio tilts down (de-emphasis on receive only, a sender tilted
+/// 6 dB/octave down) were not found without noise.
+///
+/// `preamble_b_search_eval` in `vardefm-modem` measures what this and
+/// [`MIN_FAR_PREAMBLE_CORR`] rest on.
+const FINE_TIMING_SPAN_NCP: usize = 3;
+/// What preamble B's correlation must reach more than one cyclic prefix from where the
+/// plateau puts it. Twice as many places are tried out there as within one prefix, and
+/// a plateau that is not a frame's (noise, the gap after a frame) more often has one
+/// that reaches [`MIN_PREAMBLE_CORR`]: such a pick then hides the frame that follows.
+///
+/// It sits between two things measured in the simulator: the most a place that is not
+/// preamble B reached at such a plateau (0.41), and what preamble B itself reaches out
+/// there near the sensitivity knee, where noise lowers it (below this in at most 5.5%
+/// of the bursts on the worst link).
+///
+/// At a frame, the shoulder of preamble B's own peak passes this out there when the
+/// peak is just within one prefix, so a place out there must also beat the best within
+/// one prefix.
+const MIN_FAR_PREAMBLE_CORR: f32 = 0.45;
 /// A symbol whose pilot noise exceeds this many times the typical level gets its own
 /// noise scale. Normal symbols almost never get there (the per-symbol estimate averages
 /// 18-24 real noise samples).
@@ -33,6 +61,57 @@ const HEADER_FIT_ORDER: usize = 4;
 const TX_LOWPASS_FACTOR: f32 = 1.15;
 /// Clip-and-filter passes before the final clamp.
 const CLIP_FILTER_PASSES: usize = 2;
+
+/// How [`Ofdm::detect`] finds a burst.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Detector {
+    /// Schmidl-Cox autocorrelation of preamble A, confirmed by preamble B.
+    #[default]
+    SchmidlCox,
+}
+
+impl Detector {
+    pub const ALL: [Detector; 1] = [Self::SchmidlCox];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::SchmidlCox => "sc",
+        }
+    }
+}
+
+impl std::fmt::Display for Detector {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl std::str::FromStr for Detector {
+    type Err = String;
+
+    /// A detector by its [`Detector::name`].
+    fn from_str(s: &str) -> Result<Self, String> {
+        Self::ALL.into_iter().find(|d| d.name() == s).ok_or_else(|| {
+            let names: Vec<&str> = Self::ALL.iter().map(|d| d.name()).collect();
+            format!("unknown detector {s:?} (one of {})", names.join(", "))
+        })
+    }
+}
+
+/// What a search from `from` found, and where the next one must start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Detection {
+    /// Where the body of preamble B starts, if a frame was found.
+    pub at: Option<usize>,
+    /// Where a caller searches on from: after a found frame whose header fails, or
+    /// once more audio has arrived. Schmidl-Cox resumes at its detection, which can
+    /// lie past the end of the plateau it scanned. `from <= resume <= max(from,
+    /// rx.len())`, with `resume == from` when `from` is at or past the end, and
+    /// `resume > from` when a frame was found. A caller that drops old audio keeps
+    /// [`Ofdm::detect_history`] samples before `resume`: the next search warms its
+    /// filters on them, and on cold filters a CTCSS tone rings at the search's start.
+    pub resume: usize,
+}
 
 /// One OFDM symbol (cyclic prefix + body) from carrier values, with the TX tilt `gains`.
 fn symbol_time(p: &OfdmParams, gains: &[f32], ifft: &dyn Fft<f32>, carriers: &[Complex32]) -> Vec<f32> {
@@ -55,6 +134,8 @@ fn symbol_time(p: &OfdmParams, gains: &[f32], ifft: &dyn Fft<f32>, carriers: &[C
 
 pub struct Ofdm {
     pub p: OfdmParams,
+    /// Burst detector used by [`Ofdm::detect`].
+    detector: Detector,
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     /// Carrier indices (0..num_carriers) that hold pilots.
@@ -85,8 +166,61 @@ pub struct Frame {
     pub end: usize,
 }
 
+/// What detection found around one Schmidl-Cox plateau: where the plateau put the start
+/// of preamble B's body, and the best correlation with preamble B (and where) within
+/// one cyclic prefix of that and further off.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct PlateauPeaks {
+    pub expected: usize,
+    pub near: (f32, usize),
+    pub far: (f32, usize),
+}
+
+impl PlateauPeaks {
+    /// How many cyclic prefixes either side of `expected` were searched.
+    pub const SPAN_NCP: usize = FINE_TIMING_SPAN_NCP;
+    /// What the far place's correlation must reach to be taken.
+    pub const MIN_FAR_CORR: f32 = MIN_FAR_PREAMBLE_CORR;
+
+    /// The higher of the two correlations.
+    pub fn best_corr(&self) -> f32 {
+        self.near.0.max(self.far.0)
+    }
+
+    /// The same, with every position moved `by` samples on.
+    fn shifted(self, by: usize) -> Self {
+        Self { expected: self.expected + by, near: (self.near.0, self.near.1 + by), far: (self.far.0, self.far.1 + by) }
+    }
+
+    /// The start of preamble B's body, if either place correlates well enough: the one
+    /// within a cyclic prefix if it reaches `MIN_PREAMBLE_CORR`, or the one further off
+    /// if it is higher and reaches `MIN_FAR_PREAMBLE_CORR`.
+    pub fn confirmed(&self) -> Option<usize> {
+        if self.far.0 >= MIN_FAR_PREAMBLE_CORR && self.far.0 > self.near.0 {
+            Some(self.far.1)
+        } else {
+            (self.near.0 >= MIN_PREAMBLE_CORR).then_some(self.near.1)
+        }
+    }
+}
+
 impl Ofdm {
+    /// Panics if the cyclic prefix is longer than 4/11 (0.36) of the FFT length.
     pub fn new(p: OfdmParams) -> Self {
+        // Detection waits for `nfft + 2 symbol_len()` samples past a plateau's end. The
+        // plateau puts preamble B at most `nfft + 1.75 ncp` past it (the shortest
+        // plateau that counts, `ncp / 4`, at the very start of the search, where its
+        // middle is not moved back by half a prefix: otherwise 1.5), and the search
+        // for it reads `FINE_TIMING_SPAN_NCP * ncp + nfft` further. With a longer
+        // prefix the late end of that search would depend on how much audio has
+        // arrived.
+        assert!(
+            (4 * FINE_TIMING_SPAN_NCP - 1) * p.ncp <= 4 * p.nfft,
+            "ncp {} with nfft {}: the cyclic prefix is too long for the preamble B search",
+            p.ncp,
+            p.nfft
+        );
         let mut planner = FftPlanner::new();
         let fft = planner.plan_fft_forward(p.nfft);
         let ifft = planner.plan_fft_inverse(p.nfft);
@@ -126,7 +260,30 @@ impl Ofdm {
         let e = pre_b_body.iter().map(|x| x * x).sum::<f32>().sqrt();
         pre_b_body.iter_mut().for_each(|x| *x /= e);
         let pre_b_hp = pre_b_template(&pre_b_body, p.fs, p.detect_band_hz.0);
-        Self { p, fft, ifft, pilot_idx, data_idx, pilot_table, gains, pre_a, pre_b, pre_b_hp }
+        Self {
+            p,
+            detector: Detector::default(),
+            fft,
+            ifft,
+            pilot_idx,
+            data_idx,
+            pilot_table,
+            gains,
+            pre_a,
+            pre_b,
+            pre_b_hp,
+        }
+    }
+
+    /// This modem with [`Ofdm::detect`] finding bursts with `detector`.
+    pub fn with_detector(mut self, detector: Detector) -> Self {
+        self.detector = detector;
+        self
+    }
+
+    /// The detector [`Ofdm::detect`] uses.
+    pub fn detector(&self) -> Detector {
+        self.detector
     }
 
     /// Leader symbols sent for a leader of at least `leader_s` seconds.
@@ -245,27 +402,69 @@ impl Ofdm {
         Some((0..self.p.num_carriers).map(|k| x[self.p.first_bin + k] * scale).collect())
     }
 
-    /// Search `rx` from `from` for a frame. Returns the sample index where the
-    /// body of preamble B starts.
-    pub fn detect(&self, rx: &[f32], from: usize) -> Option<usize> {
-        self.detect_chunked(rx, from, 8 * self.p.symbol_len())
+    /// Search `rx` from `from` for a frame with the modem's detector. See [`Detection`].
+    pub fn detect(&self, rx: &[f32], from: usize) -> Detection {
+        self.detect_with(self.detector, rx, from)
     }
 
-    /// Samples before `from` that [`detect`](Self::detect) reads to settle its filters.
+    /// Like [`Ofdm::detect`], with the given detector.
+    pub fn detect_with(&self, detector: Detector, rx: &[f32], from: usize) -> Detection {
+        if from >= rx.len() {
+            return Detection { at: None, resume: from };
+        }
+        let found = match detector {
+            Detector::SchmidlCox => {
+                let at = self.detect_sc(rx, from);
+                // Nothing found: search again over the end that could hold a preamble
+                // still arriving, preambles A and B and margin for the fine timing
+                // around them. (Not the filter warm-up, `detect_history`, which the
+                // search reads before its start by itself.)
+                let rescan = 3 * self.p.symbol_len() + 2 * self.p.nfft;
+                Detection { at, resume: at.unwrap_or(from.max(rx.len().saturating_sub(rescan))) }
+            }
+        };
+        // Checked in every build: a caller that searches on from `resume` after a
+        // detection would loop forever if it did not move on, so fail instead.
+        assert!(found.resume >= from && found.resume <= rx.len(), "{detector}: {found:?} from {from}");
+        assert!(found.at.is_none() || found.resume > from, "{detector}: {found:?} from {from}");
+        found
+    }
+
+    /// Schmidl-Cox search, the original detector.
+    fn detect_sc(&self, rx: &[f32], from: usize) -> Option<usize> {
+        self.detect_traced(rx, from, |_| {})
+    }
+
+    /// Samples before `from` that a Schmidl-Cox search reads to settle its filters.
     /// A caller that drops old audio should keep this much before where it searches next.
     pub fn detect_history(&self) -> usize {
         detect_warmup(self.p.fs, self.p.detect_band_hz.0)
     }
 
-    /// [`detect`](Self::detect), filtering `chunk` samples past what the search needs
+    /// The Schmidl-Cox search, filtering `chunk` samples past what the search needs
     /// each time it runs out (fewer, larger steps; the result does not depend on it).
-    fn detect_chunked(&self, rx: &[f32], from: usize, chunk: usize) -> Option<usize> {
+    fn detect_chunked(
+        &self,
+        rx: &[f32],
+        from: usize,
+        chunk: usize,
+        on_plateau: &mut dyn FnMut(PlateauPeaks),
+    ) -> Option<usize> {
         // Filtering keeps preamble A periodic (the filter is linear and time-invariant),
         // so the autocorrelation still works on the filtered copy. See
         // `OfdmParams::detect_band_hz` for the band.
         let (lo, hi) = self.p.detect_band_hz;
         let mut band = Band::new(rx, from, self.p.fs, lo, hi);
-        self.detect_in(&mut band, &self.pre_b_hp, from, chunk)
+        self.detect_in(&mut band, &self.pre_b_hp, from, chunk, on_plateau)
+    }
+
+    /// The Schmidl-Cox search ([`Detector::SchmidlCox`]), reporting what it found at every plateau it looked for
+    /// preamble B at, up to the one it confirmed (positions are indices into `rx`).
+    /// For measuring detection (see `preamble_b_search_eval` in `vardefm-modem`), not
+    /// for receiving.
+    #[doc(hidden)]
+    pub fn detect_traced(&self, rx: &[f32], from: usize, mut on_plateau: impl FnMut(PlateauPeaks)) -> Option<usize> {
+        self.detect_chunked(rx, from, 8 * self.p.symbol_len(), &mut on_plateau)
     }
 
     /// Schmidl-Cox search over the band-passed copy of `rx[from..]` in `band`,
@@ -274,7 +473,17 @@ impl Ofdm {
     /// The filters run only as far as the search reads (plus `chunk`), so a search that
     /// stops early (at a burst) costs no more than the audio it has looked at. Each
     /// read is preceded by a fill to the sample it needs.
-    fn detect_in(&self, band: &mut Band, template: &[f32], from: usize, chunk: usize) -> Option<usize> {
+    ///
+    /// `on_plateau` is called with what was found at each plateau preamble B was looked
+    /// for at.
+    fn detect_in(
+        &self,
+        band: &mut Band,
+        template: &[f32],
+        from: usize,
+        chunk: usize,
+        on_plateau: &mut dyn FnMut(PlateauPeaks),
+    ) -> Option<usize> {
         let n = self.p.nfft;
         let h = n / 2;
         let ncp = self.p.ncp;
@@ -311,10 +520,15 @@ impl Ofdm {
                     if end - start >= ncp / 4 {
                         let a0 = from + ((start + end) / 2).saturating_sub(ncp / 2);
                         let expected = a0 - from + l + ncp;
-                        // `fine_timing` reads up to `expected + ncp + n`.
-                        band.fill_to(expected + ncp + n);
-                        if let Some(b) = self.fine_timing(band.hp(), template, expected) {
-                            return Some(from + b);
+                        // The search reads up to `expected + FINE_TIMING_SPAN_NCP * ncp + n`.
+                        // The loop condition keeps that inside `len` (see the assertion
+                        // in `new`), so the result does not depend on how much audio
+                        // follows.
+                        band.fill_to(expected + FINE_TIMING_SPAN_NCP * ncp + n);
+                        let peaks = self.preamble_b_peaks(band.hp(), template, expected).shifted(from);
+                        on_plateau(peaks);
+                        if let Some(b) = peaks.confirmed() {
+                            return Some(b);
                         }
                     }
                 }
@@ -328,33 +542,42 @@ impl Ofdm {
         None
     }
 
-    /// Cross-correlate `x` with preamble B's `template` around `expected` and return
-    /// the best start.
+    /// Cross-correlate `x` with preamble B's `template` around `expected`: the best
+    /// start within a cyclic prefix of `expected`, and the best further off (see
+    /// [`FINE_TIMING_SPAN_NCP`]).
     ///
     /// Detection passes the high-passed audio and the template filtered the same way,
     /// so the timing carries no filter delay. On unfiltered audio a sub-tone would leak
     /// into the correlation with preamble B's lowest carriers (281 Hz in wide) and
     /// swell the energy it is normalised by, and the confirmation would fail.
-    fn fine_timing(&self, x: &[f32], template: &[f32], expected: usize) -> Option<usize> {
+    fn preamble_b_peaks(&self, x: &[f32], template: &[f32], expected: usize) -> PlateauPeaks {
         let n = self.p.nfft;
-        let span = self.p.ncp as isize;
-        let mut best = (0.0f32, 0usize);
+        let near_span = self.p.ncp as isize;
+        let span = FINE_TIMING_SPAN_NCP as isize * near_span;
+        let mut near = (0.0f32, 0usize);
+        let mut far = (0.0f32, 0usize);
         for off in -span..=span {
             let s = expected as isize + off;
             if s < 0 || s as usize + n > x.len() {
                 continue;
             }
-            let w = &x[s as usize..s as usize + n];
-            let e = w.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if e <= 0.0 {
+            // Energy and correlation in one pass: each sum adds the same terms in the
+            // same order as on its own, and the two do not wait for each other.
+            let (mut energy, mut dot) = (0.0f32, 0.0f32);
+            for (a, b) in x[s as usize..s as usize + n].iter().zip(template) {
+                energy += a * a;
+                dot += a * b;
+            }
+            if energy <= 0.0 {
                 continue;
             }
-            let c = w.iter().zip(template).map(|(a, b)| a * b).sum::<f32>().abs() / e;
+            let c = dot.abs() / energy.sqrt();
+            let best = if off.abs() <= near_span { &mut near } else { &mut far };
             if c > best.0 {
-                best = (c, s as usize);
+                *best = (c, s as usize);
             }
         }
-        (best.0 >= MIN_PREAMBLE_CORR).then_some(best.1)
+        PlateauPeaks { expected, near, far }
     }
 
     /// Demodulate `nsym` data symbols of a frame whose preamble B starts at `b_start`.
@@ -1000,7 +1223,7 @@ mod tests {
         rx.extend(ofdm.modulate(&data));
         rx.extend(vec![0.0; 2000]);
 
-        let b = ofdm.detect(&rx, 0).expect("frame not detected");
+        let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
         let frame = ofdm.demodulate(&rx, b, nsym).expect("demod failed");
         let mut out = Vec::new();
         for s in frame.symbols.iter().flatten() {
@@ -1106,7 +1329,7 @@ mod tests {
             let mut rx = vec![0.0; 555];
             rx.extend(ofdm.modulate(&data));
             rx.extend(vec![0.0; 2000]);
-            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
             let frame = ofdm.demodulate_header(&rx, b, data.len()).expect("demod failed");
             for (got, sent) in frame.symbols.iter().flatten().zip(data.iter().flatten()) {
                 assert!((got - sent).norm() < 0.1, "{}: {got} vs {sent}", ofdm.p.name);
@@ -1129,7 +1352,7 @@ mod tests {
             let mut rx = vec![0.0; 555];
             rx.extend(ofdm.modulate(&data));
             rx.extend(vec![0.0; 2000]);
-            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
             let clean = header_estimate(&ofdm, &rx, b, data.len());
             // A 1 ms click of 10 times the signal's RMS in header symbol 4.
             let l = ofdm.p.symbol_len();
@@ -1156,7 +1379,7 @@ mod tests {
             rx.extend(vec![0.0; 2000]);
             let mut chain = Chain::bandpass4(ofdm.p.fs, lo, hi);
             chain.process_buf(&mut rx);
-            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
             let error_db = |f: Frame| {
                 let n = f.symbols.iter().flatten().count() as f32;
                 let err = f.symbols.iter().flatten().zip(data.iter().flatten()).map(|(g, s)| (g - s).norm_sqr());
@@ -1186,13 +1409,13 @@ mod tests {
             let mut rx = vec![0.0; 1000];
             rx.extend(ofdm.modulate_with_leader(&random_frame(&ofdm, Modulation::Qpsk, 4, 1), 0.15));
             rx.extend(vec![0.0; 1000]);
-            let truth = ofdm.detect(&rx, 0).expect("frame not detected without a tone");
+            let truth = ofdm.detect(&rx, 0).at.expect("frame not detected without a tone");
             let a = 1500.0 / deviation_hz;
             for f in CTCSS_HZ {
                 for ph in [0.0, 1.9] {
                     let w = 2.0 * std::f32::consts::PI * f / ofdm.p.fs;
                     let x: Vec<f32> = rx.iter().enumerate().map(|(i, v)| v + a * (w * i as f32 + ph).sin()).collect();
-                    let got = ofdm.detect(&x, 0);
+                    let got = ofdm.detect(&x, 0).at;
                     // As `detector_eval` counts a hit: within a quarter cyclic prefix.
                     if !got.is_some_and(|b| b.abs_diff(truth) <= ofdm.p.ncp / 4) {
                         missed.push(format!("{} {f} Hz phase {ph}: {got:?}, want {truth}", ofdm.p.name));
@@ -1220,7 +1443,7 @@ mod tests {
             let mut rx = vec![0.0; 4000];
             rx.extend(ofdm.modulate_with_leader(&random_frame(&ofdm, Modulation::Qpsk, 4, 1), 0.15));
             rx.extend(vec![0.0; 1000]);
-            let truth = ofdm.detect(&rx, 0).expect("frame not detected without a tone");
+            let truth = ofdm.detect(&rx, 0).at.expect("frame not detected without a tone");
             let a_start = truth - ncp - l;
             let a = 1500.0 / deviation_hz;
             // Starts over the 25 ms before preamble A, every half millisecond.
@@ -1230,10 +1453,10 @@ mod tests {
                 for ph in [0.0, 1.9] {
                     let w = 2.0 * std::f32::consts::PI * f / ofdm.p.fs;
                     let x: Vec<f32> = rx.iter().enumerate().map(|(i, v)| v + a * (w * i as f32 + ph).sin()).collect();
-                    let settled = ofdm.detect(&x, 0);
+                    let settled = ofdm.detect(&x, 0).at;
                     assert!(settled.is_some_and(|b| b.abs_diff(truth) <= ncp / 4), "{} {f} Hz", ofdm.p.name);
                     for from in (a_start - span..=a_start - 2 * ncp).step_by(step) {
-                        let got = ofdm.detect(&x, from);
+                        let got = ofdm.detect(&x, from).at;
                         if got != settled {
                             missed.push(format!(
                                 "{} {f} Hz phase {ph} from A - {}: {got:?}, want {settled:?} (no tone {truth})",
@@ -1299,11 +1522,16 @@ mod tests {
             let eager = |from: usize| {
                 let mut band = Band::new(&rx, from, ofdm.p.fs, lo, hi);
                 band.fill_to(rx.len());
-                ofdm.detect_in(&mut band, &ofdm.pre_b_hp, from, 0)
+                ofdm.detect_in(&mut band, &ofdm.pre_b_hp, from, 0, &mut |_| {})
             };
             let lazy = |from: usize| {
-                let got = ofdm.detect(&rx, from);
-                assert_eq!(ofdm.detect_chunked(&rx, from, 0), got, "{} from {from}, no fill step", ofdm.p.name);
+                let got = ofdm.detect(&rx, from).at;
+                assert_eq!(
+                    ofdm.detect_chunked(&rx, from, 0, &mut |_| {}),
+                    got,
+                    "{} from {from}, no fill step",
+                    ofdm.p.name
+                );
                 got
             };
             let mut found = 0;
@@ -1330,18 +1558,168 @@ mod tests {
             let ofdm = Ofdm::new(p);
             let tol = ofdm.p.ncp / 4;
             let silence = vec![0.0; 10 * ofdm.p.fs as usize];
-            assert_eq!(ofdm.detect(&silence, 0), None, "{}", ofdm.p.name);
+            assert_eq!(ofdm.detect(&silence, 0).at, None, "{}", ofdm.p.name);
             let mut rx = silence.clone();
             rx.extend(ofdm.modulate_with_leader(&random_frame(&ofdm, Modulation::Qpsk, 4, 3), 0.1));
             rx.extend(vec![0.0; 2000]);
-            let truth = ofdm.detect(&rx, 0).expect("frame not detected");
+            let truth = ofdm.detect(&rx, 0).at.expect("frame not detected");
             for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 3e38, -3e38] {
                 let mut x = rx.clone();
                 x[1000..1010].fill(bad);
-                let got = ofdm.detect(&x, 0);
+                let got = ofdm.detect(&x, 0).at;
                 assert!(got.is_some_and(|b| b.abs_diff(truth) <= tol), "{} {bad}: {got:?}, want {truth}", ofdm.p.name);
             }
         }
+    }
+
+    /// Where the body of preamble B starts in a frame with a leader of `leader_s`,
+    /// after `lead` samples of silence.
+    fn known_start(ofdm: &Ofdm, lead: usize, leader_s: f32) -> usize {
+        lead + (ofdm.leader_symbols(leader_s) + 1) * ofdm.p.symbol_len() + ofdm.p.ncp
+    }
+
+    #[test]
+    fn every_detector_finds_the_known_start() {
+        // Within a quarter of the cyclic prefix, as the detector evaluation counts a hit;
+        // the TX low-pass delays the waveform by a few samples.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 3);
+            for (lead, sign) in [(0, 1.0), (777, 1.0), (4321, -1.0)] {
+                let mut rx = vec![0.0; lead];
+                rx.extend(ofdm.modulate_with_leader(&data, 0.1).iter().map(|v| v * sign));
+                rx.extend(vec![0.0; 2000]);
+                let want = known_start(&ofdm, lead, 0.1);
+                for d in Detector::ALL {
+                    let got = ofdm.detect_with(d, &rx, 0).at.unwrap_or_else(|| panic!("{d} found nothing"));
+                    let name = ofdm.p.name;
+                    assert!(got.abs_diff(want) <= ofdm.p.ncp / 4, "{name} {d}: lead {lead}: {got}, want {want}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_detector_finds_the_burst_resuming_as_told() {
+        // A streaming receiver calls detect on a growing buffer and, while nothing is
+        // found, searches again from `resume`. A detection must still be the one the
+        // whole recording gives.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 4);
+            let mut rx = vec![0.0; 1000];
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            for d in Detector::ALL {
+                let full = ofdm.detect_with(d, &rx, 0).at.unwrap_or_else(|| panic!("{d} found nothing"));
+                for step in [1, 97, 480] {
+                    let mut search = 0;
+                    let got = (step..rx.len()).step_by(step).find_map(|end| {
+                        let found = ofdm.detect_with(d, &rx[..end], search);
+                        search = found.resume;
+                        found.at
+                    });
+                    assert_eq!(got, Some(full), "{} {d}: chunks of {step}", ofdm.p.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_detector_finds_a_burst_once_when_resuming() {
+        // Searching on from `resume` after each detection, as after a header that
+        // fails, must not find the same burst again.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 6);
+            let mut rx = vec![0.0; 5000];
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            rx.extend(vec![0.0; 5000]);
+            for d in Detector::ALL {
+                let mut found = Vec::new();
+                let mut from = 0;
+                loop {
+                    let det = ofdm.detect_with(d, &rx, from);
+                    let Some(b) = det.at else { break };
+                    found.push(b);
+                    from = det.resume;
+                }
+                assert_eq!(found.len(), 1, "{} {d}: found {found:?}", ofdm.p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_detector_keeps_its_resume_contract() {
+        // `from <= resume <= len`, and a detection moves the search on, wherever the
+        // buffer ends and the search starts: in silence, in noise, in a burst.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let l = ofdm.p.symbol_len();
+            let data = random_frame(&ofdm, Modulation::Qpsk, 4, 8);
+            let mut rx = vec![0.0; 3 * l];
+            let mut rng = Prng::new(9);
+            rx.extend((0..5 * l).map(|_| 0.3 * rng.uniform()));
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            for d in Detector::ALL {
+                for end in (0..=rx.len()).step_by(l / 3 + 1) {
+                    for from in (0..=end + 1).step_by(l / 2 + 1) {
+                        let det = ofdm.detect_with(d, &rx[..end], from);
+                        let name = ofdm.p.name;
+                        assert!(det.resume >= from, "{name} {d}: {det:?} from {from} in {end}");
+                        assert!(from > end || det.resume <= end, "{name} {d}: {det:?} from {from} in {end}");
+                        assert!(det.at.is_none() || det.resume > from, "{name} {d}: {det:?} from {from} in {end}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_detector_ignores_polarity() {
+        // Some radios invert the audio. Exactly the same sample either way.
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let data = random_frame(&ofdm, Modulation::Qpsk, 20, 3);
+            let mut rx = vec![0.0; 777];
+            rx.extend(ofdm.modulate_with_leader(&data, 0.1));
+            let mut rng = Prng::new(11);
+            rx.iter_mut().for_each(|v| *v += 0.05 * rng.uniform());
+            let inverted: Vec<f32> = rx.iter().map(|v| -v).collect();
+            for d in Detector::ALL {
+                let got = ofdm.detect_with(d, &rx, 0);
+                assert!(got.at.is_some(), "{} {d}: nothing found", ofdm.p.name);
+                assert_eq!(ofdm.detect_with(d, &inverted, 0), got, "{} {d}", ofdm.p.name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_detector_returns_none_past_the_end() {
+        for p in OfdmParams::all() {
+            let ofdm = Ofdm::new(p);
+            let rx = vec![0.0; 1000];
+            for d in Detector::ALL {
+                for from in [rx.len(), rx.len() + 1] {
+                    let det = ofdm.detect_with(d, &rx, from);
+                    assert_eq!(det, Detection { at: None, resume: from }, "{} {d}", ofdm.p.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn detector_list_is_complete() {
+        // A variant missing from `ALL` could not be chosen, benchmarked or evaluated.
+        // A new variant needs an arm here, and its index only fits if `ALL` grew.
+        let index = |d: Detector| match d {
+            Detector::SchmidlCox => 0,
+        };
+        for (i, d) in Detector::ALL.into_iter().enumerate() {
+            assert_eq!(index(d), i, "{d}");
+            assert_eq!(d.name().parse::<Detector>(), Ok(d));
+        }
+        let max = Detector::ALL.into_iter().map(index).max();
+        assert_eq!(max, Some(Detector::ALL.len() - 1));
     }
 
     fn random_frame(ofdm: &Ofdm, m: Modulation, nsym: usize, seed: u32) -> Vec<Vec<Complex32>> {
@@ -1427,7 +1805,7 @@ mod tests {
             let mut rx = vec![0.0; 777];
             rx.extend(ofdm.modulate_with_leader_rms(&data, 0.1, 0.5));
             rx.extend(vec![0.0; 2000]);
-            let b = ofdm.detect(&rx, 0).expect("frame not detected");
+            let b = ofdm.detect(&rx, 0).at.expect("frame not detected");
             let frame = ofdm.demodulate(&rx, b, data.len()).expect("demod failed");
             let mut out = Vec::new();
             for s in frame.symbols.iter().flatten() {
@@ -1436,5 +1814,100 @@ mod tests {
             assert_eq!(out, bits, "{}", ofdm.p.name);
             println!("{}: SNR at rms 0.5 without noise {:.1} dB", ofdm.p.name, frame.snr_db);
         }
+    }
+
+    /// Audio that is silent except for `n` samples at `at`, which correlate `c` with
+    /// preamble B's template (the rest of their energy is noise at right angles to it).
+    fn audio_correlating(ofdm: &Ofdm, c: f32, at: usize) -> Vec<f32> {
+        let t = &ofdm.pre_b_hp;
+        let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        let tt = dot(t, t);
+        let mut rng = Prng::new(7);
+        let mut u: Vec<f32> = t.iter().map(|_| rng.bpsk()).collect();
+        let along = dot(&u, t) / tt;
+        u.iter_mut().zip(t).for_each(|(u, t)| *u -= along * t);
+        let scale = (1.0 - c * c).sqrt() * (tt / dot(&u, &u)).sqrt();
+        let mut x = vec![0.0; at];
+        x.extend(t.iter().zip(&u).map(|(t, u)| c * t + scale * u));
+        x.extend(vec![0.0; 4 * ofdm.p.symbol_len()]);
+        x
+    }
+
+    /// Preamble B is taken within a cyclic prefix of where the plateau puts it at a
+    /// correlation of [`MIN_PREAMBLE_CORR`], but further off only at a higher one: 0.42,
+    /// the most a plateau that was not a frame's reached out there when
+    /// [`MIN_FAR_PREAMBLE_CORR`] was chosen, is not enough.
+    #[test]
+    fn preamble_b_far_from_the_plateau_needs_a_higher_correlation() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let (name, ncp) = (ofdm.p.name, ofdm.p.ncp);
+            let at = 5000;
+            let found = |c: f32, expected: usize| {
+                ofdm.preamble_b_peaks(&audio_correlating(&ofdm, c, at), &ofdm.pre_b_hp, expected).confirmed()
+            };
+            for expected in [at - ncp, at, at + ncp] {
+                assert_eq!(found(0.35, expected), Some(at), "{name}: 0.35 near, expected {expected}");
+            }
+            // Two prefixes off at least: just past one, the peak's shoulder is within it.
+            let span = FINE_TIMING_SPAN_NCP * ncp;
+            for expected in [at - span, at - 2 * ncp, at + 2 * ncp, at + span] {
+                assert_eq!(found(0.42, expected), None, "{name}: 0.42 far, expected {expected}");
+                assert_eq!(found(0.5, expected), Some(at), "{name}: 0.5 far, expected {expected}");
+            }
+            assert_eq!(found(0.9, at + span + ncp), None, "{name}: outside the search");
+        }
+    }
+
+    /// Preamble B's peak has shoulders: a sample or two off, the correlation is still
+    /// far above [`MIN_FAR_PREAMBLE_CORR`]. With the peak just within a cyclic prefix
+    /// of where the plateau puts it, the shoulder beyond the prefix is not taken for it.
+    #[test]
+    fn a_shoulder_far_from_the_plateau_does_not_beat_the_peak() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let (name, ncp) = (ofdm.p.name, ofdm.p.ncp);
+            let at = 5000;
+            let x = audio_correlating(&ofdm, 1.0, at);
+            for expected in [at - ncp, at + ncp] {
+                let peaks = ofdm.preamble_b_peaks(&x, &ofdm.pre_b_hp, expected);
+                assert_eq!(peaks.near.1, at, "{name}");
+                // The case is the one meant only if the shoulder would pass on its own.
+                assert!(peaks.far.0 >= MIN_FAR_PREAMBLE_CORR, "{name}: shoulder {}", peaks.far.0);
+                assert_eq!(peaks.confirmed(), Some(at), "{name}, expected {expected}");
+            }
+        }
+    }
+
+    /// A peak just outside the search is not seen, but its shoulder just inside can
+    /// pass for it. What is then taken is within the quarter prefix that timing is
+    /// allowed to be off by.
+    #[test]
+    fn a_peak_just_outside_the_search_is_not_taken_far_from_where_it_is() {
+        for p in [OfdmParams::narrow(), OfdmParams::wide()] {
+            let ofdm = Ofdm::new(p);
+            let (name, ncp) = (ofdm.p.name, ofdm.p.ncp);
+            let at = 5000;
+            let x = audio_correlating(&ofdm, 1.0, at);
+            let mut taken = 0;
+            for outside in 1..=ncp {
+                for expected in [at - FINE_TIMING_SPAN_NCP * ncp - outside, at + FINE_TIMING_SPAN_NCP * ncp + outside] {
+                    if let Some(b) = ofdm.preamble_b_peaks(&x, &ofdm.pre_b_hp, expected).confirmed() {
+                        taken += 1;
+                        assert!(b.abs_diff(at) <= ncp / 4, "{name}: peak {outside} outside, taken at {b}");
+                    }
+                }
+            }
+            // The case is the one meant only if a shoulder is taken at all.
+            assert!(taken > 0, "{name}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "cyclic prefix is too long")]
+    fn a_cyclic_prefix_the_preamble_b_search_cannot_cover_is_refused() {
+        // 3/8 of the FFT length: just over the 4/11 the search covers.
+        let p = OfdmParams::wide();
+        Ofdm::new(OfdmParams { ncp: 3 * p.nfft / 8, ..p });
     }
 }
