@@ -27,13 +27,15 @@ fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
     }
 }
 
-/// Push audio in 10 ms chunks, like a sound card would deliver it.
-fn receive(rx: &mut Receiver, audio: &[f32]) -> Vec<RxBurst> {
+/// Push audio in 10 ms chunks, like a sound card would deliver it, then a second of
+/// silence so that a burst at the very end completes.
+pub(crate) fn receive(rx: &mut Receiver, audio: &[f32]) -> Vec<RxBurst> {
+    let fs = rx.fs();
     let mut out = Vec::new();
-    for chunk in audio.chunks(480) {
+    for chunk in audio.chunks((fs / 100.0) as usize) {
         out.extend(rx.push(chunk));
     }
-    out.extend(rx.push(&vec![0.0; 48_000]));
+    out.extend(rx.push(&vec![0.0; fs as usize]));
     out
 }
 
@@ -202,9 +204,10 @@ fn survives_a_click() {
     assert!(scale.iter().enumerate().all(|(i, &s)| i == hit || s < scale[hit] / 10.0), "scales {scale:?}");
     let ok = m.decode_payload(&b.header, &frame).iter().filter(|p| p.is_some()).count();
     assert_eq!(ok, ncw);
-    // Without the scale the click symbol's LLRs are far too confident.
+    // Without the scale the click symbol's LLRs are far too confident. One pass only:
+    // the later passes must not get to rescue what the missing scale loses.
     frame.symbol_noise_scale.iter_mut().for_each(|s| *s = 1.0);
-    let ok_flat = m.decode_payload(&b.header, &frame).iter().filter(|p| p.is_some()).count();
+    let ok_flat = m.decode_payload_passes(&b.header, &frame, 1).data.iter().filter(|p| p.is_some()).count();
     assert!(ok_flat < ncw, "{ok_flat} codewords decode even without the per-symbol scale");
 
     // And the same through the streaming receiver.
