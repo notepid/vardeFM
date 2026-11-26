@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use vardefm_link::LinkConfig;
-use vardefm_modem::{Modem, OfdmParams, LEVELS, MAX_DIGIS};
+use vardefm_modem::{Detector, Modem, OfdmParams, LEVELS, MAX_DIGIS};
 use vardefm_sim::{transmit, FmChannelConfig};
 
 /// Audio step: 10 ms.
@@ -46,6 +46,8 @@ pub struct SimPairConfig {
     pub b_port: u16,
     /// Save every transmission as WAV files in this folder.
     pub record: Option<PathBuf>,
+    /// How both receivers find bursts.
+    pub detector: Detector,
     /// Print one line per transmission and reception.
     pub verbose: bool,
     /// Call signs of digipeaters between A and B, in order from A (at most two).
@@ -68,6 +70,7 @@ impl Default for SimPairConfig {
             a_port: 8300,
             b_port: 8310,
             record: None,
+            detector: Detector::default(),
             verbose: true,
             digis: Vec::new(),
             hop_margin_s: LinkConfig::default().hop_margin_s,
@@ -125,7 +128,7 @@ impl SimPair {
         if let Some(dir) = &cfg.record {
             std::fs::create_dir_all(dir)?;
         }
-        let modem = Arc::new(Modem::new(params, cfg.txdelay_s));
+        let modem = Arc::new(Modem::new(params, cfg.txdelay_s).with_detector(cfg.detector));
         let link = LinkConfig { hop_margin_s: cfg.hop_margin_s, ..LinkConfig::default() };
         let count = cfg.digis.len() + 2;
         let seed = cfg.seed as u32 * 2;

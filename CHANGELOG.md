@@ -10,6 +10,13 @@ On-air compatible with 0.3.0 to 0.3.2; see the note on mixed versions under "Con
 to a busy frequency" below.
 
 ### Added
+- **Matched-filter burst detector**, chosen with `--detector mf` on the receiving
+  commands, `sim-pair` and `bench`. It cross-correlates the audio with the known
+  preambles. Where narrow-mode bursts start to decode it decodes what decoding from the
+  known position decodes, where Schmidl-Cox loses about one burst in seven (5 dB CNR,
+  level 1, in `detector_eval`). In wide mode the two are close, and on a wide link that
+  de-emphasises only at the receiver Schmidl-Cox is ahead. Schmidl-Cox stays the
+  default, and nothing on the air changes. (#36, #37, #38, #39, #40)
 - **Embeddable engine and C ABI.** `vardefm-engine` holds the station and
   `RadioEngine` without sound-card, PTT-hardware or TCP dependencies.
   `vardefm-ffi` exposes a thread-free C API (`vfm_new`, `vfm_rx_audio`,
@@ -51,7 +58,7 @@ to a busy frequency" below.
   preamble B starts if a frame was found (the old value), and `resume`, where the next
   search starts, after a header that fails or once more audio has arrived. Library
   users who called `ofdm.detect(rx, from)` now read `.at`. New: the `Detector` enum
-  (Schmidl-Cox only so far), `Ofdm::detect_with`, and `Ofdm::with_detector` /
+  (Schmidl-Cox and the matched filter), `Ofdm::detect_with`, and `Ofdm::with_detector` /
   `Modem::with_detector`. The receiver searches on from `resume` and no longer looks
   back three symbols while a header is still arriving. (#37, thanks @mustig)
 - **`Ofdm::new` now panics on a cyclic prefix longer than 4/11 (0.36) of the FFT

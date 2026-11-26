@@ -76,6 +76,11 @@ The reference receiver:
    low-passes it too in wide mode (2500 Hz), and runs a Schmidl-Cox autocorrelation.
 2. Confirms the frame by cross-correlating the high-passed audio with preamble B, filtered
    the same way.
+
+   Steps 1 and 2 are the default detector. With `--detector mf` the receiver instead
+   cross-correlates the audio with the known waveform of preambles A and B (a matched
+   filter, normalized by the audio's energy) and takes the largest value within one
+   symbol of the first that exceeds 0.4. Nothing on the air changes.
 3. Places the FFT window mid cyclic prefix, which absorbs clock drift of ±ncp/2 samples
    over the frame.
 4. Estimates the channel from preamble B, smoothed across frequency, and decodes the

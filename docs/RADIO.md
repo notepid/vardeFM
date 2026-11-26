@@ -128,6 +128,13 @@ down if the interface has a trimmer, or ask the other station to raise its
 `vardefm tone` to check that the radio keys.
 A watchdog unkeys the radio if a transmission runs 3 s past its expected length.
 
+**Burst detector.** `--detector mf` makes the receiver find bursts with a matched
+filter instead of the default Schmidl-Cox search. It finds weaker bursts, and in
+wide mode it keeps finding them when the radio passes its CTCSS tone to the data
+port, where Schmidl-Cox misses most bursts. It changes nothing on the air, so each
+station chooses for itself. `vardefm bench --detector mf` shows what it costs this
+computer.
+
 ## 4. Slow computers (Raspberry Pi)
 
 The receiver decodes each burst after it ends, and the reply waits for that.

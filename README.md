@@ -135,7 +135,9 @@ vardefm rx-wav --mode narrow --mod qpsk --in recording.wav
 ```
 
 Useful options: `--txdelay` (leader length; it must exceed the radio's key-up time),
-`--tilt=<dB/oct>`, `--rms <level>`. Set `VARDEFM_DUMP=1` to print per-carrier SNR.
+`--tilt=<dB/oct>`, `--rms <level>`, and on the receiving commands `--detector mf` to
+find bursts with the matched filter instead of Schmidl-Cox. Set `VARDEFM_DUMP=1` to
+print per-carrier SNR.
 
 ### Tests
 
