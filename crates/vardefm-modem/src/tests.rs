@@ -28,13 +28,15 @@ fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
     }
 }
 
-/// Push audio in 10 ms chunks, like a sound card would deliver it.
-fn receive(rx: &mut Receiver, audio: &[f32]) -> Vec<RxBurst> {
+/// Push audio in 10 ms chunks, like a sound card would deliver it, then a second of
+/// silence so that a burst at the very end completes.
+pub(crate) fn receive(rx: &mut Receiver, audio: &[f32]) -> Vec<RxBurst> {
+    let fs = rx.fs();
     let mut out = Vec::new();
-    for chunk in audio.chunks(480) {
+    for chunk in audio.chunks((fs / 100.0) as usize) {
         out.extend(rx.push(chunk));
     }
-    out.extend(rx.push(&vec![0.0; 48_000]));
+    out.extend(rx.push(&vec![0.0; fs as usize]));
     out
 }
 

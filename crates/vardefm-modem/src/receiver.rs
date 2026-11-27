@@ -85,6 +85,12 @@ impl Receiver {
         Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, hold_until: None, detector, last: 0.0 }
     }
 
+    /// Sample rate of the audio pushed, Hz.
+    #[cfg(test)]
+    pub(crate) fn fs(&self) -> f32 {
+        self.modem.fs()
+    }
+
     /// Absolute index of the next sample to be pushed.
     pub fn position(&self) -> u64 {
         self.base + self.buf.len() as u64
