@@ -145,6 +145,9 @@ impl Link {
 
     /// The channel of trial `t` at `cnr` dB: its own noise, and the trial's CTCSS
     /// tone if the link has one, the standard tones in turn, each with its own phase.
+    /// A tone always meets the payload and noise of its own trials, and unless the
+    /// trials are a multiple of the tones, the first tones get one trial more: the
+    /// sweep shows what a tone costs over all tones, the CTCSS pass what each one costs.
     fn trial_channel(&self, cnr: f32, t: u32) -> FmChannelConfig {
         let ctcss = (self.ctcss_deviation_hz > 0.0).then(|| Ctcss {
             hz: CTCSS_HZ[t as usize % CTCSS_HZ.len()],
@@ -585,10 +588,10 @@ pub(crate) fn env_flag(name: &str) -> bool {
     }
 }
 
-/// The kinds of audio without a burst in the false-detection pass, for [`noise_case`].
 /// The noise case the streaming receiver's CPU load is measured on: a weak carrier
 /// keeps the detectors searching without a burst to find.
 const LOAD_CASE: &str = "weak carrier, 5 dB CNR";
+/// The kinds of audio without a burst in the false-detection pass, for [`noise_case`].
 const NOISE_CASES: [&str; 5] =
     ["carrier at -10 dB CNR", "weak carrier, 5 dB CNR", "white noise", "keyed tones", "data without preambles"];
 
@@ -681,12 +684,20 @@ fn noise_seeds(seed: u32, case: usize, mode_index: usize) -> (u64, u32) {
 /// (decoding from the true position), out of `trials`, for every tone at every
 /// deviation, after a row without a tone. Where the genie decodes and a detector does
 /// not, detection lost the burst; where neither does, the tone broke demodulation.
-fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw: usize, trials: u32) {
+/// `Err` when the true position cannot be measured on that path, as in the sweep.
+fn ctcss_pass(
+    m: &Modem,
+    mode: &str,
+    case: &CtcssCase,
+    cnr: f32,
+    level: u8,
+    ncw: usize,
+    trials: u32,
+) -> Result<(), String> {
     let base = ctcss_channel(&FmChannelConfig::by_name(mode).unwrap(), case);
     let clean = FmChannelConfig { cnr_db: None, ..base.clone() };
     // The true position as in `link_position`, which no detector defines.
-    let (truth, _) =
-        noiseless_position(m, m, &clean, level, ncw).unwrap_or_else(|e| panic!("{mode}, {}: {e}", case.name));
+    let (truth, _) = noiseless_position(m, m, &clean, level, ncw)?;
     // A receiver per detector, as in the main sweep.
     let receivers: Vec<Arc<Modem>> = Detector::ALL.iter().map(|&d| eval_modem(mode, 0.0, d)).collect();
     let names: Vec<&str> = Detector::ALL.iter().map(|d| d.name()).chain(["genie"]).collect();
@@ -743,6 +754,7 @@ fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw:
         print(format!("{f:6.1} Hz"), &counts);
     }
     print("all".into(), &total);
+    Ok(())
 }
 
 /// Detections and decoded headers in `rx`, scanning on after each detection.
@@ -757,17 +769,14 @@ fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw:
 /// channel busy.
 fn false_detections(m: &Modem, d: Detector, rx: &[f32]) -> (u32, u32) {
     let (mut dets, mut headers) = (0, 0);
-    let mut from = 0;
-    let mut found = m.ofdm.detect_with(d, rx, from);
+    let mut found = m.ofdm.detect_with(d, rx, 0);
+    // It ends: `detect_with` checks that a detection resumes past where it searched from.
     while let Some(b) = found.at {
         dets += 1;
         if m.ofdm.demodulate(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f)).is_some() {
             headers += 1;
         }
-        // Or the search would never end.
-        assert!(found.resume > from, "{d} found a burst at {b} from {from} and resumes at {}", found.resume);
-        from = found.resume;
-        found = m.ofdm.detect_with(d, rx, from);
+        found = m.ofdm.detect_with(d, rx, found.resume);
     }
     (dets, headers)
 }
@@ -902,7 +911,7 @@ fn detector_eval() {
                         writeln!(f, "{mode},{chan},{tx_tilt},{ctcss},{level},{ncw},{cnr},{trials},skipped,,").unwrap();
                     }
                 }
-                skipped.push(mode);
+                skipped.push(format!("{mode} bursts"));
                 None
             }
         };
@@ -939,7 +948,11 @@ fn detector_eval() {
         } else if ctcss_trials > 0 {
             for cnr in ctcss_cnr_list(mode) {
                 for case in ctcss_cases(mode) {
-                    ctcss_pass(m, mode, case, cnr, level, ncw, ctcss_trials);
+                    // Skipped like a link of the sweep: the rest of the run goes on.
+                    if let Err(e) = ctcss_pass(m, mode, case, cnr, level, ncw, ctcss_trials) {
+                        println!("{mode}, {}, CTCSS at {cnr} dB CNR: skipped: {e}", case.name);
+                        skipped.push(format!("{mode} CTCSS pass, {}, {cnr} dB", case.name));
+                    }
                 }
             }
         }
@@ -966,7 +979,7 @@ fn detector_eval() {
         println!("{line}");
     }
     // The rest of the run is still worth having, but it must not pass unnoticed.
-    assert!(skipped.is_empty(), "no bursts measured in {skipped:?}: see 'skipped' above");
+    assert!(skipped.is_empty(), "not measured: {skipped:?}: see 'skipped' above");
 }
 
 #[test]
@@ -1052,8 +1065,9 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
         let m = &*link.rx;
         // The channel's delays must not depend on the payload, or noiseless copies
         // could not give the position for every trial.
-        strict_link_position(&link, 1, 1);
-        let (_, found) = link_position(&link, 1, 1).unwrap();
+        let (truth, found) = link_position(&link, 1, 1).unwrap();
+        let far = far_detections(truth, &found, m.ofdm.p.ncp / 2);
+        assert!(far.is_empty(), "{mode}: {}", far.join("; "));
         let reference = Detector::ALL.iter().position(|&d| d == REFERENCE).unwrap();
         let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
         for t in 1..4 {
@@ -1061,7 +1075,7 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
             let at = m.ofdm.detect_with(REFERENCE, &transmit(&clean, &tx), 0).at;
             assert_eq!(at, found[reference], "{mode}: payload {t} moves the burst");
         }
-        for r in run_trials(&link, 25.0, 1, 1, 4) {
+        for r in run_trials_at(&link, truth, 25.0, 1, 1, 4) {
             assert!(r.genie, "{mode}: genie failed on a strong signal");
             assert!(r.det.iter().all(|&(_, ok)| ok), "{mode}: a detector missed a strong burst");
         }
@@ -1073,20 +1087,13 @@ fn harness_sees_strong_bursts_and_no_false_headers() {
 }
 
 /// A link the genie cannot decode without noise is refused, not measured: here a TX
-/// tilt of -18 dB/octave in wide mode, and +24 in narrow mode. The links the CI tests
-/// use pass.
+/// tilt of -18 dB/octave in wide mode, and +24 in narrow mode, for whichever reason
+/// (`mismatched_links_still_carry_strong_bursts` shows the links that are measured).
 #[test]
 fn link_position_refuses_a_link_the_genie_cannot_decode() {
     for (mode, tilt) in [("wide", -18.0), ("narrow", 24.0)] {
-        let err = link_position(&Link::new(mode, "matched", tilt), 1, 1).expect_err("measured a link nothing decodes");
-        assert!(err.contains("noiseless bursts"), "{mode} tilt {tilt}: {err}");
-    }
-    let cases = CHANNELS.iter().map(|&c| (c, 0.0)).chain([("matched", -6.0), ("matched", 6.0)]);
-    for (chan, tilt) in cases {
-        for mode in OfdmParams::all().map(|p| p.name) {
-            let r = link_position(&Link::new(mode, chan, tilt), 1, 1);
-            assert!(r.is_ok(), "{mode} {chan} tilt {tilt}: {r:?}");
-        }
+        let r = link_position(&Link::new(mode, "matched", tilt), 1, 1);
+        assert!(r.is_err(), "{mode} tilt {tilt}: measured a link nothing decodes: {r:?}");
     }
 }
 
