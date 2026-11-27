@@ -154,7 +154,7 @@ the 10 field bytes.
 
 | Bits | Field |
 |---|---|
-| 3 | kind: 0 ConnectReq, 1 ConnectAck, 2 Data, 3 Disc, 4 DiscAck |
+| 3 | kind: 0 ConnectReq, 1 ConnectAck, 2 Data, 3 Disc, 4 DiscAck; 5–7 reserved. A receiver holds the channel busy for a burst of a reserved kind whose CRC and fields are good, from its header for as long as `level` and `ncw` say it runs (at most the longest burst at that level, section 2.1), and otherwise ignores it: nothing in it is decoded, but the search for bursts goes on, so a burst of a known kind that starts inside it is received, and the channel stays busy until the later of the two ends. The receiver's own transmission ends the hold. A new kind must keep the meaning and ranges of `level`, `ncw` and `req_level`. |
 | 8 | session id (random, chosen by the caller) |
 | 3 | payload speed level |
 | 5 | ncw: payload codewords (0–24) |
@@ -412,7 +412,7 @@ Each command gets `OK`, or `WRONG` if it is invalid.
 | `CANCELPENDING` | Reserved; not sent yet. |
 | `BUFFER <n>` | Bytes queued and not yet acknowledged. Sent after every read from the data port (even if *n* is unchanged), and whenever acknowledgements change *n*, down to `BUFFER 0`. A report that follows a write therefore already counts that write. |
 | `PTT ON` / `PTT OFF` | Transmitter keyed / released. |
-| `BUSY ON` / `BUSY OFF` | Channel activity heard (audio in the carrier band at least 6 dB above the background level and above −40 dBFS, or a frame being received). The band is 422–2672 Hz in narrow mode and 400–6000 Hz in wide mode (filter edges, 6–9 dB down); sound outside it, such as a CTCSS tone, mains hum or hiss above the band, does not count. A steady open-squelch hiss becomes the background within about 2 s. After the modem's own transmission nothing is measured until the received audio comes back (at most 1 s), nor for 20 ms after that, and a busy hold from before the transmission ends. |
+| `BUSY ON` / `BUSY OFF` | Channel activity heard (audio in the carrier band at least 6 dB above the background level and above −40 dBFS, or a burst being received: from its header to its end, as long as the header says it runs, also for a burst of a reserved kind (section 2.3)). The band is 422–2672 Hz in narrow mode and 400–6000 Hz in wide mode (filter edges, 6–9 dB down); sound outside it, such as a CTCSS tone, mains hum or hiss above the band, does not count. A steady open-squelch hiss becomes the background within about 2 s. After the modem's own transmission nothing is measured until the received audio comes back (at most 1 s), nor for 20 ms after that, and a busy hold from before the transmission ends. |
 | `IAMALIVE` | Every 60 s. |
 
 ### 4.3 Data port

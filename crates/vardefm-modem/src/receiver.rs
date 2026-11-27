@@ -1,7 +1,7 @@
 //! Streaming receiver: feed audio in chunks, get decoded bursts out.
 
 use crate::busy::BusyDetector;
-use crate::{Header, Modem, LEVELS};
+use crate::{Header, Modem, Unpacked, LEVELS};
 use std::sync::Arc;
 use vardefm_dsp::MAX_SAMPLE;
 
@@ -39,6 +39,14 @@ impl AudioLevel {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Header decodes `Receiver::step` has attempted on this thread, for tests that
+    /// check how often the search stops inside a burst. Thread-local, so that tests
+    /// running at the same time do not mix their counts.
+    pub(crate) static HEADER_DECODES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// A frame waiting for its payload.
 #[derive(Clone, Copy)]
 struct Pending {
@@ -60,6 +68,11 @@ pub struct Receiver {
     search: usize,
     /// A frame whose header decoded but whose payload has not fully arrived.
     pending: Option<Pending>,
+    /// Absolute sample index (as [`position`](Self::position)) up to which a burst of a
+    /// kind this version doesn't know holds the channel busy: the end of its last symbol
+    /// as its header states it, at most a burst's worth. Nothing in it is decoded, but
+    /// the search for preambles goes on through it.
+    hold_until: Option<u64>,
     /// Whether something louder than the background is heard.
     detector: BusyDetector,
     /// The last good sample pushed.
@@ -69,7 +82,7 @@ pub struct Receiver {
 impl Receiver {
     pub fn new(modem: Arc<Modem>) -> Self {
         let detector = BusyDetector::new(&modem.ofdm.p);
-        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, detector, last: 0.0 }
+        Self { modem, buf: Vec::new(), base: 0, search: 0, pending: None, hold_until: None, detector, last: 0.0 }
     }
 
     /// Sample rate of the audio pushed, Hz.
@@ -84,9 +97,10 @@ impl Receiver {
     }
 
     /// True while a signal louder than the background is heard (a steady
-    /// open-squelch hiss does not count) or a frame is being received.
+    /// open-squelch hiss does not count) or a burst is being received, of a kind
+    /// this version knows or not.
     pub fn busy(&self) -> bool {
-        self.pending.is_some() || self.detector.busy()
+        self.pending.is_some() || self.detector.busy() || self.hold_until.is_some_and(|t| self.position() < t)
     }
 
     /// Drop all buffered audio (e.g. when our own transmitter keys up). The audio
@@ -96,6 +110,7 @@ impl Receiver {
         self.buf.clear();
         self.search = 0;
         self.pending = None;
+        self.hold_until = None;
         self.detector.resume();
     }
 
@@ -181,11 +196,13 @@ impl Receiver {
                     // scans no further than its fine timing needs.
                     return Some(false);
                 }
+                #[cfg(test)]
+                HEADER_DECODES.with(|n| n.set(n.get() + 1));
                 let header =
                     m.ofdm.demodulate(&self.buf, b, hdr_syms).and_then(|f| m.decode_header(&f).map(|h| (h, f)));
                 match header {
                     None => self.search = found.resume,
-                    Some((h, f)) if h.ncw == 0 => {
+                    Some((Unpacked::Known(h), f)) if h.ncw == 0 => {
                         // Measure the SNR the way a data burst does (with the header as
                         // training), so that rate adaptation sees the same numbers.
                         let known = m.header_carriers(&h);
@@ -200,9 +217,24 @@ impl Receiver {
                         });
                         self.search = f.end.min(self.buf.len());
                     }
-                    Some((h, _)) => {
+                    Some((Unpacked::Known(h), _)) => {
                         debug_assert!((h.level as usize) < LEVELS.len());
                         self.pending = Some(Pending { b, resume: found.resume, header: h });
+                    }
+                    // A burst of a kind this version doesn't know (a later version's):
+                    // hold the channel busy for as long as its header says it runs, but
+                    // no longer than a burst at its level can run. Nothing in it is
+                    // decoded, but the search goes on after its header, so a known burst
+                    // that starts inside it is still received.
+                    Some((Unpacked::Unknown { level, ncw }, f)) => {
+                        if ncw > 0 {
+                            let ncw = (ncw as usize).min(m.max_ncw(level));
+                            let nsym = hdr_syms + ncw * m.symbols_per_codeword(level);
+                            let p = &m.ofdm.p;
+                            let end = self.base + (b + p.nfft + nsym * p.symbol_len()) as u64;
+                            self.hold_until = Some(self.hold_until.map_or(end, |t| t.max(end)));
+                        }
+                        self.search = f.end.min(self.buf.len());
                     }
                 }
                 Some(true)

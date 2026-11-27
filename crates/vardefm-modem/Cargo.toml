@@ -9,6 +9,11 @@ license.workspace = true
 vardefm-dsp.workspace = true
 vardefm-fec.workspace = true
 
+[features]
+# For other crates' tests: Modem::modulate_with_kind and Header::pack_with_kind, to send
+# a burst of a kind this version doesn't know.
+testing = []
+
 [dev-dependencies]
 vardefm-sim.workspace = true
 serde.workspace = true

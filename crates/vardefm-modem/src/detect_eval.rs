@@ -163,7 +163,7 @@ pub(crate) fn burst(level: u8, ncw: usize, seed: u32) -> Burst {
 
 /// The header of the burst whose preamble B starts at `b`, if it decodes.
 pub(crate) fn header_at(m: &Modem, rx: &[f32], b: usize) -> Option<Header> {
-    m.ofdm.demodulate(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f))
+    m.ofdm.demodulate(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f)?.known())
 }
 
 /// Whether the burst at `b`, whose header `h` has decoded, is the one sent: header
@@ -718,12 +718,21 @@ fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw:
 }
 
 /// Detections and decoded headers in `rx`, scanning on after each detection.
+///
+/// It searches on from each detection's `resume`, as `Receiver::step` does after a
+/// header that fails, so each detector is scored on the searches it makes in the
+/// receiver. After a known header the receiver skips the frame it announces (after
+/// one of an unknown kind it searches on from the header's end); this pass searches
+/// on from the detection's `resume` instead, so that every detection in the audio is
+/// counted. A decoded header counts whatever its kind, so this does not go through
+/// [`header_at`], which gives known kinds only: one of an unknown kind holds the
+/// channel busy.
 fn false_detections(m: &Modem, d: Detector, rx: &[f32]) -> (u32, u32) {
     let (mut dets, mut headers) = (0, 0);
     let mut found = m.ofdm.detect_with(d, rx, 0);
     while let Some(b) = found.at {
         dets += 1;
-        if header_at(m, rx, b).is_some() {
+        if m.ofdm.demodulate(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f)).is_some() {
             headers += 1;
         }
         found = m.ofdm.detect_with(d, rx, found.resume);

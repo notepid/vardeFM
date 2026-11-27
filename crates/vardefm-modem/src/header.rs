@@ -128,6 +128,12 @@ impl Header {
     }
 
     pub fn unpack(bytes: &[u8]) -> Option<Self> {
+        Self::unpack_any(bytes)?.known()
+    }
+
+    /// Like [`Header::unpack`], but a header of a kind this version doesn't know is
+    /// kept too, as how long its burst runs.
+    pub(crate) fn unpack_any(bytes: &[u8]) -> Option<Unpacked> {
         if bytes.len() != 12 || crc16(&bytes[..10]).to_be_bytes() != bytes[10..12] {
             return None;
         }
@@ -139,20 +145,59 @@ impl Header {
             vals[i] = (v & ((1u128 << FIELDS[i]) - 1)) as u64;
             v >>= FIELDS[i];
         }
-        let h = Self {
-            kind: Kind::from_u8(vals[0] as u8)?,
+        let (level, ncw, req_level) = (vals[2] as u8, vals[3] as u8, vals[4] as u8);
+        let max_level = crate::LEVELS.len() as u8;
+        if level >= max_level || req_level >= max_level || ncw as usize > crate::MAX_NCW {
+            return None;
+        }
+        let Some(kind) = Kind::from_u8(vals[0] as u8) else {
+            return Some(Unpacked::Unknown { level, ncw });
+        };
+        Some(Unpacked::Known(Self {
+            kind,
             session: vals[1] as u8,
-            level: vals[2] as u8,
-            ncw: vals[3] as u8,
-            req_level: vals[4] as u8,
+            level,
+            ncw,
+            req_level,
             burst_id: vals[5] as u8,
             ack_burst: vals[6] as u8,
             ack_offset: vals[7] as u32,
             bitmap: vals[8] as u32,
             flags: vals[9] as u8,
-        };
-        let max_level = crate::LEVELS.len() as u8;
-        (h.level < max_level && h.req_level < max_level && h.ncw as usize <= crate::MAX_NCW).then_some(h)
+        }))
+    }
+
+    /// Like [`Header::pack`], with the 3-bit kind field set to `kind`, which need not
+    /// be a [`Kind`] this version knows: a header as a later version could send it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn pack_with_kind(&self, kind: u8) -> [u8; 12] {
+        let mut out = self.pack();
+        out[0] = (out[0] & 0x1f) | (kind & 7) << 5;
+        let c = crc16(&out[..10]);
+        out[10..].copy_from_slice(&c.to_be_bytes());
+        out
+    }
+}
+
+/// A header whose CRC and fields are good.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unpacked {
+    Known(Header),
+    /// A kind this version doesn't know (a later version's): only the fields that
+    /// say how long its burst runs.
+    Unknown {
+        level: u8,
+        ncw: u8,
+    },
+}
+
+impl Unpacked {
+    /// The header, if its kind is one this version knows.
+    pub(crate) fn known(self) -> Option<Header> {
+        match self {
+            Self::Known(h) => Some(h),
+            Self::Unknown { .. } => None,
+        }
     }
 }
 
@@ -202,5 +247,42 @@ mod tests {
         let mut sent = Header::default();
         sent.set_hop(0);
         assert_eq!(sent.flags, FLAG_ROUTED);
+    }
+
+    fn data_header() -> Header {
+        Header { kind: Kind::Data, session: 0x5c, level: 3, ncw: 7, burst_id: 2, flags: FLAG_POLL, ..Header::default() }
+    }
+
+    #[test]
+    fn pack_with_kind_only_changes_the_kind() {
+        let h = data_header();
+        for kind in [Kind::ConnectReq, Kind::ConnectAck, Kind::Data, Kind::Disc, Kind::DiscAck] {
+            assert_eq!(Header { kind, ..h }.pack(), h.pack_with_kind(kind as u8), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_kind_with_good_crc_unpacks_as_unknown() {
+        let h = data_header();
+        for kind in 5..=7 {
+            let bytes = h.pack_with_kind(kind);
+            assert_eq!(Header::unpack(&bytes), None, "kind {kind}: unpack only gives kinds it knows");
+            assert_eq!(Header::unpack_any(&bytes), Some(Unpacked::Unknown { level: 3, ncw: 7 }), "kind {kind}");
+        }
+        assert_eq!(Header::unpack_any(&h.pack()), Some(Unpacked::Known(h)));
+    }
+
+    #[test]
+    fn unknown_kind_with_bad_crc_or_fields_is_dropped() {
+        let mut bad_crc = data_header().pack_with_kind(5);
+        bad_crc[4] ^= 0x10;
+        assert_eq!(Header::unpack_any(&bad_crc), None, "bad CRC");
+        let bad_level = Header { level: crate::LEVELS.len() as u8, ..data_header() };
+        assert_eq!(Header::unpack_any(&bad_level.pack_with_kind(5)), None, "level out of range");
+        let bad_req = Header { req_level: crate::LEVELS.len() as u8, ..data_header() };
+        assert_eq!(Header::unpack_any(&bad_req.pack_with_kind(5)), None, "req_level out of range");
+        let bad_ncw = Header { ncw: crate::MAX_NCW as u8 + 1, ..data_header() };
+        assert_eq!(Header::unpack_any(&bad_ncw.pack_with_kind(5)), None, "too many codewords");
+        assert_eq!(Header::unpack_any(&data_header().pack_with_kind(5)[..11]), None, "short");
     }
 }

@@ -538,3 +538,53 @@ fn watchdog_fires_under_advance_alone() {
     }
     panic!("never unkeyed");
 }
+
+/// Station C sends a burst of a kind this version doesn't know (a later version's),
+/// at -50 dBFS: too quiet for the busy detector, loud enough to decode. A, asked to
+/// connect while it is on the air, waits for it to end, and tells its host the
+/// channel was busy before it keys up.
+#[test]
+fn an_unknown_burst_holds_back_a_connect() {
+    use vardefm_modem::{Burst, Kind};
+    let card: Shared = Arc::default();
+    let mut a = engine(&card, 7);
+    let c = Modem::new(OfdmParams::narrow(), 0.15);
+    // The longest burst at its level: it must be held to its end.
+    let level = 2;
+    let ncw = c.max_ncw(level) as u8;
+    let header = Header { kind: Kind::Data, session: 0x33, level, ncw, ..Header::default() };
+    let burst = Burst { header, payload: vec![vec![0x5a; Modem::payload_bytes(level)]; ncw as usize] };
+    let scale = 10f32.powf(-50.0 / 20.0) / c.tx_rms(level);
+    let start = 20 * CHUNK;
+    let mut air = vec![0.0f32; start];
+    air.extend(c.modulate_with_kind(&burst, 5).iter().map(|x| x * scale));
+    let end_step = air.len().div_ceil(CHUNK);
+    air.resize((end_step + 500) * CHUNK, 0.0);
+    // Well into the payload, once A has the header.
+    let connect_step = (start + c.burst_samples(level, 2)) / CHUNK;
+    assert!(connect_step + 20 < end_step);
+
+    let mut host = HostSide::default();
+    let mut inbox = vec![HostIn::Line("MYCALL LA1AAA".into())];
+    let mut keyed_at = None;
+    for (step, chunk) in air.chunks(CHUNK).enumerate() {
+        if step == connect_step {
+            inbox.push(HostIn::Line("CONNECT LA1AAA LA2BBB".into()));
+        }
+        host.take(a.step(Some(chunk), std::mem::take(&mut inbox)));
+        let mut card = card.lock().unwrap();
+        card.tick();
+        if keyed_at.is_none() && card.ptt {
+            keyed_at = Some(step);
+        }
+    }
+    let keyed_at = keyed_at.expect("A never sent its connect request");
+    assert!(
+        keyed_at >= end_step,
+        "A keyed up at step {keyed_at}, over the burst (steps {}..{end_step})",
+        start / CHUNK
+    );
+    let pos = |l: &str| host.lines.iter().position(|x| x == l);
+    let (on, off, ptt) = (pos("BUSY ON"), pos("BUSY OFF"), pos("PTT ON"));
+    assert!(on.is_some() && on < off && off < ptt, "host lines: {:?}", host.lines);
+}

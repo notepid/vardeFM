@@ -110,6 +110,17 @@ to a busy frequency" below.
   to a floor chosen to cover an exchange with the peer through the session's digipeaters,
   so the peer's own bursts and their repeats do not end a working session. (#32, #49,
   thanks @mustig)
+- **Bursts of an unknown kind left the channel looking free.** The header of a burst of
+  a kind this version doesn't know was dropped, so only the busy detector held the
+  channel, and a station could key up over it: always under -40 dBFS, where the burst
+  still decodes, and after about 1.6 s of a long burst, once the detector takes a steady
+  signal for the background. A header of an unknown kind (5-7) whose CRC and fields are
+  good now holds the channel busy for as long as it says the burst runs, but no longer
+  than the longest burst at its level. Nothing in the burst is decoded or reported, but
+  the receiver keeps searching, so a known burst that starts inside it is still
+  received, and the channel stays busy until the later of the two ends. Our own
+  transmission ends the hold. Bursts a later version adds are then respected by this
+  one. (#26, #69, thanks @ar3077)
 - **Colliding retries on a direct session.** Two stations talking directly could drop
   their session when both started a burst at the same moment. Both then retried after
   the same wait, within 0.4 s of each other, and a retry did not give way to a busy

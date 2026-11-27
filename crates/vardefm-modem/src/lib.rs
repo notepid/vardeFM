@@ -10,6 +10,7 @@ mod busy;
 mod header;
 mod receiver;
 
+use header::Unpacked;
 pub use header::{Header, Kind, FLAG_POLL, FLAG_ROUTED, FLAG_UP, MAX_DIGIS};
 pub use receiver::{AudioLevel, Receiver, RxBurst};
 pub use vardefm_dsp::{Detector, OfdmParams};
@@ -195,7 +196,12 @@ impl Modem {
     }
 
     fn header_bits(&self, h: &Header) -> Vec<u8> {
-        let mut bits = bytes_to_bits(&h.pack());
+        self.header_bits_of(&h.pack())
+    }
+
+    /// The header's coded bits, in slot order, from its 12 packed bytes.
+    fn header_bits_of(&self, packed: &[u8; 12]) -> Vec<u8> {
+        let mut bits = bytes_to_bits(packed);
         for (b, s) in bits.iter_mut().zip(scramble_bits(SEED_HDR_SCRAMBLE, HDR_INFO_BITS)) {
             *b ^= s;
         }
@@ -232,6 +238,19 @@ impl Modem {
     /// Audio for one burst (starts with the leader; ends with the last symbol).
     pub fn modulate(&self, burst: &Burst) -> Vec<f32> {
         self.ofdm.modulate_with_leader_rms(&self.symbols(burst), self.txdelay, self.tx_rms(burst.header.level))
+    }
+
+    /// Audio for `burst` with its header's kind field set to `kind`, which need not be
+    /// a [`Kind`] this version knows: a burst as a later version could send it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn modulate_with_kind(&self, burst: &Burst, kind: u8) -> Vec<f32> {
+        let mut symbols = self.symbols(burst);
+        let bpsk = Modulation::Bpsk;
+        let header = self.header_bits_of(&burst.header.pack_with_kind(kind));
+        for (sym, bits) in symbols.iter_mut().zip(header.chunks(self.ofdm.data_carriers())) {
+            *sym = bits.iter().map(|&b| bpsk.map(&[b])).collect();
+        }
+        self.ofdm.modulate_with_leader_rms(&symbols, self.txdelay, self.tx_rms(burst.header.level))
     }
 
     /// The data-carrier values of a burst's header and payload symbols, as
@@ -284,14 +303,15 @@ impl Modem {
     }
 
     /// Decode the header from the first `header_symbols()` symbols of `f`.
-    fn decode_header(&self, f: &Frame) -> Option<Header> {
+    /// A header of a kind this version doesn't know comes back as how long its burst runs.
+    fn decode_header(&self, f: &Frame) -> Option<Unpacked> {
         let slots = Self::llrs(Modulation::Bpsk, f, 0);
         let llr: Vec<f32> = (0..HDR_CODE_BITS).map(|j| slots[self.hdr_perm[j]]).collect();
         let mut bits = self.hdr_code.decode(&llr, DECODE_ITERS)?;
         for (b, s) in bits.iter_mut().zip(scramble_bits(SEED_HDR_SCRAMBLE, HDR_INFO_BITS)) {
             *b ^= s;
         }
-        Header::unpack(&vardefm_fec::bits_to_bytes(&bits))
+        Header::unpack_any(&vardefm_fec::bits_to_bytes(&bits))
     }
 
     /// Decode the payload codewords of `f` (a whole frame, header symbols included).

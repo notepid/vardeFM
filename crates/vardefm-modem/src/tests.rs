@@ -1,4 +1,5 @@
 use super::*;
+use crate::receiver::HEADER_DECODES;
 use std::sync::Arc;
 use vardefm_dsp::prng::Prng;
 use vardefm_sim::{transmit, FmChannelConfig};
@@ -746,6 +747,323 @@ fn chunking_does_not_change_what_is_received() {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Feed `audio` in 10 ms chunks. Returns, for each chunk, the sample index after it
+/// and whether the receiver was busy then, and the bursts it decoded.
+fn busy_trace(rx: &mut Receiver, audio: &[f32]) -> (Vec<(usize, bool)>, Vec<RxBurst>) {
+    busy_trace_in(rx, audio, 480)
+}
+
+/// [`busy_trace`] in chunks of `chunk` samples.
+fn busy_trace_in(rx: &mut Receiver, audio: &[f32], chunk: usize) -> (Vec<(usize, bool)>, Vec<RxBurst>) {
+    let (mut trace, mut got) = (Vec::new(), Vec::new());
+    for (i, c) in audio.chunks(chunk).enumerate() {
+        got.extend(rx.push(c));
+        trace.push(((i + 1) * chunk, rx.busy()));
+    }
+    (trace, got)
+}
+
+/// Busy from a couple of symbols after the header to the burst's last sample, and
+/// clear `clear_after` samples past it.
+fn assert_held(m: &Modem, what: &str, trace: &[(usize, bool)], header_end: usize, end: usize, clear_after: usize) {
+    let l = m.ofdm.p.symbol_len();
+    for &(at, busy) in trace {
+        if at >= header_end + 2 * l && at <= end {
+            assert!(busy, "{what}: clear at sample {at}, the burst runs {header_end}..{end}");
+        }
+        if at >= end + clear_after {
+            assert!(!busy, "{what}: still busy at sample {at}, the burst ended at {end}");
+        }
+    }
+}
+
+/// A burst of a kind this version doesn't know, too quiet for the busy detector
+/// (-50 dBFS), holds the channel busy for as long as its header says it runs, like
+/// a burst of a known kind does. Nothing is decoded from it.
+#[test]
+fn a_quiet_unknown_burst_holds_busy_for_its_length() {
+    let m = modem("narrow");
+    let b = burst(2, 4, 21);
+    let scale = 10f32.powf(-50.0 / 20.0) / m.tx_rms(2);
+    for kind in [Kind::Data as u8, 5, 6, 7] {
+        let start = 20_000;
+        let mut audio = vec![0.0; start];
+        audio.extend(m.modulate_with_kind(&b, kind).iter().map(|x| x * scale));
+        let end = audio.len();
+        audio.extend(vec![0.0; 24_000]);
+        let mut rx = Receiver::new(m.clone());
+        let (trace, got) = busy_trace(&mut rx, &audio);
+        let header_end = start + m.burst_samples(2, 0);
+        assert_held(&m, &format!("kind {kind}"), &trace, header_end, end, 4800);
+        if kind == Kind::Data as u8 {
+            assert_eq!(got.len(), 1, "the known burst decodes at this level");
+        } else {
+            assert!(got.is_empty(), "kind {kind}: decoded {:?}", got.iter().map(|g| g.header).collect::<Vec<_>>());
+        }
+    }
+}
+
+/// A full-scale unknown burst as long as a burst gets (about 4 s at level 0) holds
+/// the channel busy to its end, past where the busy detector takes a steady signal
+/// for the background.
+#[test]
+fn a_long_unknown_burst_holds_busy_to_its_end() {
+    let m = modem("narrow");
+    let ncw = m.max_ncw(0);
+    let b = burst(0, ncw, 22);
+    let start = 20_000;
+    let mut audio = vec![0.0; start];
+    audio.extend(m.modulate_with_kind(&b, 5));
+    let end = audio.len();
+    assert!(end - start > 3 * 48_000, "only {} samples", end - start);
+    audio.extend(vec![0.0; 24_000]);
+    let (trace, got) = busy_trace(&mut Receiver::new(m.clone()), &audio);
+    // The busy detector holds 150 ms after the last loud block.
+    assert_held(&m, "level 0", &trace, start + m.burst_samples(0, 0), end, 12_000);
+    assert!(got.is_empty());
+}
+
+/// Holding the channel for an unknown burst does not swallow a known one right behind it.
+#[test]
+fn a_known_burst_right_after_an_unknown_one_decodes() {
+    let m = modem("narrow");
+    let unknown = burst(3, 3, 23);
+    let known = burst(3, 3, 24);
+    let mut audio = vec![0.0; 2000];
+    audio.extend(m.modulate_with_kind(&unknown, 5));
+    audio.extend(vec![0.0; 2000]);
+    audio.extend(m.modulate(&known));
+    let got = receive(&mut Receiver::new(m.clone()), &audio);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].header, known.header);
+    assert!(got[0].payload.iter().all(|p| p.is_some()));
+}
+
+/// An unknown header that claims more codewords than fit in a burst (24 at level 0,
+/// about 35 s in narrow mode) holds the channel no longer than the longest burst at
+/// its level can run: a header that passed its CRC by chance, or a broken sender,
+/// does not shut the channel, nor the receiver's search, for half a minute.
+#[test]
+fn an_unknown_burst_is_held_no_longer_than_a_burst_can_run() {
+    let m = modem("narrow");
+    let longest = m.max_ncw(0);
+    assert!(longest < MAX_NCW);
+    let b = burst(0, MAX_NCW, 27);
+    let scale = 10f32.powf(-50.0 / 20.0) / m.tx_rms(0);
+    let start = 20_000;
+    let end = start + m.burst_samples(0, longest);
+    let mut audio = vec![0.0; start];
+    audio.extend(m.modulate_with_kind(&b, 5).iter().map(|x| x * scale));
+    // Only as much of the claimed burst as could be sent; then silence.
+    audio.truncate(end);
+    audio.extend(vec![0.0; 3 * 48_000]);
+    let (trace, got) = busy_trace(&mut Receiver::new(m.clone()), &audio);
+    assert_held(&m, "24 codewords at level 0", &trace, start + m.burst_samples(0, 0), end, 4800);
+    assert!(got.is_empty());
+}
+
+/// An unknown kind with no payload is not held past its header. The header is
+/// checked to decode as one of an unknown kind with no codewords, so the receiver
+/// takes the unknown arm with `ncw == 0` here.
+#[test]
+fn a_header_only_unknown_burst_is_not_held() {
+    let m = modem("narrow");
+    let b = burst(0, 0, 25);
+    let scale = 10f32.powf(-50.0 / 20.0) / m.tx_rms(0);
+    let mut audio = vec![0.0; 20_000];
+    audio.extend(m.modulate_with_kind(&b, 5).iter().map(|x| x * scale));
+    let end = audio.len();
+    audio.extend(vec![0.0; 24_000]);
+    let b_at = m.ofdm.detect(&audio, 0).at.expect("the header-only burst is not detected");
+    let header = m.ofdm.demodulate(&audio, b_at, m.header_symbols()).and_then(|f| m.decode_header(&f));
+    assert!(matches!(header, Some(Unpacked::Unknown { ncw: 0, .. })), "decoded {header:?}");
+    let (trace, got) = busy_trace(&mut Receiver::new(m.clone()), &audio);
+    assert!(got.is_empty());
+    let l = m.ofdm.p.symbol_len();
+    for (at, busy) in trace {
+        assert!(!busy || at < end + 2 * l + 480, "busy at sample {at}, the header ended at {end}");
+    }
+}
+
+/// Our own transmission ends the hold for an unknown burst, as it does for a known one.
+#[test]
+fn reset_drops_an_unknown_burst_hold() {
+    let m = modem("narrow");
+    let b = burst(2, 4, 26);
+    let scale = 10f32.powf(-50.0 / 20.0) / m.tx_rms(2);
+    for kind in [Kind::Data as u8, 5] {
+        let mut audio = vec![0.0; 20_000];
+        audio.extend(m.modulate_with_kind(&b, kind).iter().map(|x| x * scale));
+        // Up to a few symbols into the payload.
+        audio.truncate(20_000 + m.burst_samples(2, 0) + 4 * m.ofdm.p.symbol_len());
+        let mut rx = Receiver::new(m.clone());
+        busy_trace(&mut rx, &audio);
+        assert!(rx.busy(), "kind {kind}: not busy inside the burst");
+        rx.reset();
+        rx.push(&[0.0; 48]);
+        assert!(!rx.busy(), "kind {kind}: busy after our transmission");
+    }
+}
+
+/// A quiet unknown burst as long as a burst gets at level 0 (-50 dBFS, under the busy
+/// detector), starting at `start`. Returns the audio and where its header and its
+/// last symbol end.
+fn quiet_long_unknown(m: &Modem, start: usize, seed: u32) -> (Vec<f32>, usize, usize) {
+    let scale = 10f32.powf(-50.0 / 20.0) / m.tx_rms(0);
+    let mut audio = vec![0.0; start];
+    audio.extend(m.modulate_with_kind(&burst(0, m.max_ncw(0), seed), 5).iter().map(|x| x * scale));
+    let end = audio.len();
+    (audio, start + m.burst_samples(0, 0), end)
+}
+
+/// Add `burst` at full scale to `audio` from sample `at`, extending it as needed.
+/// Returns where the burst ends.
+fn add_at(m: &Modem, audio: &mut Vec<f32>, at: usize, burst: &Burst) -> usize {
+    let tx = m.modulate(burst);
+    let end = at + tx.len();
+    if audio.len() < end {
+        audio.resize(end, 0.0);
+    }
+    for (a, x) in audio[at..end].iter_mut().zip(tx) {
+        *a += x;
+    }
+    end
+}
+
+fn assert_decoded(what: &str, got: &[RxBurst], sent: &Burst) {
+    assert_eq!(got.len(), 1, "{what}: decoded {:?}", got.iter().map(|g| g.header).collect::<Vec<_>>());
+    assert_eq!(got[0].header, sent.header, "{what}");
+    assert!(got[0].payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s)), "{what}: payload");
+}
+
+/// A full-scale known burst that lies inside a quiet unknown burst decodes: the
+/// receiver keeps searching while it holds the channel busy for the unknown one,
+/// and holds it to the unknown burst's end. (The hold survives the buffer's trim:
+/// the unknown burst runs about 4 s.)
+#[test]
+fn a_known_burst_inside_a_quiet_unknown_burst_decodes() {
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let (mut audio, header_end, end) = quiet_long_unknown(&m, 20_000, 31);
+        let known = burst(2, 1, 32);
+        let known_end = add_at(&m, &mut audio, header_end + 9600, &known);
+        assert!(known_end < end, "{mode}: the known burst ends at {known_end}, past the unknown one at {end}");
+        audio.extend(vec![0.0; 24_000]);
+        let mut rx = Receiver::new(m.clone());
+        HEADER_DECODES.with(|n| n.set(0));
+        let (trace, got) = busy_trace(&mut rx, &audio);
+        // Not asserted: the real headers are 2 (the unknown one and the known one).
+        println!("{mode}: {} header decodes attempted over the recording", HEADER_DECODES.with(|n| n.get()));
+        assert_decoded(mode, &got, &known);
+        assert_held(&m, mode, &trace, header_end, end, 4800);
+    }
+}
+
+/// A known burst that starts inside an unknown one and ends after it decodes, and the
+/// channel is busy until the later of the two ends.
+#[test]
+fn busy_holds_to_the_later_end_when_a_known_burst_overruns_an_unknown_one() {
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let (mut audio, header_end, end) = quiet_long_unknown(&m, 20_000, 33);
+        let known = burst(2, 3, 34);
+        let at = end - 14_400; // 0.3 s before the unknown burst ends
+        assert!(at > header_end);
+        let known_end = add_at(&m, &mut audio, at, &known);
+        assert!(known_end > end, "{mode}: the known burst ends inside the unknown one");
+        audio.extend(vec![0.0; 24_000]);
+        let (trace, got) = busy_trace(&mut Receiver::new(m.clone()), &audio);
+        assert_decoded(mode, &got, &known);
+        // The busy detector holds 150 ms after the last loud block, here the known burst's.
+        assert_held(&m, mode, &trace, header_end, known_end, 12_000);
+    }
+}
+
+/// The hold comes from the header, not the signal: an unknown header followed by
+/// silence holds the channel busy for the length the header states, then clears.
+/// Nothing but the hold can make it busy here (the header is under the busy detector),
+/// so its end is checked to 2 ms, in 1 ms chunks: well under a symbol (24 ms narrow,
+/// 12 ms wide), so a deadline one symbol late fails.
+#[test]
+fn an_unknown_burst_holds_busy_to_its_stated_end_with_nothing_after_its_header() {
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let l = m.ofdm.p.symbol_len();
+        let b = burst(2, 4, 35);
+        let scale = 10f32.powf(-50.0 / 20.0) / m.tx_rms(2);
+        let start = 20_000;
+        let header_end = start + m.burst_samples(2, 0);
+        let stated_end = start + m.burst_samples(2, 4);
+        let mut audio = vec![0.0; start];
+        audio.extend(m.modulate_with_kind(&b, 5).iter().map(|x| x * scale));
+        audio.truncate(header_end);
+        audio.resize(stated_end + 24_000, 0.0);
+        let (trace, got) = busy_trace_in(&mut Receiver::new(m.clone()), &audio, 48);
+        assert!(got.is_empty(), "{mode}: decoded {:?}", got.iter().map(|g| g.header).collect::<Vec<_>>());
+        for (at, busy) in trace {
+            if at >= header_end + 2 * l && at + 48 <= stated_end {
+                assert!(busy, "{mode}: clear at sample {at}, the hold runs to {stated_end}");
+            }
+            if at >= stated_end + 96 {
+                assert!(!busy, "{mode}: still busy at sample {at}, the hold ends at {stated_end}");
+            }
+        }
+    }
+}
+
+/// A shorter unknown burst whose header decodes inside a long one does not cut the
+/// long one's hold short. Both are under the busy detector (-60 and -45 dBFS; the
+/// short one louder, so that its header decodes over the long one's payload).
+#[test]
+fn a_shorter_unknown_burst_inside_a_long_one_keeps_the_longer_hold() {
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let quiet = |b: &Burst, dbfs: f32| -> Vec<f32> {
+            let scale = 10f32.powf(dbfs / 20.0) / m.tx_rms(b.header.level);
+            m.modulate_with_kind(b, 5).iter().map(|x| x * scale).collect()
+        };
+        let start = 20_000;
+        let mut audio = vec![0.0; start];
+        audio.extend(quiet(&burst(0, m.max_ncw(0), 36), -60.0));
+        let (header_end, end) = (start + m.burst_samples(0, 0), audio.len());
+        let short = quiet(&burst(3, 1, 37), -45.0);
+        let at = header_end + 9600;
+        let short_end = at + short.len();
+        assert!(short_end + 24_000 < end, "{mode}: the short burst ends at {short_end}, the long one at {end}");
+        for (a, x) in audio[at..].iter_mut().zip(short) {
+            *a += x;
+        }
+        audio.extend(vec![0.0; 24_000]);
+        let (trace, got) = busy_trace(&mut Receiver::new(m.clone()), &audio);
+        assert!(got.is_empty(), "{mode}: decoded {:?}", got.iter().map(|g| g.header).collect::<Vec<_>>());
+        assert_held(&m, mode, &trace, header_end, end, 4800);
+    }
+}
+
+/// The search now runs through an unknown burst's payload: a full-scale one through
+/// the FM channel sets off few header decodes there (each costs a demodulation and an
+/// LDPC decode), and none gives a burst. Fixed channel seeds, so the counts are the
+/// same on every run; they are printed, and bounded loosely.
+#[test]
+fn few_header_decodes_inside_a_full_scale_unknown_burst() {
+    for mode in ["narrow", "wide"] {
+        let m = modem(mode);
+        let tx = m.modulate_with_kind(&burst(0, m.max_ncw(0), 38), 5);
+        for cnr in [6.0, 10.0, 20.0, 40.0] {
+            let cfg = FmChannelConfig { cnr_db: Some(cnr), seed: 4242, ..FmChannelConfig::by_name(mode).unwrap() };
+            let mut audio = transmit(&cfg, &tx);
+            audio.extend(vec![0.0; 24_000]);
+            let mut rx = Receiver::new(m.clone());
+            HEADER_DECODES.with(|n| n.set(0));
+            let (_, got) = busy_trace(&mut rx, &audio);
+            let n = HEADER_DECODES.with(|n| n.get());
+            println!("{mode} {cnr} dB: {n} header decodes attempted");
+            assert!(got.is_empty(), "{mode} {cnr} dB: decoded {:?}", got.iter().map(|g| g.header).collect::<Vec<_>>());
+            assert!(n <= 10, "{mode} {cnr} dB: {n} header decodes over one unknown burst");
         }
     }
 }
