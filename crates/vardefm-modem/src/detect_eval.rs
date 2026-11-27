@@ -183,7 +183,8 @@ fn burst_ok(m: &Modem, rx: &[f32], b: usize, h: &Header, sent: &Burst) -> bool {
     let Some(frame) = m.ofdm.demodulate_known(rx, b, nsym, &m.header_carriers(h)) else {
         return false;
     };
-    m.decode_payload(h, &frame).into_iter().zip(&sent.payload).all(|(got, want)| got.as_ref() == Some(want))
+    let got = m.decode_payload(h, &frame);
+    got.len() == sent.payload.len() && got.iter().zip(&sent.payload).all(|(got, want)| got.as_ref() == Some(want))
 }
 
 /// Whether the streaming `Receiver` on `m` makes `sent` of recording `rx`: its
@@ -193,7 +194,9 @@ fn burst_ok(m: &Modem, rx: &[f32], b: usize, h: &Header, sent: &Burst) -> bool {
 fn received_ok(m: &Arc<Modem>, rx: &[f32], sent: &Burst) -> bool {
     let got = crate::tests::receive(&mut Receiver::new(m.clone()), rx);
     got.first().is_some_and(|g| {
-        g.header == sent.header && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
+        g.header == sent.header
+            && g.payload.len() == sent.payload.len()
+            && g.payload.iter().zip(&sent.payload).all(|(p, s)| p.as_ref() == Some(s))
     })
 }
 
@@ -367,10 +370,11 @@ fn header_error(m: &Modem, rx: &[f32], b: usize, known: &[Vec<Complex32>]) -> Op
 /// `nominal` leaves out the channel's group delay, so a link that delays or tilts the
 /// burst enough moves the run past the edge, and the middle of what is left of it would
 /// be early or late without a sign of it (in wide mode, de-emphasis alone with a TX tilt
-/// of +6 dB/octave). A wider search is no way out: on links that clip, the noiseless
-/// header is as clean again more than a cyclic prefix late, where nothing decodes in
-/// noise (wide mode, pre-emphasis alone: no burst of 20 at 7 dB CNR against 12 for
-/// Schmidl-Cox).
+/// of +6 dB/octave). A search two cyclic prefixes wide either side was tried and is no
+/// way out: on a link that clips (wide mode, pre-emphasis alone) the noiseless header
+/// came out cleanest more than half a cyclic prefix later than where Schmidl-Cox and
+/// this search put the burst, and the genie decoded fewer noisy bursts from there than
+/// the receiver did.
 fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Result<usize, String> {
     let ncp = m.ofdm.p.ncp;
     let known = m.header_carriers(h);
@@ -753,13 +757,17 @@ fn ctcss_pass(m: &Modem, mode: &str, case: &CtcssCase, cnr: f32, level: u8, ncw:
 /// channel busy.
 fn false_detections(m: &Modem, d: Detector, rx: &[f32]) -> (u32, u32) {
     let (mut dets, mut headers) = (0, 0);
-    let mut found = m.ofdm.detect_with(d, rx, 0);
+    let mut from = 0;
+    let mut found = m.ofdm.detect_with(d, rx, from);
     while let Some(b) = found.at {
         dets += 1;
         if m.ofdm.demodulate(rx, b, m.header_symbols()).and_then(|f| m.decode_header(&f)).is_some() {
             headers += 1;
         }
-        found = m.ofdm.detect_with(d, rx, found.resume);
+        // Or the search would never end.
+        assert!(found.resume > from, "{d} found a burst at {b} from {from} and resumes at {}", found.resume);
+        from = found.resume;
+        found = m.ofdm.detect_with(d, rx, from);
     }
     (dets, headers)
 }
@@ -963,29 +971,46 @@ fn detector_eval() {
 
 #[test]
 fn noise_seeds_are_distinct_within_a_run() {
-    // The channel seed is seed, case and mode in decimal digits, and below 2^32 the
-    // generator gets it unchanged: the fold changes only what would be cut off.
-    for (seed, case, mode) in [(1, 3, 1), (7, 0, 1), (42_949_672, 4, 1)] {
-        let (channel, generator) = noise_seeds(seed, case, mode);
-        assert_eq!(channel, u64::from(seed) * 100 + case as u64 * 10 + mode as u64);
-        assert_eq!(u64::from(generator), channel, "seed {seed} case {case} mode {mode}");
-    }
-    // Within a run every case and mode has its own generator seed, also where the
-    // channel seed passes 2^32, and where the cases straddle a multiple of it
-    // (644245094: case 4 in the second mode lands on 15 * 2^32).
+    // Within a run every case and mode has its own channel seed and its own generator
+    // seed, also where the channel seed passes 2^32, and where the cases straddle a
+    // multiple of it (644245094: case 4 in the second mode lands on 15 * 2^32).
+    let modes = OfdmParams::all().len();
     for seed in [1, 7, 42_949_672, 644_245_094, 1 + (1 << 30), 1_717_986_919, u32::MAX] {
-        let seeds: Vec<u32> =
-            (0..NOISE_CASES.len()).flat_map(|c| (0..2).map(move |m| noise_seeds(seed, c, m).1)).collect();
-        let mut unique = seeds.clone();
-        unique.sort();
-        unique.dedup();
-        assert_eq!(unique.len(), seeds.len(), "seed {seed}: {seeds:?}");
+        let seeds: Vec<(u64, u32)> =
+            (0..NOISE_CASES.len()).flat_map(|c| (0..modes).map(move |m| noise_seeds(seed, c, m))).collect();
+        for (what, mut unique) in [
+            ("channel", seeds.iter().map(|s| s.0).collect::<Vec<u64>>()),
+            ("generator", seeds.iter().map(|s| u64::from(s.1)).collect()),
+        ] {
+            unique.sort();
+            unique.dedup();
+            assert_eq!(unique.len(), seeds.len(), "seed {seed}, {what} seeds: {seeds:?}");
+        }
     }
-    // Across seeds the generator seed can repeat: 32 bits cannot hold every seed, case
-    // and mode. The channel seed still differs.
-    let (a, b) = (noise_seeds(1, 2, 0), noise_seeds(1_717_986_919, 2, 0));
-    assert_eq!(a.1, b.1);
-    assert_ne!(a.0, b.0);
+}
+
+/// `false_detections` counts what is there: a noiseless burst gives a detection and a
+/// decoded header, also when its header has a kind this version does not know, which
+/// [`header_at`] does not give.
+#[test]
+fn false_detections_counts_a_header_of_any_kind() {
+    for mode in OfdmParams::all().map(|p| p.name) {
+        let link = Link::matched(mode);
+        let m = &*link.rx;
+        let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
+        let sent = burst(1, 1, payload_seed(0));
+        for (what, known, tx) in
+            [("known", true, m.modulate(&sent)), ("unknown", false, m.modulate_with_kind(&sent, 5))]
+        {
+            let rx = transmit(&clean, &tx);
+            for d in Detector::ALL {
+                let at = m.ofdm.detect_with(d, &rx, 0).at.unwrap_or_else(|| panic!("{mode}: {d} missed the burst"));
+                assert_eq!(header_at(m, &rx, at).is_some(), known, "{mode}, {what} kind, {d}");
+                let (dets, headers) = false_detections(m, d, &rx);
+                assert!(dets >= 1 && headers >= 1, "{mode}, {what} kind: {d} counts {dets} / {headers}");
+            }
+        }
+    }
 }
 
 /// A run of best timings cut off by the edge of the search is refused, not centred on
@@ -1072,6 +1097,12 @@ fn link_position_refuses_a_link_the_genie_cannot_decode() {
 /// fails: with [`BEST_TIMING_MARGIN_DB`] at 0.5 dB it sat 16-32 samples before the
 /// late edge in narrow mode, and a quarter prefix later lost about a third of the
 /// bursts there (108 of 400 against 159 at best).
+///
+/// It holds on the two links tested, not on every link. On narrow rx-de-only at 5 dB
+/// the true position decodes most (293 of 400) but lies late among the timings that
+/// decode: a quarter prefix later decodes 253, a half prefix earlier still 279. So
+/// there `hit`, which allows a quarter prefix either side, is harder on a detector
+/// that lands early, as Schmidl-Cox does, than its bursts warrant.
 #[test]
 fn true_position_has_room_both_sides() {
     const TRIALS: u32 = 400;
