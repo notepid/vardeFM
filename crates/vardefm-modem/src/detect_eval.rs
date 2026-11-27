@@ -55,7 +55,10 @@
 //! The separate CTCSS pass takes `CTCSS_TRIALS` per tone and deviation (10; 0 skips
 //! the pass; trial `t` has the same noise in every row, so the rows are paired and
 //! each rests on that many noise draws) and `CTCSS_CNRS` (dB list; 5,20 narrow and
-//! 7,20 wide: the knee and well above it).
+//! 7,20 wide: the knee and well above it). It always sends over the matched channel
+//! without extra tilt, whatever `CHANNEL`, `TX_TILT` and `CTCSS` say, so a run with
+//! another `CHANNEL` or `TX_TILT` skips it and says so, rather than repeating the
+//! matched figures under that link's heading.
 
 use super::*;
 use crate::busy_eval::CTCSS_DEVIATION_HZ;
@@ -359,8 +362,16 @@ fn header_error(m: &Modem, rx: &[f32], b: usize, known: &[Vec<Complex32>]) -> Op
 /// middle of the run of timings around the best that are all within
 /// [`BEST_TIMING_MARGIN_DB`] of it. Only that run counts, not a timing elsewhere that
 /// happens to come as close (on a clipping link one can, at the edge of the search).
-/// `None` if none demodulates.
-fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Option<usize> {
+///
+/// `Err` if none demodulates, or if the run reaches the first or last timing searched:
+/// `nominal` leaves out the channel's group delay, so a link that delays or tilts the
+/// burst enough moves the run past the edge, and the middle of what is left of it would
+/// be early or late without a sign of it (in wide mode, de-emphasis alone with a TX tilt
+/// of +6 dB/octave). A wider search is no way out: on links that clip, the noiseless
+/// header is as clean again more than a cyclic prefix late, where nothing decodes in
+/// noise (wide mode, pre-emphasis alone: no burst of 20 at 7 dB CNR against 12 for
+/// Schmidl-Cox).
+fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Result<usize, String> {
     let ncp = m.ofdm.p.ncp;
     let known = m.header_carriers(h);
     let snr: Vec<(usize, f32)> = (nominal.saturating_sub(ncp)..=nominal + ncp)
@@ -374,12 +385,23 @@ fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Optio
             Some((b, 10.0 * (sig / f32::max(err, f32::MIN_POSITIVE)).log10()))
         })
         .collect();
-    let peak = (0..snr.len()).max_by(|&a, &b| snr[a].1.total_cmp(&snr[b].1))?;
+    let Some(peak) = (0..snr.len()).max_by(|&a, &b| snr[a].1.total_cmp(&snr[b].1)) else {
+        return Err("the noiseless burst does not demodulate near where it was sent".into());
+    };
     let floor = snr[peak].1 - BEST_TIMING_MARGIN_DB;
     let near = |i: usize| snr[i].1 >= floor;
     let first = (0..peak).rev().take_while(|&i| near(i)).last().unwrap_or(peak);
     let last = (peak + 1..snr.len()).take_while(|&i| near(i)).last().unwrap_or(peak);
-    Some((snr[first].0 + snr[last].0) / 2)
+    if first == 0 || last == snr.len() - 1 {
+        return Err(format!(
+            "the best timings of the noiseless burst, {} to {}, reach the edge of the search, {} to {}",
+            snr[first].0,
+            snr[last].0,
+            snr[0].0,
+            snr[snr.len() - 1].0
+        ));
+    }
+    Ok((snr[first].0 + snr[last].0) / 2)
 }
 
 /// Where preamble B of a `level` burst of `ncw` codewords lands after the channel,
@@ -394,7 +416,8 @@ fn best_timing(m: &Modem, rxs: &[Vec<f32>], nominal: usize, h: &Header) -> Optio
 /// from the sender's that is the best point for decoding, whatever point a detector's
 /// fine timing prefers.
 ///
-/// `Err` when the link cannot be measured: the genie, decoding from that timing, does
+/// `Err` when the link cannot be measured: its best timings reach the edge of the
+/// search ([`best_timing`]), or the genie, decoding from that timing, does
 /// not decode every noiseless copy (header and every codeword). Without noise a link
 /// that loses a burst there loses it whatever the detector, so its rows would say
 /// nothing about detection. Strong TX tilts do that (from about ±18 dB/octave), and
@@ -422,9 +445,7 @@ fn noiseless_position(
     let ofdm = &rx.ofdm;
     let lead = (clean.lead_silence_s * clean.fs) as usize;
     let nominal = lead + (tx.leader_symbols() + 1) * ofdm.p.symbol_len() + ofdm.p.ncp;
-    let Some(truth) = best_timing(rx, &rxs, nominal, &sent[0].header) else {
-        return Err("the noiseless burst does not demodulate near where it was sent".into());
-    };
+    let truth = best_timing(rx, &rxs, nominal, &sent[0].header)?;
     let decoded = sent
         .iter()
         .zip(&rxs)
@@ -574,7 +595,8 @@ const KEYED_TONES: [&[u64]; 6] = [&[750, 1500], &[1000], &[697, 1209], &[770, 13
 const KEYED_TONE_S: f32 = 0.3;
 
 /// Audio without a burst, `seconds` long at `fs` Hz: case `case` of [`NOISE_CASES`].
-/// Every case, mode and `seed` gets its own noise, so their minutes are independent.
+/// For one `seed`, every case and mode gets its own noise, so the minutes of a run are
+/// independent. Two seeds can give a case the same noise (see [`noise_seeds`]).
 ///
 /// The keyed tones stop after each 0.3 s: a tone that never stops cannot end a
 /// Schmidl-Cox plateau, so it would never be evaluated as a detection. Each burst of
@@ -641,8 +663,10 @@ fn noise_case(mode: &str, case: usize, seconds: f32, fs: f32, seed: u32) -> Vec<
 }
 
 /// The channel seed and the generator seed of noise case `case` in mode `mode_index`
-/// for `NOISE_SEED` `seed`: distinct for every seed, case and mode. The generator
-/// takes 32 bits, so the channel seed's high half is folded into it, not cut off.
+/// for `NOISE_SEED` `seed`. Within a run, which has one seed, every case and mode gets
+/// its own of each. The channel seed is distinct across seeds too. The generator seed
+/// is not and cannot be: it takes 32 bits, so the channel seed's high half is folded
+/// into it, and seeds 1 and 1717986919 give the same one for case 2 in narrow mode.
 fn noise_seeds(seed: u32, case: usize, mode_index: usize) -> (u64, u32) {
     assert!(case < 10 && mode_index < 10, "noise case {case}, mode {mode_index}: seeds would collide");
     let channel = u64::from(seed) * 100 + case as u64 * 10 + mode_index as u64;
@@ -816,7 +840,7 @@ fn detector_eval() {
         cnr_list(mode);
         ctcss_cnr_list(mode);
     }
-    const CSV_HEADER: &str = "mode,channel,tx_tilt,ctcss_hz,level,ncw,cnr_db,trials,detector,hits,bursts";
+    const CSV_HEADER: &str = "mode,channel,tx_tilt,ctcss_dev_hz,level,ncw,cnr_db,trials,detector,hits,bursts";
     // Any path the OS accepts, Unicode or not.
     let mut csv = std::env::var_os("CSV").map(|p| {
         let mut f = std::fs::OpenOptions::new()
@@ -847,6 +871,8 @@ fn detector_eval() {
          channel {chan}, TX tilt {tx_tilt:+} dB/octave, CTCSS {ctcss} Hz, noise seed {noise_seed}",
         LEVELS[level as usize].name
     );
+    // The CTCSS pass builds its own link: the matched channel, no extra tilt.
+    let default_link = chan == "matched" && tx_tilt == 0.0;
     let mut skipped = Vec::new();
     for &mode in &modes {
         let link = Link::new(mode, chan, tx_tilt).with_ctcss(ctcss);
@@ -900,7 +926,9 @@ fn detector_eval() {
                 println!("{line}");
             }
         }
-        if ctcss_trials > 0 {
+        if ctcss_trials > 0 && !default_link {
+            println!("{mode}: CTCSS pass skipped: it runs on the matched channel without TX tilt only");
+        } else if ctcss_trials > 0 {
             for cnr in ctcss_cnr_list(mode) {
                 for case in ctcss_cases(mode) {
                     ctcss_pass(m, mode, case, cnr, level, ncw, ctcss_trials);
@@ -934,7 +962,7 @@ fn detector_eval() {
 }
 
 #[test]
-fn noise_seeds_stay_distinct_past_32_bits() {
+fn noise_seeds_are_distinct_within_a_run() {
     // The channel seed is seed, case and mode in decimal digits, and below 2^32 the
     // generator gets it unchanged: the fold changes only what would be cut off.
     for (seed, case, mode) in [(1, 3, 1), (7, 0, 1), (42_949_672, 4, 1)] {
@@ -942,17 +970,48 @@ fn noise_seeds_stay_distinct_past_32_bits() {
         assert_eq!(channel, u64::from(seed) * 100 + case as u64 * 10 + mode as u64);
         assert_eq!(u64::from(generator), channel, "seed {seed} case {case} mode {mode}");
     }
-    // Seeds whose channel seed passes 2^32 still give every case and mode its own
-    // generator seed. Cutting off the high half would not: 100 shares a factor 4 with
-    // 2^32, so seeds 2^30 apart would get the same one.
-    let seeds: Vec<u32> = [1, 1 + (1 << 30), 1 + (1 << 31), 1 + 3 * (1 << 30), 7, 7 + (1 << 30)]
-        .into_iter()
-        .flat_map(|s| (0..5).flat_map(move |c| (0..2).map(move |m| noise_seeds(s, c, m).1)))
-        .collect();
-    let mut unique = seeds.clone();
-    unique.sort();
-    unique.dedup();
-    assert_eq!(unique.len(), seeds.len(), "{seeds:?}");
+    // Within a run every case and mode has its own generator seed, also where the
+    // channel seed passes 2^32, and where the cases straddle a multiple of it
+    // (644245094: case 4 in the second mode lands on 15 * 2^32).
+    for seed in [1, 7, 42_949_672, 644_245_094, 1 + (1 << 30), 1_717_986_919, u32::MAX] {
+        let seeds: Vec<u32> =
+            (0..NOISE_CASES.len()).flat_map(|c| (0..2).map(move |m| noise_seeds(seed, c, m).1)).collect();
+        let mut unique = seeds.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), seeds.len(), "seed {seed}: {seeds:?}");
+    }
+    // Across seeds the generator seed can repeat: 32 bits cannot hold every seed, case
+    // and mode. The channel seed still differs.
+    let (a, b) = (noise_seeds(1, 2, 0), noise_seeds(1_717_986_919, 2, 0));
+    assert_eq!(a.1, b.1);
+    assert_ne!(a.0, b.0);
+}
+
+/// A run of best timings cut off by the edge of the search is refused, not centred on
+/// what is left of it: here the search is moved a cyclic prefix early or late, so the
+/// true position lies on its last or first timing.
+#[test]
+fn best_timing_refuses_a_run_at_the_edge_of_the_search() {
+    for mode in OfdmParams::all().map(|p| p.name) {
+        let link = Link::matched(mode);
+        let m = &*link.rx;
+        let clean = FmChannelConfig { cnr_db: None, ..link.chan.clone() };
+        let sent = burst(1, 1, payload_seed(0));
+        let rxs = vec![transmit(&clean, &link.tx.modulate(&sent))];
+        let (truth, _) = link_position(&link, 1, 1).unwrap();
+        let ncp = m.ofdm.p.ncp;
+        // A search centred on the true position has the run inside it.
+        let centred = best_timing(m, &rxs, truth, &sent.header);
+        assert!(
+            centred.as_ref().is_ok_and(|b| b.abs_diff(truth) <= ncp / 8),
+            "{mode}: {centred:?}, true position {truth}"
+        );
+        for nominal in [truth - ncp, truth + ncp] {
+            let err = best_timing(m, &rxs, nominal, &sent.header).expect_err("centred a run the search cuts off");
+            assert!(err.contains("edge of the search"), "{mode}: {err}");
+        }
+    }
 }
 
 #[test]
