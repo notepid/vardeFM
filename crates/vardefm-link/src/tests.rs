@@ -36,6 +36,11 @@ struct Net {
     airtime: f64,
     /// Every burst a station's own link sent (repeats left out): (from, start, end, kind).
     sent: Vec<(usize, f64, f64, Kind)>,
+    /// (from, to): the next burst `to` would receive from `from` is lost. It is still on
+    /// the air, so `to` hears the channel busy, but nothing decodes.
+    lose_next: Option<(usize, usize)>,
+    /// The header of each burst in `sent`: (from, start, header).
+    sent_headers: Vec<(usize, f64, Header)>,
 }
 
 const A: usize = 0;
@@ -88,6 +93,8 @@ impl Net {
             cw_loss,
             airtime: 0.0,
             sent: Vec::new(),
+            lose_next: None,
+            sent_headers: Vec::new(),
         }
     }
 
@@ -136,7 +143,11 @@ impl Net {
             }
         });
         for (_, to, burst, start, end, from) in arrived {
-            if self.nodes[to].dead || self.collided(to, from, start, end) || self.chance(self.burst_loss) {
+            let lost = self.lose_next == Some((from, to));
+            if lost {
+                self.lose_next = None;
+            }
+            if lost || self.nodes[to].dead || self.collided(to, from, start, end) || self.chance(self.burst_loss) {
                 if self.trace() {
                     eprintln!("{now:7.2} lost burst {}->{}", self.nodes[from].name, self.nodes[to].name);
                 }
@@ -184,6 +195,7 @@ impl Net {
             self.history.push((i, now, end));
             if !digi {
                 self.sent.push((i, now, end, b.header.kind));
+                self.sent_headers.push((i, now, b.header));
             }
             self.nodes[i].tx = Some((now, end, b, digi));
         }
@@ -1809,4 +1821,838 @@ fn another_callers_request_does_not_disturb_a_data_retry() {
     assert_eq!(next_tx(&mut b, &mut t), Kind::Data);
     assert_eq!(b.stats.retries, 1, "sent as a retry");
     assert!(t >= deadline, "retried at {t:.2} s, before {deadline:.2} s");
+}
+
+// ------------------------------------------------------------ ABORT's Disc (#58)
+
+/// Bursts of `kind` that station `who`'s own link sent from `since` on: (start, end).
+fn sent_by(net: &Net, who: usize, kind: Kind, since: f64) -> Vec<(f64, f64)> {
+    net.sent.iter().filter(|s| s.0 == who && s.3 == kind && s.1 >= since).map(|s| (s.1, s.2)).collect()
+}
+
+/// How many times station `who`'s host has been told DISCONNECTED.
+fn disconnects(net: &Net, who: usize) -> usize {
+    net.nodes[who].events.iter().filter(|e| **e == LinkEvent::Disconnected).count()
+}
+
+fn overlaps(a: (f64, f64), b: (f64, f64)) -> bool {
+    a.0 < b.1 && b.0 < a.1
+}
+
+/// Like [`Net::run_until`], but returns whether `done` came within `limit` seconds
+/// instead of failing, so that a test can say what went wrong.
+fn run_for(net: &mut Net, limit: f64, mut done: impl FnMut(&Net) -> bool) -> bool {
+    let start = net.now;
+    while !done(net) {
+        if net.now - start >= limit {
+            return false;
+        }
+        net.step();
+    }
+    true
+}
+
+/// A session between A and B through `digis`, connected, then quiet: past the time the
+/// caller could still be retrying its ConnectReq, and nothing on the air. Keepalives
+/// are far off, so none goes out during a test.
+fn quiet_session(seed: u32, digis: &[&str]) -> Net {
+    quiet_session_with(seed, digis, LinkConfig::default())
+}
+
+/// As `quiet_session`, with `cfg` (its `keepalive_s` is set to 600 s).
+fn quiet_session_with(seed: u32, digis: &[&str], cfg: LinkConfig) -> Net {
+    let cfg = LinkConfig { keepalive_s: 600.0, ..cfg };
+    let mut net = Net::chain(seed, 0.0, digis, cfg);
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &via(digis)).unwrap();
+    net.run_until(120.0, |n| n.both_connected());
+    let window = net.nodes[A].node.link.connect_window_s(digis.len() as u8);
+    let quiet = net.now + window.max(20.0);
+    net.run_until(window + 60.0, |n| n.now >= quiet && n.nodes.iter().all(|x| x.tx.is_none()));
+    net
+}
+
+/// The session id A uses.
+fn session_id(net: &Net) -> u8 {
+    let State::Connected(s) = &net.nodes[A].node.link.state else { panic!("A is not connected") };
+    s.id
+}
+
+/// ABORT while A owes B an answer: A has decoded B's burst, and its answer is due
+/// `turnaround_s` later. The Disc goes in that slot, as the answer would have, and B
+/// answers DiscAck and closes. A's host is told DISCONNECTED once, at the ABORT; a
+/// second ABORT or a DISCONNECT then changes nothing.
+fn abort_after_the_peers_burst(digis: &[&str], seed: u32) {
+    let mut net = quiet_session(seed, digis);
+    let b = net.b();
+    net.nodes[b].node.link.send_data(&data(100, seed));
+    let owes_answer = |n: &Net| {
+        matches!(&n.nodes[A].node.link.state,
+            State::Connected(s) if matches!(s.phase, Phase::Respond { initiated: false, .. }))
+    };
+    net.run_until(120.0, owes_answer);
+    let State::Connected(s) = &net.nodes[A].node.link.state else { unreachable!() };
+    let Phase::Respond { at: slot, .. } = s.phase else { unreachable!() };
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.step();
+    assert_eq!(disconnects(&net, A), 1, "via {digis:?}: A's host not told at once");
+    let t = net.run_until(30.0, |n| n.has(b, &LinkEvent::Disconnected));
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert!(!discs.is_empty(), "via {digis:?}: no Disc");
+    assert!(
+        (discs[0].0 - slot).abs() <= 2.0 * DT,
+        "via {digis:?}: Disc at {:.2}, A's answer slot at {slot:.2} (ABORT at {t0:.2})",
+        discs[0].0
+    );
+    assert_eq!(discs.len(), 1, "via {digis:?}: A's Discs {discs:?}, but B answered the first");
+    assert!(t < 10.0, "via {digis:?}: B took {t:.1} s to close");
+    // Settle, then a second ABORT and a DISCONNECT: no second DISCONNECTED, nothing sent.
+    let settled = net.now + 30.0;
+    net.run_until(60.0, |n| n.now >= settled);
+    let t1 = net.now;
+    net.nodes[A].node.link.abort(t1);
+    net.nodes[A].node.link.disconnect(t1);
+    net.run_until(30.0, |n| n.now >= t1 + 20.0);
+    assert!(!net.sent.iter().any(|s| s.0 == A && s.1 >= t1), "via {digis:?}: A sent after a second ABORT");
+    assert_eq!(disconnects(&net, A), 1, "via {digis:?}: A's host told DISCONNECTED twice");
+    assert_eq!(disconnects(&net, b), 1, "via {digis:?}");
+    assert!(!net.nodes[A].node.link.is_connected() && !net.nodes[b].node.link.is_connected());
+}
+
+#[test]
+fn abort_after_the_peers_burst_sends_the_disc_in_our_answer_slot() {
+    abort_after_the_peers_burst(&[], 201);
+}
+
+#[test]
+fn abort_after_the_peers_burst_sends_the_disc_in_our_answer_slot_through_a_digipeater() {
+    abort_after_the_peers_burst(&["LA3DDD"], 202);
+}
+
+/// ABORT just after A's own burst, while B is about to answer it (direct). The Disc
+/// must not go into B's answer, or B, transmitting, never hears it and only drops the
+/// session after its retries. It follows the answer in A's slot. If `lose_reply`, A
+/// hears B's answer as a busy channel but cannot decode it: the Disc then goes once
+/// the channel is clear and A's wait for the answer has run out.
+fn abort_just_after_our_burst(seed: u32, lose_reply: bool) {
+    let mut net = quiet_session(seed, &[]);
+    let b = net.b();
+    let turnaround = net.nodes[A].node.link.config().turnaround_s;
+    net.nodes[A].node.link.send_data(&data(100, seed));
+    net.run_until(60.0, |n| n.nodes[A].tx.is_some());
+    net.run_until(60.0, |n| n.nodes[A].tx.is_none());
+    if lose_reply {
+        net.lose_next = Some((b, A));
+    }
+    let wait_until = match &net.nodes[A].node.link.state {
+        State::Connected(s) => match s.phase {
+            Phase::Wait { deadline, .. } => deadline,
+            _ => panic!("A is not waiting for B's answer"),
+        },
+        _ => panic!("A is not connected"),
+    };
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    let what = if lose_reply { "lost answer" } else { "answer heard" };
+    let b_closed = run_for(&mut net, 10.0, |n| n.has(b, &LinkEvent::Disconnected));
+    let reply = *sent_by(&net, b, Kind::Data, t0).first().unwrap_or_else(|| panic!("{what}: B did not answer"));
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert!(!discs.is_empty(), "{what}: no Disc");
+    for d in &discs {
+        assert!(!overlaps(*d, reply), "{what}: Disc at {d:.2?} into B's answer at {reply:.2?}");
+    }
+    if lose_reply {
+        assert!(discs[0].0 >= reply.1, "{what}: Disc at {:.2} before B's answer ended at {:.2}", discs[0].0, reply.1);
+        assert!(
+            discs[0].0 >= wait_until - DT,
+            "{what}: Disc at {:.2}, before A's wait for the answer ran out at {wait_until:.2}",
+            discs[0].0
+        );
+    } else {
+        // B's answer reaches A 0.02 s after it ends (the fake channel's delay).
+        let slot = reply.1 + 0.02 + turnaround;
+        assert!(
+            discs[0].0 >= slot - 2.0 * DT && discs[0].0 <= slot + 3.0 * DT,
+            "{what}: Disc at {:.2}, A's answer slot at {slot:.2}",
+            discs[0].0
+        );
+    }
+    assert!(b_closed, "{what}: B still connected 10 s after A's ABORT");
+    let settled = net.now + 30.0;
+    net.run_until(60.0, |n| n.now >= settled);
+    assert_eq!((disconnects(&net, A), disconnects(&net, b)), (1, 1), "{what}");
+}
+
+#[test]
+fn abort_just_after_our_burst_waits_for_the_peers_answer() {
+    abort_just_after_our_burst(203, false);
+}
+
+#[test]
+fn abort_just_after_our_burst_whose_answer_is_lost_sends_the_disc_on_a_clear_channel() {
+    abort_just_after_our_burst(204, true);
+}
+
+/// CONNECT right after ABORT is accepted, but waits until the Disc exchange is over:
+/// the ConnectReq goes out only after B's DiscAck, then both ends connect on a new
+/// session id. A's host gets DISCONNECTED for the old session first. B misses A's
+/// first Disc, so the exchange takes a repeat: a CONNECT that went out before it would
+/// find B still in the old session.
+///
+/// Longest wait, on a quiet channel, with the Disc never answered (default config,
+/// narrow mode). Each Disc lasts 0.408 s and is followed by a wait for its DiscAck
+/// (`response_wait`: 1.2 s direct, 6.876 s through one digipeater) and, before the
+/// next Disc, up to RETRY_BACKOFF_S × `retry_spread` of backoff (0.4 s direct, 1.2 s
+/// through one digipeater). After the 4th Disc's wait the abort ends.
+/// - ABORT on a clear channel: the first Disc goes at once.
+///   Direct: 4 × 0.408 + 4 × 1.2 + 3 × 0.4 ≈ 7.6 s; through one digipeater:
+///   4 × 0.408 + 4 × 6.876 + 3 × 1.2 ≈ 32.7 s.
+/// - ABORT while our burst is on the air: first the rest of that burst (up to the
+///   longest burst, 4.368 s), then its answer wait (1.2 s direct; through digipeaters
+///   `response_wait` for that burst or, for one we started, the longer `retry_wait`)
+///   and one backoff. Direct: up to 4.368 + 1.2 + 0.4 + 7.6 ≈ 13.6 s, or about 9.2 s
+///   for an ABORT during the answer wait.
+///
+/// A busy channel, or a peer that cannot hear us and keeps resending, lengthens the
+/// waits, but the abort ends at its deadline from the ABORT at the latest: the route's
+/// busy timeout (the larger of `busy_timeout_s`, 60 s by default, and a floor for the
+/// route, which is below 60 s direct (6.8 s) and through one digipeater (47.3 s), but
+/// 78.3 s through two), or the longest case above if that is longer.
+#[test]
+fn connect_right_after_abort_waits_for_the_disc_exchange() {
+    let mut net = quiet_session(205, &[]);
+    let b = net.b();
+    let old = session_id(&net);
+    let ev0 = net.nodes[A].events.len();
+    let t0 = net.now;
+    net.lose_next = Some((A, b));
+    net.nodes[A].node.link.abort(t0);
+    net.nodes[A].node.link.connect(t0, "LA1AAA", "LA2BBB-1", &[]).expect("CONNECT accepted after ABORT");
+    let connected = run_for(&mut net, 60.0, |n| n.both_connected());
+    let req = *sent_by(&net, A, Kind::ConnectReq, t0).first().expect("A sent no ConnectReq");
+    let ack = sent_by(&net, b, Kind::DiscAck, t0).first().map(|a| a.1);
+    assert!(
+        ack.is_some_and(|end| req.0 >= end),
+        "ConnectReq at {:.2}, but B's DiscAck ended at {ack:.2?}: A's Discs at {:.2?}",
+        req.0,
+        sent_by(&net, A, Kind::Disc, t0)
+    );
+    assert!(connected, "not connected 60 s after the CONNECT");
+    assert_ne!(session_id(&net), old, "the new session reuses the aborted session's id");
+    let events = &net.nodes[A].events[ev0..];
+    let first_connected = events.iter().position(|e| matches!(e, LinkEvent::Connected { .. }));
+    let first_disconnected = events.iter().position(|e| *e == LinkEvent::Disconnected);
+    assert!(first_disconnected.is_some() && first_disconnected < first_connected, "{events:?}");
+}
+
+/// ABORT while a CONNECT waits for the Disc repeats drops the CONNECT: it is never
+/// sent, and A's host gets DISCONNECTED for it, as for an ABORT while connecting. The
+/// Disc repeats go on (B is switched off, so all 4 go out).
+#[test]
+fn abort_drops_a_connect_waiting_for_the_disc_repeats() {
+    let mut net = quiet_session(206, &[]);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.nodes[A].node.link.connect(t0, "LA1AAA", "LA2BBB-1", &[]).expect("CONNECT accepted after ABORT");
+    // After the first Disc, while A waits for its DiscAck.
+    net.run_until(30.0, |n| n.now >= t0 + 1.5);
+    net.nodes[A].node.link.abort(net.now);
+    net.run_until(60.0, |n| n.now >= t0 + 40.0);
+    let reqs = sent_by(&net, A, Kind::ConnectReq, t0);
+    assert!(reqs.is_empty(), "the CONNECT went out during the Disc repeats: ConnectReqs at {reqs:.2?}");
+    assert_eq!(disconnects(&net, A), 2, "one DISCONNECTED for the session, one for the dropped CONNECT");
+    assert_eq!(sent_by(&net, A, Kind::Disc, t0).len(), 4, "the Disc repeats were cut short");
+}
+
+/// An ABORT whose Disc is never answered (B switched off) sends 4 Discs, spaced as
+/// DISCONNECT's are: each waits `response_wait` for a DiscAck, then up to
+/// RETRY_BACKOFF_S more. Then A sends nothing more, and its host hears DISCONNECTED
+/// only the once.
+#[test]
+fn an_unanswered_abort_disc_is_sent_four_times() {
+    let mut net = quiet_session(207, &[]);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(60.0, |n| n.now >= t0 + 40.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert_eq!(discs.len(), 4, "A's Discs at {discs:.2?}");
+    let link = &net.nodes[A].node.link;
+    let disc_s = link.modem.burst_seconds(0, 0) as f64;
+    let lo = disc_s + link.response_wait(0, disc_s);
+    let hi = lo + RETRY_BACKOFF_S;
+    for w in discs.windows(2) {
+        let gap = w[1].0 - w[0].0;
+        assert!(gap >= lo - DT && gap <= hi + 3.0 * DT, "Discs {gap:.2} s apart, want {lo:.2}..{hi:.2}: {discs:.2?}");
+    }
+    // DISCONNECT, for comparison, also sends its Disc 4 times.
+    let by_disconnect = unanswered_bursts(&[], 207, A, Kind::Disc, |l, t| l.disconnect(t));
+    assert_eq!(by_disconnect.len(), discs.len(), "DISCONNECT's Discs at {by_disconnect:.2?}");
+    assert!(!net.sent.iter().any(|s| s.0 == A && s.1 > discs[3].1), "A sent after its last Disc");
+    assert_eq!(disconnects(&net, A), 1);
+}
+
+/// ABORT on a channel jammed for longer than the busy timeout: the Disc gives way to the
+/// carrier like any burst we start, and the abort ends at the busy timeout. No Disc
+/// had gone, so A sends the one parting Disc a session dropped at the busy timeout
+/// gets, once the carrier ends (within the busy timeout again), and B closes on it.
+#[test]
+fn a_jammed_channel_ends_the_abort_and_its_disc_follows_the_carrier() {
+    let mut net = quiet_session(208, &[]);
+    let b = net.b();
+    let t0 = net.now;
+    let timeout = net.nodes[A].node.link.busy_timeout_s(0);
+    let end = t0 + timeout + 5.0;
+    // B's carrier, from just before the ABORT: A hears the channel busy, B hears nothing.
+    net.history.push((b, t0 - 0.2, end));
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(200.0, |n| n.now >= t0 + timeout - 1.0);
+    assert!(matches!(net.nodes[A].node.link.state, State::Aborting(_)), "the abort ended before the busy timeout");
+    net.run_until(200.0, |n| n.now >= t0 + timeout + 1.0);
+    assert!(matches!(net.nodes[A].node.link.state, State::Idle), "the abort did not end at the busy timeout");
+    net.run_until(200.0, |n| n.now >= end + 30.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    let into: Vec<_> = discs.iter().filter(|d| d.0 < end).collect();
+    assert!(into.is_empty(), "Disc into the carrier (until {end:.2}): {into:.2?}");
+    assert_eq!(discs.len(), 1, "A sent no Disc, or more than one, after the carrier: {discs:.2?}");
+    assert_eq!((disconnects(&net, A), disconnects(&net, b)), (1, 1));
+}
+
+/// While its Disc is being repeated, A does not take another station's ConnectReq, as it
+/// would not while connected: the repeats go on, and no session starts.
+#[test]
+fn a_connect_request_is_ignored_while_the_abort_disc_is_repeated() {
+    let mut net = quiet_session(209, &[]);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    net.nodes[A].node.link.set_listen(true);
+    let old = session_id(&net);
+    let ev0 = net.nodes[A].events.len();
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(30.0, |n| n.now >= t0 + 1.0);
+    let other = old.wrapping_add(1).max(1);
+    let req = connect_burst(Kind::ConnectReq, other, ("LA9ZZZ", "LA1AAA"), &[], false, 0);
+    let now = net.now;
+    net.nodes[A].node.link.on_burst(now, &req);
+    net.run_until(60.0, |n| n.now >= t0 + 40.0);
+    let events = &net.nodes[A].events[ev0..];
+    let connected = events.iter().any(|e| matches!(e, LinkEvent::Connected { .. }));
+    assert!(!connected, "A took LA9ZZZ's ConnectReq while repeating its Disc: {events:?}");
+    assert!(sent_by(&net, A, Kind::ConnectAck, t0).is_empty(), "A answered LA9ZZZ's ConnectReq");
+    assert_eq!(sent_by(&net, A, Kind::Disc, t0).len(), 4, "the Disc repeats were cut short");
+}
+
+// ------------------------------------------------------------ ABORT's Disc: review round
+
+/// Where A's abort has just ended by B's DiscAck, with a CONNECT waiting for it, and
+/// before A's next `poll`: the DiscAck is handed straight to A's link. Returns the net
+/// and the time.
+fn abort_ended_with_a_connect_waiting(seed: u32) -> (Net, f64) {
+    let mut net = quiet_session(seed, &[]);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    net.nodes[A].node.link.set_listen(true);
+    let id = session_id(&net);
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.nodes[A].node.link.connect(t0, "LA1AAA", "LA2BBB-1", &[]).expect("CONNECT accepted after ABORT");
+    net.run_until(30.0, |n| n.now >= t0 + 0.5 && n.nodes[A].tx.is_none());
+    assert_eq!(sent_by(&net, A, Kind::Disc, t0).len(), 1, "A's first Disc");
+    let now = net.now;
+    let disc_ack =
+        RxBurst { header: Header { kind: Kind::DiscAck, ..probe(id, false, 0).header }, ..probe(id, false, 0) };
+    net.nodes[A].node.link.on_burst(now, &disc_ack);
+    (net, now)
+}
+
+// The abort's end starts the waiting CONNECT at once: there is no moment, before the
+// next `poll`, where A looks idle with a CONNECT still waiting. The three tests below
+// act in that moment.
+
+/// Another station's ConnectReq, decoded in the same batch of audio as the DiscAck,
+/// does not start a session: the waiting CONNECT has started.
+#[test]
+fn a_connect_request_as_the_abort_ends_does_not_start_a_session() {
+    let (mut net, now) = abort_ended_with_a_connect_waiting(301);
+    let link = &mut net.nodes[A].node.link;
+    let ev0 = link.events.len();
+    link.on_burst(now, &connect_burst(Kind::ConnectReq, 77, ("LA9ZZZ", "LA1AAA"), &[], false, 0));
+    let took = link.events[ev0..].iter().any(|e| matches!(e, LinkEvent::Connected { .. }));
+    assert!(!took, "LA9ZZZ's ConnectReq, decoded as the abort ended, started a session");
+    assert!(matches!(link.state, State::Connecting { .. }), "the waiting CONNECT did not start as the abort ended");
+}
+
+/// The host's DISCONNECT as the abort ends drops the waiting CONNECT, with
+/// DISCONNECTED, and it never goes out.
+#[test]
+fn disconnect_as_the_abort_ends_drops_the_waiting_connect() {
+    let (mut net, now) = abort_ended_with_a_connect_waiting(302);
+    let before =
+        disconnects(&net, A) + net.nodes[A].node.link.events.iter().filter(|e| **e == LinkEvent::Disconnected).count();
+    net.nodes[A].node.link.disconnect(now);
+    let after =
+        disconnects(&net, A) + net.nodes[A].node.link.events.iter().filter(|e| **e == LinkEvent::Disconnected).count();
+    assert_eq!(after, before + 1, "DISCONNECT as the abort ended did not drop the waiting CONNECT");
+    let t = net.now;
+    net.run_until(30.0, |n| n.now >= t + 20.0);
+    let reqs = sent_by(&net, A, Kind::ConnectReq, t);
+    assert!(reqs.is_empty(), "the CONNECT went out after the host's DISCONNECT: {reqs:.2?}");
+}
+
+/// A second CONNECT as the abort ends fails: the first one is under way.
+#[test]
+fn a_second_connect_as_the_abort_ends_fails() {
+    let (mut net, now) = abort_ended_with_a_connect_waiting(303);
+    let second = net.nodes[A].node.link.connect(now, "LA1AAA", "LA2BBB-1", &[]);
+    assert!(second.is_err(), "a second CONNECT was accepted while the first one waits");
+}
+
+/// Every Disc of an abort counts toward the 4, the ones sent in an answer slot too.
+/// Here B never hears A, so it keeps retrying its data, and A answers each retry it
+/// decodes: still 4 Discs at most, then the abort ends.
+#[test]
+fn abort_discs_in_answer_slots_count_toward_the_four() {
+    let mut net = quiet_session(304, &[]);
+    let b = net.b();
+    net.set_hears(|to, from| to != from && !(to == b && from == A));
+    net.nodes[b].node.link.send_data(&data(100, 304));
+    // A hears B's burst: a Disc on a clear channel now would go into it.
+    net.run_until(30.0, |n| n.nodes[b].tx.is_some() && n.busy(A));
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(120.0, |n| n.now >= t0 + 90.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    let b_bursts = sent_by(&net, b, Kind::Data, t0).len();
+    assert!(b_bursts > 4, "B sent only {b_bursts} bursts: the test needs more than 4");
+    assert_eq!(discs.len(), 4, "A's Discs at {discs:.2?}, answering {b_bursts} bursts of B");
+    assert!(matches!(net.nodes[A].node.link.state, State::Idle), "the abort did not end after 4 Discs");
+}
+
+/// ABORT during a DISCONNECT keeps the Discs DISCONNECT has already sent, including
+/// one on the air at the ABORT: never more than 4 in all. B is switched off.
+#[test]
+fn abort_during_a_disconnect_sends_no_more_than_four_discs_in_all() {
+    let mut net = quiet_session(305, &[]);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    let t0 = net.now;
+    net.nodes[A].node.link.disconnect(t0);
+    // ABORT while DISCONNECT's second Disc is on the air.
+    net.run_until(30.0, |n| sent_by(n, A, Kind::Disc, t0).len() == 2 && n.nodes[A].tx.is_some());
+    net.nodes[A].node.link.abort(net.now);
+    net.run_until(60.0, |n| n.now >= t0 + 50.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert_eq!(discs.len(), 4, "Discs of DISCONNECT and then ABORT at {discs:.2?}");
+    assert_eq!(disconnects(&net, A), 1);
+}
+
+/// ABORT while a burst we started waits out its random start (`Respond` with
+/// `initiated`): the Disc goes at that time, not at once, so it keeps the spread that
+/// stops two ends from starting together.
+#[test]
+fn abort_keeps_the_start_time_of_a_burst_we_were_about_to_start() {
+    let mut net = quiet_session(306, &[]);
+    net.nodes[A].node.link.send_data(&data(100, 306));
+    let starting = |n: &Net| {
+        matches!(&n.nodes[A].node.link.state,
+            State::Connected(s) if matches!(s.phase, Phase::Respond { initiated: true, .. }))
+    };
+    net.run_until(30.0, starting);
+    let State::Connected(s) = &net.nodes[A].node.link.state else { unreachable!() };
+    let Phase::Respond { at, .. } = s.phase else { unreachable!() };
+    let t0 = net.now;
+    assert!(at - t0 > 3.0 * DT, "start at {at:.2}, too close to {t0:.2} for the test");
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(30.0, |n| !sent_by(n, A, Kind::Disc, t0).is_empty());
+    let disc = sent_by(&net, A, Kind::Disc, t0)[0];
+    assert!((disc.0 - at).abs() <= 2.0 * DT, "Disc at {:.2}, the burst was due at {at:.2} (ABORT at {t0:.2})", disc.0);
+}
+
+/// After ABORT, the peer's data is not acknowledged: the Disc's ack offset is what had
+/// reached the host before the ABORT, and its bitmap is empty, so the peer does not
+/// count as delivered data we threw away. Nor does `bytes_delivered`. B's data burst is
+/// on the air at the ABORT, and A answers it with the Disc.
+#[test]
+fn abort_disc_acks_only_what_was_acked_before_the_abort() {
+    let mut net = quiet_session(307, &[]);
+    let b = net.b();
+    net.nodes[b].node.link.send_data(&data(100, 307));
+    // A hears B's burst: a Disc on a clear channel now would go into it.
+    net.run_until(30.0, |n| n.nodes[b].tx.is_some() && n.busy(A));
+    let State::Connected(s) = &net.nodes[A].node.link.state else { panic!("A is not connected") };
+    let acked = ((s.rx_next % OFFSET_MOD) as u32, s.ack_burst);
+    let delivered = net.nodes[A].node.link.stats.bytes_delivered;
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(30.0, |n| n.has(b, &LinkEvent::Disconnected));
+    let (_, at, h) = *net
+        .sent_headers
+        .iter()
+        .find(|&&(from, at, h)| from == A && at >= t0 && h.kind == Kind::Disc)
+        .expect("A sent no Disc");
+    let on_air = net
+        .sent
+        .iter()
+        .any(|&(from, start, end, k)| from == b && k == Kind::Data && start <= t0 && end > t0 && end < at);
+    assert!(on_air, "B's data was not on the air at the ABORT, ending before the Disc");
+    assert_eq!((h.ack_offset, h.ack_burst), acked, "the Disc acks data received after the ABORT");
+    assert_eq!(h.bitmap, 0, "the Disc's bitmap acks data received after the ABORT");
+    assert_eq!(net.nodes[A].node.link.stats.bytes_delivered, delivered, "data after the ABORT counted as delivered");
+}
+
+/// ABORT while A's DiscAck to B's Disc is due: the DiscAck goes, not a Disc, and that
+/// ends the abort. Both ends close, A's host hears DISCONNECTED once.
+#[test]
+fn abort_while_a_disc_ack_is_due_sends_the_disc_ack() {
+    let mut net = quiet_session(308, &[]);
+    let b = net.b();
+    net.nodes[b].node.link.disconnect(net.now);
+    let acking = |n: &Net| {
+        matches!(&n.nodes[A].node.link.state,
+            State::Connected(s) if matches!(s.phase, Phase::Respond { kind: Kind::DiscAck, .. }))
+    };
+    net.run_until(30.0, acking);
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(30.0, |n| n.has(b, &LinkEvent::Disconnected));
+    let settled = net.now + 20.0;
+    net.run_until(30.0, |n| n.now >= settled);
+    assert_eq!(sent_by(&net, A, Kind::DiscAck, t0).len(), 1, "A's DiscAck");
+    assert!(sent_by(&net, A, Kind::Disc, t0).is_empty(), "A sent a Disc after the peer's");
+    assert!(matches!(net.nodes[A].node.link.state, State::Idle));
+    assert_eq!((disconnects(&net, A), disconnects(&net, b)), (1, 1));
+}
+
+/// ABORT on the called station while its ConnectAck is due: we have never answered,
+/// so the caller has never heard us. The session ends at once, with no ConnectAck and
+/// no Disc, and the host hears DISCONNECTED once for it. B stops listening, so the
+/// caller's retries are not taken as a new call.
+#[test]
+fn abort_before_our_connect_ack_ends_at_once_without_a_disc() {
+    let mut net = Net::chain(309, 0.0, &[], LinkConfig::default());
+    let b = net.b();
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    let acking = |n: &Net| {
+        matches!(&n.nodes[b].node.link.state,
+            State::Connected(s) if matches!(s.phase, Phase::Respond { kind: Kind::ConnectAck, .. }))
+    };
+    net.run_until(30.0, acking);
+    let t0 = net.now;
+    let ev0 = net.nodes[b].events.len();
+    net.nodes[b].node.link.abort(t0);
+    net.nodes[b].node.link.set_listen(false);
+    assert!(matches!(net.nodes[b].node.link.state, State::Idle), "the abort did not end at once");
+    // Until the caller's attempts are over.
+    net.run_until(120.0, |n| n.nodes[A].node.link.is_idle());
+    assert!(sent_by(&net, b, Kind::ConnectAck, t0).is_empty(), "B sent its ConnectAck after ABORT");
+    let discs = sent_by(&net, b, Kind::Disc, t0);
+    assert!(discs.is_empty(), "B's Discs at {discs:.2?}, but the caller never heard B");
+    let told = net.nodes[b].events[ev0..].iter().filter(|e| **e == LinkEvent::Disconnected).count();
+    assert_eq!(told, 1, "B's host told DISCONNECTED {told} times");
+}
+
+/// ABORT on the called station just after its ConnectAck went out: the caller may have
+/// heard it, so the usual Disc rules apply. The Disc goes on the clear channel, the
+/// caller (now connected) answers DiscAck, and both ends close.
+#[test]
+fn abort_after_our_connect_ack_sends_the_disc() {
+    let mut net = Net::chain(311, 0.0, &[], LinkConfig::default());
+    let b = net.b();
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    net.run_until(30.0, |n| !sent_by(n, b, Kind::ConnectAck, 0.0).is_empty() && n.nodes[b].tx.is_none());
+    let t0 = net.now;
+    net.nodes[b].node.link.abort(t0);
+    net.run_until(30.0, |n| n.has(A, &LinkEvent::Disconnected));
+    let discs = sent_by(&net, b, Kind::Disc, t0);
+    assert_eq!(discs.len(), 1, "B's Discs at {discs:.2?}");
+    assert_eq!(sent_by(&net, A, Kind::DiscAck, t0).len(), 1, "A's DiscAck");
+    let settled = net.now + 20.0;
+    net.run_until(30.0, |n| n.now >= settled);
+    assert!(matches!(net.nodes[b].node.link.state, State::Idle), "B's abort did not end");
+    assert_eq!((disconnects(&net, A), disconnects(&net, b)), (1, 1));
+}
+
+/// The peer's own Disc while A's Disc is repeated (B cannot hear A): A answers it with
+/// a DiscAck in its slot, and that ends the abort: no Disc after it.
+#[test]
+fn the_peers_disc_while_aborting_is_answered_and_ends_the_abort() {
+    let mut net = quiet_session(310, &[]);
+    let b = net.b();
+    net.set_hears(|to, from| to != from && !(to == b && from == A));
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(30.0, |n| !sent_by(n, A, Kind::Disc, t0).is_empty() && n.nodes[A].tx.is_none());
+    net.nodes[b].node.link.disconnect(net.now);
+    net.run_until(60.0, |n| !sent_by(n, A, Kind::DiscAck, t0).is_empty());
+    let turnaround = net.nodes[A].node.link.config().turnaround_s;
+    let peer_disc = *sent_by(&net, b, Kind::Disc, t0).last().expect("B sent no Disc");
+    let ack = sent_by(&net, A, Kind::DiscAck, t0)[0];
+    let slot = peer_disc.1 + 0.02 + turnaround;
+    assert!(ack.0 >= slot - 2.0 * DT && ack.0 <= slot + 3.0 * DT, "DiscAck at {:.2}, slot at {slot:.2}", ack.0);
+    let t = net.now;
+    net.run_until(60.0, |n| n.now >= t + 40.0);
+    let late: Vec<_> = sent_by(&net, A, Kind::Disc, ack.1);
+    assert!(late.is_empty(), "A's Discs after its DiscAck: {late:.2?}");
+    assert!(matches!(net.nodes[A].node.link.state, State::Idle));
+    assert_eq!(disconnects(&net, A), 1);
+}
+
+// ------------------------------------------------------------ ABORT: second review
+
+/// The called station's session id, once B has taken A's call.
+fn called_id(net: &Net) -> u8 {
+    match &net.nodes[net.b()].node.link.state {
+        State::Connected(s) | State::Aborting(s) => s.id,
+        _ => panic!("B has no session"),
+    }
+}
+
+/// B, listening, takes A's call and ABORTs it while its ConnectAck is due, so the caller
+/// never heard B. A keeps retrying its ConnectReq for its call window: B, still
+/// listening, does not take those retries as a new call, and sends nothing.
+#[test]
+fn an_aborted_call_is_not_taken_again_while_listening() {
+    let mut net = Net::chain(320, 0.0, &[], LinkConfig::default());
+    let b = net.b();
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    let acking = |n: &Net| {
+        matches!(&n.nodes[b].node.link.state,
+            State::Connected(s) if matches!(s.phase, Phase::Respond { kind: Kind::ConnectAck, .. }))
+    };
+    net.run_until(30.0, acking);
+    let t0 = net.now;
+    let ev0 = net.nodes[b].events.len();
+    net.nodes[b].node.link.abort(t0);
+    net.run_until(200.0, |n| n.nodes[A].node.link.is_idle() || n.both_connected());
+    let again: Vec<_> = net.nodes[b].events[ev0..]
+        .iter()
+        .filter(|e| matches!(e, LinkEvent::Connected { .. } | LinkEvent::Pending))
+        .collect();
+    assert!(again.is_empty(), "B took the aborted call again: {again:?}");
+    let sent: Vec<_> = net.sent.iter().filter(|&&(from, start, ..)| from == b && start >= t0).collect();
+    assert!(sent.is_empty(), "B sent after its ABORT: {sent:.2?}");
+}
+
+/// As above, but B's ConnectAck went out and was lost, so the caller, still connecting,
+/// retries: B answers those retries with its Discs (which a station still connecting
+/// ignores), and after them still does not take the call again.
+#[test]
+fn an_aborted_call_is_not_taken_again_after_its_discs() {
+    let cfg = LinkConfig { connect_attempts: 10, ..LinkConfig::default() };
+    let mut net = Net::chain(321, 0.0, &[], cfg);
+    let b = net.b();
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    net.lose_next = Some((b, A));
+    // Until B's ConnectAck has ended and been lost on its way to A.
+    net.run_until(30.0, |n| n.lose_next.is_none() && n.nodes[b].tx.is_none());
+    assert_eq!(sent_by(&net, b, Kind::ConnectAck, 0.0).len(), 1, "the lost burst was not B's ConnectAck");
+    let t0 = net.now;
+    let ev0 = net.nodes[b].events.len();
+    net.nodes[b].node.link.abort(t0);
+    net.run_until(300.0, |n| n.nodes[A].node.link.is_idle() || n.both_connected());
+    let discs = sent_by(&net, b, Kind::Disc, t0);
+    assert!(!discs.is_empty() && discs.len() <= 4, "B's Discs at {discs:.2?}");
+    let again: Vec<_> = net.nodes[b].events[ev0..]
+        .iter()
+        .filter(|e| matches!(e, LinkEvent::Connected { .. } | LinkEvent::Pending))
+        .collect();
+    assert!(again.is_empty(), "B took the aborted call again: {again:?}");
+    assert!(sent_by(&net, b, Kind::ConnectAck, t0).is_empty(), "B sent a ConnectAck after ABORT");
+}
+
+/// B ABORTs A's call before answering it. Within the call window a ConnectReq with the
+/// aborted id is ignored, but a new call from the same caller (a new id) connects; so
+/// does the aborted id once the window is over.
+#[test]
+fn after_an_aborted_call_a_new_call_still_connects() {
+    let mut net = Net::chain(322, 0.0, &[], LinkConfig::default());
+    let b = net.b();
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    let acking = |n: &Net| {
+        matches!(&n.nodes[b].node.link.state,
+            State::Connected(s) if matches!(s.phase, Phase::Respond { kind: Kind::ConnectAck, .. }))
+    };
+    net.run_until(30.0, acking);
+    let id = called_id(&net);
+    let t0 = net.now;
+    let window = net.nodes[b].node.link.connect_window_s(0);
+    net.nodes[b].node.link.abort(t0);
+    let connected = |link: &mut Link, now: f64, id: u8| {
+        let ev0 = link.events.len();
+        link.on_burst(now, &connect_burst(Kind::ConnectReq, id, ("LA1AAA", "LA2BBB-1"), &[], false, 0));
+        let took = link.events[ev0..].iter().any(|e| matches!(e, LinkEvent::Connected { .. }));
+        if took {
+            link.abort(now);
+        }
+        took
+    };
+    let link = &mut net.nodes[b].node.link;
+    assert!(!connected(link, t0 + 1.0, id), "the aborted id was taken again within the call window");
+    assert!(connected(link, t0 + window + 1.0, id), "the aborted id was still refused after the call window");
+    let other = id.wrapping_add(1).max(1);
+    assert!(connected(link, t0 + window + 2.0, other), "a new call (id {other}) from the same caller did not connect");
+}
+
+/// The abort ends at the session's busy timeout at the latest, counted from the ABORT:
+/// Discs that go out in short gaps of a jammed channel do not restart it. B is switched
+/// off, and the carrier drops for 1 s every 20 s.
+#[test]
+fn the_abort_ends_at_the_busy_timeout_though_discs_go_out_in_gaps() {
+    let mut net = quiet_session(323, &[]);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    let t0 = net.now;
+    for k in 0..10 {
+        let start = t0 - 0.2 + 20.0 * k as f64;
+        net.history.push((b, start, start + 19.0));
+    }
+    let timeout = net.nodes[A].node.link.busy_timeout_s(0);
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(300.0, |n| n.now >= t0 + 150.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert!(!discs.is_empty(), "no Disc went out in the gaps");
+    let late: Vec<_> = discs.iter().filter(|d| d.0 > t0 + timeout + DT).collect();
+    assert!(late.is_empty(), "Discs after the busy timeout ({timeout:.0} s from the ABORT at {t0:.2}): {late:.2?}");
+    assert!(matches!(net.nodes[A].node.link.state, State::Idle));
+    assert_eq!(disconnects(&net, A), 1);
+}
+
+/// The abort ends at the busy timeout on a jammed channel after its first Disc went out:
+/// no parting Disc follows the carrier, since the peer has had one. B cannot hear A.
+#[test]
+fn a_jammed_channel_after_the_first_abort_disc_sends_no_parting_disc() {
+    let mut net = quiet_session(324, &[]);
+    let b = net.b();
+    net.set_hears(|to, from| to != from && !(to == b && from == A));
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(30.0, |n| !sent_by(n, A, Kind::Disc, t0).is_empty() && n.nodes[A].tx.is_none());
+    let start = net.now;
+    let end = t0 + net.nodes[A].node.link.busy_timeout_s(0) + 5.0;
+    net.history.push((b, start, end));
+    net.run_until(200.0, |n| n.now >= end + 30.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert_eq!(discs.len(), 1, "A's Discs at {discs:.2?}, carrier from {start:.2} to {end:.2}");
+    assert!(matches!(net.nodes[A].node.link.state, State::Idle));
+    assert_eq!(disconnects(&net, A), 1);
+}
+
+/// The Disc's ack bitmap is empty after ABORT, even right after the peer's data burst
+/// that set it: the peer must not take any data past the ack offset (held out of order,
+/// then thrown away) as delivered. The ack offset (what reached the host) and the burst
+/// stay as they were.
+#[test]
+fn the_abort_disc_carries_an_empty_bitmap() {
+    let mut net = quiet_session(325, &[]);
+    let b = net.b();
+    net.nodes[b].node.link.send_data(&data(100, 325));
+    let got = |n: &Net| matches!(&n.nodes[A].node.link.state, State::Connected(s) if s.ack_bitmap != 0);
+    net.run_until(30.0, got);
+    let State::Connected(s) = &net.nodes[A].node.link.state else { unreachable!() };
+    let before = ((s.rx_next % OFFSET_MOD) as u32, s.ack_burst);
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(30.0, |n| n.has(b, &LinkEvent::Disconnected));
+    let (_, _, h) = *net
+        .sent_headers
+        .iter()
+        .find(|&&(from, at, h)| from == A && at >= t0 && h.kind == Kind::Disc)
+        .expect("A sent no Disc");
+    assert_eq!(h.bitmap, 0, "the Disc acks the data burst A had just decoded");
+    assert_eq!((h.ack_offset, h.ack_burst), before, "the Disc's ack offset or burst changed");
+}
+
+// ------------------------------------------------------------ ABORT: third review
+
+/// With the smallest busy timeout (0: the route's floor, about 6.8 s direct, less than
+/// the 7.6 s four unanswered Discs take), an ABORT on a clear channel still sends all
+/// 4 Discs: the abort's deadline is at least the time they need. B is switched off.
+#[test]
+fn abort_with_the_smallest_busy_timeout_still_sends_four_discs() {
+    let mut net = quiet_session_with(330, &[], LinkConfig { busy_timeout_s: 0.0, ..LinkConfig::default() });
+    let b = net.b();
+    net.nodes[b].dead = true;
+    let floor = net.nodes[A].node.link.busy_timeout_s(0);
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(60.0, |n| n.now >= t0 + 40.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert_eq!(discs.len(), 4, "A's Discs at {discs:.2?} (ABORT at {t0:.2}, busy timeout {floor:.2} s)");
+    assert_eq!(disconnects(&net, A), 1);
+}
+
+/// As above, with the ABORT just as a long data burst of ours starts: the Disc waits
+/// for the rest of it and for its answer, and the 4 Discs still all go.
+#[test]
+fn abort_at_the_start_of_a_long_burst_still_sends_four_discs() {
+    let mut net = quiet_session_with(331, &[], LinkConfig { busy_timeout_s: 0.0, ..LinkConfig::default() });
+    let b = net.b();
+    net.nodes[b].dead = true;
+    net.nodes[A].node.link.send_data(&data(5000, 331));
+    net.run_until(30.0, |n| n.nodes[A].tx.is_some());
+    let t0 = net.now;
+    let burst = *net.sent.iter().rfind(|&&(from, ..)| from == A).unwrap();
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(60.0, |n| n.now >= t0 + 40.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert_eq!(discs.len(), 4, "A's Discs at {discs:.2?}, after its burst {burst:.2?} (ABORT at {t0:.2})");
+    assert_eq!(disconnects(&net, A), 1);
+}
+
+/// The refusal of an aborted call is for that call only: the same caller calling our
+/// other call sign with the same session id is a new call, and connects.
+#[test]
+fn a_call_to_our_other_call_sign_with_the_aborted_id_connects() {
+    let mut net = Net::chain(332, 0.0, &[], LinkConfig::default());
+    let b = net.b();
+    net.nodes[b].node.link.set_mycalls(vec!["LA2BBB-1".into(), "LA2BBB-2".into()]);
+    net.nodes[A].node.link.connect(0.0, "LA1AAA", "LA2BBB-1", &[]).unwrap();
+    let acking = |n: &Net| {
+        matches!(&n.nodes[b].node.link.state,
+            State::Connected(s) if matches!(s.phase, Phase::Respond { kind: Kind::ConnectAck, .. }))
+    };
+    net.run_until(30.0, acking);
+    let id = called_id(&net);
+    let t0 = net.now;
+    let link = &mut net.nodes[b].node.link;
+    link.abort(t0);
+    let ev0 = link.events.len();
+    link.on_burst(t0 + 1.0, &connect_burst(Kind::ConnectReq, id, ("LA1AAA", "LA2BBB-2"), &[], false, 0));
+    let took = link.events[ev0..]
+        .iter()
+        .any(|e| matches!(e, LinkEvent::Connected { destination, .. } if destination == "LA2BBB-2"));
+    assert!(took, "a call to LA2BBB-2 with the aborted id {id} was refused");
+}
+
+/// A busy channel holds A's data back for most of the busy timeout, then A ABORTs: the
+/// abort's deadline runs from the ABORT, so the busy time before it does not count. The
+/// channel clears after the busy timeout from the data, and all 4 Discs go. B is
+/// switched off.
+#[test]
+fn a_busy_timer_running_before_abort_does_not_shorten_it() {
+    let mut net = quiet_session(333, &[]);
+    let b = net.b();
+    net.nodes[b].dead = true;
+    let timeout = net.nodes[A].node.link.busy_timeout_s(0);
+    let start = net.now;
+    let end = start + timeout + 2.0;
+    net.history.push((b, start - 0.2, end));
+    net.nodes[A].node.link.send_data(&data(100, 333));
+    net.run_until(120.0, |n| n.now >= start + timeout - 10.0);
+    assert!(sent_by(&net, A, Kind::Data, start).is_empty(), "A's data went out into the carrier");
+    let t0 = net.now;
+    net.nodes[A].node.link.abort(t0);
+    net.run_until(120.0, |n| n.now >= end + 30.0);
+    let discs = sent_by(&net, A, Kind::Disc, t0);
+    assert_eq!(
+        discs.len(),
+        4,
+        "A's Discs at {discs:.2?} (data held back from {start:.2}, ABORT at {t0:.2}, carrier until {end:.2})"
+    );
+    assert!(discs[0].0 >= end, "Disc into the carrier");
+    assert_eq!(disconnects(&net, A), 1);
 }

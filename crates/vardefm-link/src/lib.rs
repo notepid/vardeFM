@@ -75,6 +75,8 @@ const CONNECT_JITTER_S: f64 = 0.5;
 /// While the channel is busy, a burst that is due is put off by this much, again and
 /// again until the channel is clear.
 const BUSY_RECHECK_S: f64 = 0.3;
+/// Most Discs a session sends when it closes, by DISCONNECT and ABORT together.
+const MAX_DISC_TRIES: u32 = 4;
 /// Largest `hop_margin_s`. A digipeater does not know the end stations' margin, so the
 /// lifetimes of its sessions are sized for this one.
 pub const MAX_HOP_MARGIN_S: f64 = 10.0;
@@ -112,7 +114,10 @@ pub struct LinkConfig {
     /// digipeater repeat. Without this a carrier or other stations' traffic could keep a
     /// dead session, or a connect attempt, open forever. A dropped session's Disc goes
     /// out once the channel is quiet, in case the peer is there but we cannot decode it,
-    /// unless the channel stays busy for this long again.
+    /// unless the channel stays busy for this long again. An aborted session ends at the
+    /// latest this long after the ABORT (as raised to the route's floor), or after the
+    /// longest an unanswered abort takes on a clear channel if that is longer. It gets
+    /// the parting Disc only if none of its Discs went out, and no CONNECT was waiting.
     ///
     /// The link raises a smaller value to a floor chosen to cover an exchange with the
     /// peer through the session's digipeaters (the longest burst plus two of the called
@@ -260,6 +265,10 @@ struct Session {
     retries: u32,
     closing: Option<f64>,
     disc_tries: u32,
+    /// We have sent a burst of this session, so the peer may have heard of it: the
+    /// caller from the start (its ConnectReq), the called station once its ConnectAck
+    /// goes out. ABORT before that ends the session without a Disc.
+    answered: bool,
     last_heard: f64,
     /// Called station: until then, unless the caller has sent a burst of the session,
     /// the caller may have missed our ConnectAck and still be retrying its ConnectReq.
@@ -267,6 +276,40 @@ struct Session {
     /// that missed the ConnectAck has given up. `NEG_INFINITY` once answered, and for
     /// the caller.
     ack_until: f64,
+    /// Called station: the end of the caller's call window, from its first ConnectReq.
+    /// Unlike `ack_until` it is kept once answered. `NEG_INFINITY` for the caller.
+    call_until: f64,
+    /// After ABORT: when the abort ends at the latest (see `abort_s`).
+    abort_until: f64,
+}
+
+/// A recently closed session.
+struct Closed {
+    id: u8,
+    route: Route,
+    local: String,
+    remote: String,
+    /// After ABORT of a call: until then the caller may still be retrying its
+    /// ConnectReq, and that is not taken as a new call. `NEG_INFINITY` otherwise.
+    refuse_until: f64,
+}
+
+impl Closed {
+    fn of(s: &Session) -> Closed {
+        Closed {
+            id: s.id,
+            route: s.route.clone(),
+            local: s.local.clone(),
+            remote: s.remote.clone(),
+            refuse_until: f64::NEG_INFINITY,
+        }
+    }
+
+    /// As `of`, for a session the host aborted. Only a called station refuses anything:
+    /// a caller's `call_until` is `NEG_INFINITY`.
+    fn aborted(s: &Session) -> Closed {
+        Closed { refuse_until: s.call_until, ..Closed::of(s) }
+    }
 }
 
 enum State {
@@ -281,6 +324,21 @@ enum State {
         sending: bool,
     },
     Connected(Box<Session>),
+    /// After ABORT: the host has been told DISCONNECTED, but the session is kept for its
+    /// Disc. The Disc goes in our answer slot after the peer's next burst, or on a clear
+    /// channel, and is repeated as DISCONNECT's is, giving way to a busy channel:
+    /// `MAX_DISC_TRIES` in all, counting those a DISCONNECT already sent. It ends on the
+    /// peer's DiscAck, or its own Disc (which we answer with a DiscAck, the one other
+    /// burst we send), once the tries are used up, or at its deadline (`abort_s`).
+    /// No data is delivered or acked meanwhile; a CONNECT waits in `queued_connect`.
+    Aborting(Box<Session>),
+}
+
+/// A CONNECT that arrived while an aborted session's Disc was being repeated.
+struct QueuedConnect {
+    mycall: String,
+    target: String,
+    via: Vec<String>,
 }
 
 pub struct Link {
@@ -294,7 +352,8 @@ pub struct Link {
     /// Report BUFFER at the next `take_events` even if unchanged (after host data).
     force_buffer: bool,
     rng: Prng,
-    /// A burst to send once even though we are disconnected (Disc after ABORT, DiscAck re-sends).
+    /// A burst to send once even though we are disconnected (a DiscAck re-sent to a closed
+    /// session's repeated Disc).
     oneshot: Option<Burst>,
     /// A Disc for a session a busy channel ended, and the time after which it is too late
     /// to send. It goes out once the channel is quiet, so that it is not lost under the
@@ -302,8 +361,11 @@ pub struct Link {
     /// has given up by then, and a late Disc could end its next session if that one got
     /// the same id.
     parting: Option<(f64, Burst)>,
-    /// Recently closed session, so a repeated Disc can still be answered.
-    closed: Option<(u8, Route)>,
+    /// Recently closed session, so a repeated Disc can still be answered, and an aborted
+    /// call is not taken again.
+    closed: Option<Closed>,
+    /// A CONNECT accepted while `State::Aborting`, started once the Disc exchange ends.
+    queued_connect: Option<QueuedConnect>,
     /// When each session id was last heard on the channel, in any burst.
     heard_ids: [f64; 256],
     /// Longest burst any level can send, seconds.
@@ -350,6 +412,7 @@ impl Link {
             oneshot: None,
             parting: None,
             closed: None,
+            queued_connect: None,
             heard_ids: [f64::NEG_INFINITY; 256],
             held_since: None,
             last_tx: TxInfo::default(),
@@ -373,8 +436,12 @@ impl Link {
         matches!(self.state, State::Connected(_))
     }
 
+    /// The host's view: no session and no connect attempt. True while an aborted
+    /// session's Disc is still being repeated (`State::Aborting`), since the host has
+    /// been told DISCONNECTED, unless a CONNECT waits for it to end. Code that decides
+    /// whether to transmit or start something must also check for `State::Aborting`.
     pub fn is_idle(&self) -> bool {
-        matches!(self.state, State::Idle)
+        matches!(self.state, State::Idle | State::Aborting(_)) && self.queued_connect.is_none()
     }
 
     pub fn last_tx(&self) -> &TxInfo {
@@ -479,7 +546,7 @@ impl Link {
         match &self.state {
             State::Idle => false,
             State::Connecting { sending, .. } => !sending,
-            State::Connected(s) => match s.phase {
+            State::Connected(s) | State::Aborting(s) => match s.phase {
                 Phase::Sending { .. } => false,
                 Phase::Wait { retry: true, .. } => true,
                 Phase::Respond { initiated, .. } => initiated,
@@ -495,6 +562,21 @@ impl Link {
     /// called station's longest retry waits, a floor chosen to cover the channel staying
     /// busy from our burst's repeats through the peer's answer and its repeats before we
     /// decode the answer. `f64::INFINITY` turns the drop off.
+    /// How long an abort may last from the ABORT: the busy timeout for its route, but at
+    /// least the longest an unanswered abort takes on a clear channel: the rest of our
+    /// longest burst and its answer wait, then `MAX_DISC_TRIES` Discs, each after a
+    /// backoff and followed by its wait for a DiscAck.
+    fn abort_s(&self, route: &Route) -> f64 {
+        let hops = route.hops();
+        let answer =
+            self.response_wait(hops, self.max_burst_s).max(self.retry_wait(hops, route.caller, self.max_burst_s));
+        let disc = self.modem.burst_seconds(0, 0) as f64;
+        let backoff = RETRY_BACKOFF_S * Self::retry_spread(hops);
+        let clear =
+            self.max_burst_s + answer + MAX_DISC_TRIES as f64 * (backoff + disc + self.response_wait(hops, disc));
+        self.busy_timeout_s(hops).max(clear)
+    }
+
     fn busy_timeout_s(&self, hops: u8) -> f64 {
         self.cfg.busy_timeout_s.max(self.max_burst_s + 2.0 * self.retry_wait(hops, false, 0.0))
     }
@@ -502,23 +584,34 @@ impl Link {
     // ------------------------------------------------------------ host commands
 
     /// Start a connection, through the digipeaters `via` (in order, at most two).
-    /// Fails if the link is not idle.
+    /// Fails if the link is not idle. While an aborted session's Disc is being repeated,
+    /// the attempt waits until that ends (accepted, not started); a second CONNECT
+    /// meanwhile fails.
     #[allow(clippy::result_unit_err)]
     pub fn connect(&mut self, now: f64, mycall: &str, target: &str, via: &[String]) -> Result<(), ()> {
-        if !self.is_idle() || via.len() > MAX_DIGIS {
+        if via.len() > MAX_DIGIS {
             return Err(());
         }
+        let q = QueuedConnect { mycall: norm_call(mycall), target: norm_call(target), via: via.to_vec() };
+        match self.state {
+            State::Idle => self.start_connect(now, q),
+            State::Aborting(_) if self.queued_connect.is_none() => self.queued_connect = Some(q),
+            _ => return Err(()),
+        }
+        Ok(())
+    }
+
+    fn start_connect(&mut self, now: f64, q: QueuedConnect) {
         let session = self.pick_session_id(now);
         self.state = State::Connecting {
             session,
-            mycall: norm_call(mycall),
-            target: norm_call(target),
-            digis: via.iter().map(|c| norm_call(c)).collect(),
+            mycall: q.mycall,
+            target: q.target,
+            digis: q.via.iter().map(|c| norm_call(c)).collect(),
             attempts: 0,
             next_tx: now,
             sending: false,
         };
-        Ok(())
     }
 
     /// How long a caller avoids a session id after hearing it, so it does not share an id
@@ -546,20 +639,68 @@ impl Link {
     pub fn disconnect(&mut self, now: f64) {
         match &mut self.state {
             State::Idle => {}
-            State::Connecting { .. } => self.close(),
+            State::Aborting(_) => self.drop_queued_connect(),
+            State::Connecting { .. } => self.close(now),
             State::Connected(s) => {
                 s.closing.get_or_insert(now);
             }
         }
     }
 
-    /// Hard stop. Sends one `Disc` so the peer does not wait for a timeout.
-    pub fn abort(&mut self, _now: f64) {
-        if let Some(b) = self.disc_burst() {
-            self.oneshot = Some(b);
+    /// Hard stop. The host is told DISCONNECTED at once. A session's `Disc` still goes
+    /// out, so the peer does not wait for a timeout: in our answer slot after the peer's
+    /// next burst, or on a clear channel, repeated until the peer's DiscAck
+    /// ([`State::Aborting`]). An ABORT then only drops a CONNECT waiting for that.
+    pub fn abort(&mut self, now: f64) {
+        match std::mem::replace(&mut self.state, State::Idle) {
+            State::Idle => {}
+            State::Aborting(s) => {
+                self.state = State::Aborting(s);
+                self.drop_queued_connect();
+            }
+            state @ State::Connecting { .. } => {
+                self.state = state;
+                self.close(now);
+            }
+            // A session we never answered (our ConnectAck has not gone out): the caller
+            // has never heard us, so there is no one to send a Disc to.
+            State::Connected(s) if !s.answered => {
+                let closed = Closed::aborted(&s);
+                self.state = State::Connected(s);
+                self.close(now);
+                self.closed = Some(closed);
+            }
+            State::Connected(mut s) => {
+                // Only the Disc is left to send: due at once (no grace for host data).
+                // The Discs a DISCONNECT has already sent count: MAX_DISC_TRIES in all.
+                s.tx_buf.clear();
+                s.in_flight.clear();
+                s.closing = Some(now - self.cfg.disconnect_grace_s);
+                s.retries = 0;
+                // The Disc's ack offset covers what reached the host before the ABORT; its
+                // bitmap is empty, so the peer takes nothing past that offset (data we
+                // held out of order, now thrown away) as delivered.
+                s.ack_bitmap = 0;
+                // An answer still due goes as the Disc, in its slot. A burst we were about
+                // to start goes as the Disc at its own time, still giving way to a busy
+                // channel. The abort has its own deadline from the ABORT, whatever happens
+                // meanwhile (our Discs, the peer's bursts); a busy timer already running
+                // does not shorten it.
+                s.abort_until = now + self.abort_s(&s.route);
+                // We have used the id until now: a new session must not pick it.
+                self.heard_ids[s.id as usize] = now;
+                self.closed = Some(Closed::aborted(&s));
+                self.state = State::Aborting(s);
+                self.events.push(LinkEvent::Disconnected);
+            }
         }
-        if !self.is_idle() {
-            self.close();
+    }
+
+    /// Drops a CONNECT waiting for an aborted session's Disc exchange, and tells the
+    /// host, as for a connect attempt that ends.
+    fn drop_queued_connect(&mut self) {
+        if self.queued_connect.take().is_some() {
+            self.events.push(LinkEvent::Disconnected);
         }
     }
 
@@ -576,22 +717,44 @@ impl Link {
         }
     }
 
-    /// A one-off `Disc` for the current session, if connected.
+    /// A one-off `Disc` for the current session: if connected, or aborted with no Disc
+    /// sent yet (the peer has had none).
     fn disc_burst(&self) -> Option<Burst> {
-        let State::Connected(s) = &self.state else { return None };
+        let s = match &self.state {
+            State::Connected(s) => s,
+            State::Aborting(s) if s.disc_tries == 0 => s,
+            _ => return None,
+        };
         Some(Burst {
             header: Header { kind: Kind::Disc, session: s.id, flags: s.route.out_flags(), ..Header::default() },
             payload: Vec::new(),
         })
     }
 
-    fn close(&mut self) {
+    fn close(&mut self, now: f64) {
+        if matches!(self.state, State::Aborting(_)) {
+            self.end_abort(now);
+            return;
+        }
         if let State::Connected(s) = &self.state {
-            self.closed = Some((s.id, s.route.clone()));
+            self.closed = Some(Closed::of(s));
         }
         self.state = State::Idle;
         self.held_since = None;
         self.events.push(LinkEvent::Disconnected);
+    }
+
+    /// The aborted session's Disc exchange is over (DiscAck, the peer's own Disc
+    /// answered, tries used up, or a busy channel held it back too long). The host
+    /// already has its DISCONNECTED. A queued CONNECT starts here and now, so the link
+    /// is never idle with a CONNECT still waiting: a ConnectReq, DISCONNECT, ABORT or
+    /// CONNECT that comes before the next `poll` finds it under way.
+    fn end_abort(&mut self, now: f64) {
+        self.state = State::Idle;
+        self.held_since = None;
+        if let Some(q) = self.queued_connect.take() {
+            self.start_connect(now, q);
+        }
     }
 
     // ------------------------------------------------------------ receive
@@ -625,13 +788,13 @@ impl Link {
                     self.on_connect_req(now, rx, req);
                 } else if h.kind == Kind::Disc {
                     // Peer did not hear our DiscAck: answer again.
-                    if let Some((id, route)) = &self.closed {
-                        if *id == h.session && route.accepts(&h) {
+                    if let Some(c) = &self.closed {
+                        if c.id == h.session && c.route.accepts(&h) {
                             self.oneshot = Some(Burst {
                                 header: Header {
                                     kind: Kind::DiscAck,
                                     session: h.session,
-                                    flags: route.out_flags(),
+                                    flags: c.route.out_flags(),
                                     ..Header::default()
                                 },
                                 payload: Vec::new(),
@@ -661,7 +824,7 @@ impl Link {
                 s.phase = Phase::Wait { deadline: now + wait, retry: false };
                 self.state = State::Connected(Box::new(s));
             }
-            State::Connected(s) => {
+            State::Connected(s) | State::Aborting(s) => {
                 if h.session != s.id || !s.route.accepts(&h) {
                     return;
                 }
@@ -696,6 +859,17 @@ impl Link {
             return;
         }
         let Some(local) = self.mycalls.iter().find(|c| norm_call(c) == dst).cloned() else { return };
+        // The caller of a call we aborted, still retrying within its call window.
+        let aborted = self.closed.as_ref().is_some_and(|c| {
+            c.id == rx.header.session
+                && c.remote == src
+                && norm_call(&c.local) == dst
+                && c.route == route
+                && now < c.refuse_until
+        });
+        if aborted {
+            return;
+        }
         self.events.push(LinkEvent::Pending);
         self.events.push(LinkEvent::Connected { source: src.clone(), destination: local.clone() });
         // The caller has not heard us yet, so its requested level is just a default.
@@ -703,6 +877,7 @@ impl Link {
         let window = self.connect_window_s(route.hops());
         let mut s = self.new_session(rx.header.session, local, src, route, now, req, req);
         s.ack_until = now + window;
+        s.call_until = now + window;
         s.phase = Phase::Respond { at: now + self.cfg.turnaround_s, kind: Kind::ConnectAck, initiated: false };
         self.state = State::Connected(Box::new(s));
     }
@@ -718,6 +893,7 @@ impl Link {
         req: u8,
         peer_req: u8,
     ) -> Session {
+        let answered = route.caller;
         Session {
             id,
             local,
@@ -740,16 +916,20 @@ impl Link {
             retries: 0,
             closing: None,
             disc_tries: 0,
+            answered,
             last_heard: now,
             ack_until: f64::NEG_INFINITY,
+            call_until: f64::NEG_INFINITY,
+            abort_until: f64::INFINITY,
         }
     }
 
     fn on_session_burst(&mut self, now: f64, rx: &RxBurst, req: u8) {
-        self.held_since = None;
         let h = rx.header;
         let turnaround = self.cfg.turnaround_s;
-        let State::Connected(s) = &mut self.state else { return };
+        let aborting = matches!(self.state, State::Aborting(_));
+        self.held_since = None;
+        let (State::Connected(s) | State::Aborting(s)) = &mut self.state else { return };
         s.last_heard = now;
         s.ack_until = f64::NEG_INFINITY;
         s.retries = 0;
@@ -773,39 +953,43 @@ impl Link {
         }
         s.delivered.retain(|&(_, end)| end > s.tx_base);
 
-        // Data from the peer.
-        let mut bitmap = 0u32;
+        // Data from the peer. After ABORT it is neither kept nor acked: the Disc acks only
+        // what was acked before, so the peer does not take data we threw away as
+        // delivered.
         let mut delivered = Vec::new();
-        for (i, cw) in rx.payload.iter().enumerate() {
-            let Some(cw) = cw else { continue };
-            bitmap |= 1 << i;
-            let off = u32::from_be_bytes([0, cw[0], cw[1], cw[2]]);
-            let len = (cw[3] as usize).min(cw.len() - SEGMENT_HEADER);
-            let start = expand(off, s.rx_next);
-            let data = &cw[SEGMENT_HEADER..SEGMENT_HEADER + len];
-            if start + len as u64 > s.rx_next && len > 0 {
-                // A resend at another level can start at the same offset and hold more
-                // bytes. We acknowledge it, so the sender will not send those bytes
-                // again: keep the longer copy.
-                let kept = s.rx_ooo.entry(start).or_default();
-                if data.len() > kept.len() {
-                    *kept = data.to_vec();
+        if !aborting {
+            let mut bitmap = 0u32;
+            for (i, cw) in rx.payload.iter().enumerate() {
+                let Some(cw) = cw else { continue };
+                bitmap |= 1 << i;
+                let off = u32::from_be_bytes([0, cw[0], cw[1], cw[2]]);
+                let len = (cw[3] as usize).min(cw.len() - SEGMENT_HEADER);
+                let start = expand(off, s.rx_next);
+                let data = &cw[SEGMENT_HEADER..SEGMENT_HEADER + len];
+                if start + len as u64 > s.rx_next && len > 0 {
+                    // A resend at another level can start at the same offset and hold more
+                    // bytes. We acknowledge it, so the sender will not send those bytes
+                    // again: keep the longer copy.
+                    let kept = s.rx_ooo.entry(start).or_default();
+                    if data.len() > kept.len() {
+                        *kept = data.to_vec();
+                    }
                 }
             }
-        }
-        while let Some((&start, _)) = s.rx_ooo.iter().next() {
-            if start > s.rx_next {
-                break;
+            while let Some((&start, _)) = s.rx_ooo.iter().next() {
+                if start > s.rx_next {
+                    break;
+                }
+                let data = s.rx_ooo.remove(&start).unwrap();
+                let end = start + data.len() as u64;
+                if end > s.rx_next {
+                    delivered.extend_from_slice(&data[(s.rx_next - start) as usize..]);
+                    s.rx_next = end;
+                }
             }
-            let data = s.rx_ooo.remove(&start).unwrap();
-            let end = start + data.len() as u64;
-            if end > s.rx_next {
-                delivered.extend_from_slice(&data[(s.rx_next - start) as usize..]);
-                s.rx_next = end;
-            }
+            s.ack_burst = h.burst_id;
+            s.ack_bitmap = bitmap;
         }
-        s.ack_burst = h.burst_id;
-        s.ack_bitmap = bitmap;
 
         match h.kind {
             Kind::Disc => {
@@ -817,9 +1001,13 @@ impl Link {
                     if !delivered.is_empty() {
                         self.events.push(LinkEvent::Data(delivered));
                     }
-                    self.close();
+                    self.close(now);
                     return;
                 }
+            }
+            // Aborted: answer whatever the peer sent with the Disc, in our slot.
+            _ if aborting => {
+                s.phase = Phase::Respond { at: now + turnaround, kind: Kind::Disc, initiated: false };
             }
             _ => {
                 let has_data = s.has_data();
@@ -841,7 +1029,7 @@ impl Link {
     /// Called regularly while not transmitting. Returns a burst to transmit now.
     pub(crate) fn poll(&mut self, now: f64, busy: bool) -> Option<Burst> {
         // A new session, or a Disc too late to send, drops the parting Disc.
-        if !self.is_idle() || self.parting.as_ref().is_some_and(|&(until, _)| now > until) {
+        if !matches!(self.state, State::Idle) || self.parting.as_ref().is_some_and(|&(until, _)| now > until) {
             self.parting = None;
         }
         let quiet_parting = || if busy { None } else { self.parting.take().map(|(_, b)| b) };
@@ -853,7 +1041,9 @@ impl Link {
         let cfg = self.cfg.clone();
         let backoff = self.rand_s(RETRY_BACKOFF_S);
         let (keepalive, busy_timeout) = match &self.state {
-            State::Connected(s) => (self.keepalive_s(s.route.hops()), self.busy_timeout_s(s.route.hops())),
+            State::Connected(s) | State::Aborting(s) => {
+                (self.keepalive_s(s.route.hops()), self.busy_timeout_s(s.route.hops()))
+            }
             State::Connecting { digis, .. } => (cfg.keepalive_s, self.busy_timeout_s(digis.len() as u8)),
             State::Idle => (cfg.keepalive_s, f64::INFINITY),
         };
@@ -865,13 +1055,22 @@ impl Link {
         // A busy channel holds back everything we would start ourselves: a connect
         // request, retries, data, keepalives, a pending Disc. If it has held something
         // back this long with no progress, give up rather than wait for the channel
-        // forever. A peer we hear but cannot decode is no progress.
-        if self.held_since.is_some_and(|t| now - t > busy_timeout) {
+        // forever. A peer we hear but cannot decode is no progress. An aborted session has
+        // its own deadline instead (see `abort_s`).
+        let timed_out = match &self.state {
+            State::Aborting(s) => now > s.abort_until,
+            _ => self.held_since.is_some_and(|t| now - t > busy_timeout),
+        };
+        if timed_out {
             // Tell the peer, in case it is there but we cannot decode it under the carrier.
+            // An aborted session gets that Disc only if none of its own has gone out. A
+            // CONNECT that waited for the abort starts now, and that drops it (as any new
+            // session does).
             self.parting = self.disc_burst().map(|b| (now + busy_timeout, b));
-            self.close();
+            self.close(now);
             return None;
         }
+        let aborting = matches!(self.state, State::Aborting(_));
         match &mut self.state {
             State::Idle => None,
             State::Connecting { session, mycall, target, digis, attempts, next_tx, sending } => {
@@ -886,7 +1085,7 @@ impl Link {
                     return None;
                 }
                 if *attempts >= cfg.connect_attempts {
-                    self.close();
+                    self.close(now);
                     return None;
                 }
                 *attempts += 1;
@@ -908,7 +1107,7 @@ impl Link {
                 self.stats.bursts_sent += 1;
                 Some(burst)
             }
-            State::Connected(s) => {
+            State::Connected(s) | State::Aborting(s) => {
                 // Advance timers.
                 match s.phase {
                     Phase::Sending { .. } => return None,
@@ -923,15 +1122,15 @@ impl Link {
                         if retry {
                             s.retries += 1;
                             self.stats.retries += 1;
-                            if s.retries > cfg.max_retries || (s.closing.is_some() && s.disc_tries >= 4) {
-                                self.close();
+                            if s.retries > cfg.max_retries || (s.closing.is_some() && s.disc_tries >= MAX_DISC_TRIES) {
+                                self.close(now);
                                 return None;
                             }
                             // Unanswered: the peer may not have decoded us. Step down.
                             s.peer_level = s.peer_level.saturating_sub(1);
                             // A called station not yet answered sends its ConnectAck again: the
                             // caller takes nothing else as the answer to its request.
-                            let kind = if s.closing.is_some() && s.disc_tries > 0 {
+                            let kind = if aborting || s.closing.is_some() && s.disc_tries > 0 {
                                 Kind::Disc
                             } else if now < s.ack_until {
                                 Kind::ConnectAck
@@ -972,6 +1171,15 @@ impl Link {
                     }
                 }
                 let Phase::Respond { kind, initiated, .. } = s.phase else { return None };
+                // Aborted: the only burst left is the Disc, or a DiscAck if the peer sent
+                // its own Disc.
+                let kind = if aborting && kind != Kind::DiscAck { Kind::Disc } else { kind };
+                // Every Disc counts, the ones in an answer slot too: after the last one,
+                // the abort ends instead.
+                if aborting && kind == Kind::Disc && s.disc_tries >= MAX_DISC_TRIES {
+                    self.close(now);
+                    return None;
+                }
                 if busy && initiated {
                     // Someone else started talking; go back to listening.
                     s.phase = Phase::Idle;
@@ -986,6 +1194,7 @@ impl Link {
                 if kind == Kind::Disc {
                     s.disc_tries += 1;
                 }
+                s.answered = true;
                 s.phase = Phase::Sending { kind, retry: needs_reply, initiated };
                 self.stats.bursts_sent += 1;
                 self.stats.payload_bytes_sent += info.bytes as u64;
@@ -1006,7 +1215,7 @@ impl Link {
         let jitter = if matches!(self.state, State::Connecting { .. }) { self.rand_s(CONNECT_JITTER_S) } else { 0.0 };
         let (wait, echo) = match &self.state {
             State::Connecting { digis, .. } => (self.connect_wait_s(digis.len() as u8), 0.0),
-            State::Connected(s) => {
+            State::Connected(s) | State::Aborting(s) => {
                 // Time for every digipeater to repeat our ConnectAck.
                 let hops = s.route.hops() as f64;
                 let echo = hops * (connect_s + self.cfg.turnaround_s + self.cfg.hop_margin_s);
@@ -1030,11 +1239,11 @@ impl Link {
                 *sending = false;
                 *next_tx = now + wait + jitter;
             }
-            State::Connected(s) => {
+            State::Connected(s) | State::Aborting(s) => {
                 if let Phase::Sending { kind, retry, .. } = s.phase {
                     match kind {
                         Kind::DiscAck => {
-                            self.close();
+                            self.close(now);
                         }
                         Kind::ConnectAck => {
                             // We may speak first. Through digipeaters, only once they have

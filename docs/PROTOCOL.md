@@ -287,7 +287,36 @@ and checked by the `fer_gate` test. That file is the reference; roughly, the poi
 - **Graceful:** once all of its data is acknowledged, the closing station sends `Disc`;
   the peer answers `DiscAck`. Both report DISCONNECTED. `Disc` is retried up to 4 times;
   a station that already closed still answers a repeated `Disc`.
-- **ABORT:** the station sends one `Disc` without waiting and closes at once.
+- **ABORT:** the station drops all queued and unacknowledged data and reports
+  DISCONNECTED at once, then sends `Disc`: in its answer slot after the peer's next
+  decoded burst, or else on a clear channel once its own burst on the air has ended and
+  any wait for the peer's answer has run out (1.2 s direct, longer through
+  digipeaters). Like DISCONNECT's, the `Disc` is repeated (giving way to a busy channel)
+  until a `DiscAck` or the peer's own `Disc` comes, up to 4 in all: `Disc`s a DISCONNECT
+  already sent count. Whatever is sent or heard meanwhile, the abort ends by a deadline
+  counted from the ABORT: the route's busy timeout (the larger of `busy_timeout_s`, 60 s
+  by default, and the route's floor: 78 s through two digipeaters, less than 60 s
+  otherwise), or the longest an unanswered abort takes on a clear channel (the rest of
+  our longest burst, its answer wait and 4 `Disc`s with their waits) if that is longer.
+  If a busy channel kept every `Disc` back until then, one `Disc` goes once the channel
+  is quiet, as for a session the busy timeout drops, unless a CONNECT was waiting: it
+  starts then, and that drops the `Disc`. A called station that
+  aborts before its `ConnectAck` has gone out sends none, as the caller has never heard
+  it. After ABORT a called station does not take the caller's retried `ConnectReq` for
+  that call (same session id, within the caller's call window) as a new call; a new
+  call from it, with a new id, connects. Peer data received after ABORT is neither
+  delivered nor acknowledged: the `Disc`'s ack offset is what reached the host before
+  the ABORT, and its bitmap is empty. The radio may therefore key briefly after DISCONNECTED. The on-air
+  format is unchanged; an older peer closes on the `Disc` as before.
+- **CONNECT right after ABORT** is accepted (`OK`), but the call starts only when the
+  abort ends. With default settings in narrow mode, if no `DiscAck` ever comes, an
+  ABORT on a clear channel ends after about 7.6 s direct and 33 s through one
+  digipeater. An ABORT while our own burst is on the air waits for the rest of it and
+  for its answer first: direct, up to about 9.2 s for an ABORT during the wait and
+  13.6 s at the start of our longest burst; more through digipeaters. A busy channel, or
+  a peer that cannot hear us and keeps resending, lengthens this, but never past the
+  abort's deadline. DISCONNECT or ABORT meanwhile drops the waiting CONNECT,
+  with a DISCONNECTED.
 
 No encryption is used, and there is no compression yet.
 
@@ -397,9 +426,9 @@ Each command gets `OK`, or `WRONG` if it is invalid.
 |---|---|
 | `MYCALL c1 [c2 … c5]` | Up to 5 call signs: 3–7 characters A–Z/0–9, optional SSID −1…−15, −T or −R. |
 | `LISTEN ON` / `LISTEN OFF` | Accept incoming connections or not. |
-| `CONNECT <mycall> <target> [VIA <d1> [<d2>]]` | `WRONG` if a session is already active. `VIA` (any case) routes the session through up to two digipeaters, in order from us (section 3.4). |
+| `CONNECT <mycall> <target> [VIA <d1> [<d2>]]` | `WRONG` if a session is already active. Right after `ABORT` it is accepted and starts when the aborted session's `Disc` exchange ends; a second `CONNECT` meanwhile gets `WRONG` (section 3.3). `VIA` (any case) routes the session through up to two digipeaters, in order from us (section 3.4). |
 | `DISCONNECT` | Graceful: closes once everything queued is acknowledged. |
-| `ABORT` | Immediate close. |
+| `ABORT` | Immediate close: DISCONNECTED at once, the `Disc` follows (section 3.3). |
 | `VERSION` | `OK`, then `VERSION VardeFM <version>`. |
 | `PUBLIC ON/OFF`, `COMPRESSION OFF/TEXT/FILES`, `CHAT ON/OFF`, `CWID ON/OFF`, `BW500/BW2300/BW2750`, `WINLINK SESSION`, `P2P SESSION` | Accepted (`OK`), no effect. |
 

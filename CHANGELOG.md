@@ -66,6 +66,9 @@ to a busy frequency" below.
   `rx_emphasis_us`**, so a link can model radios whose responses differ, and
   `FmChannelConfig::ctcss` adds a CTCSS tone at the modulator. Both presets keep their
   old values. (#36, thanks @mustig)
+- **A `CONNECT` right after ABORT waits.** It is accepted (`OK`) but starts only when
+  the aborted session's `Disc` exchange ends, by the abort's deadline; a second
+  `CONNECT` meanwhile gets `WRONG`. Before, it started at once. (#58)
 
 ### Fixed
 - **A CTCSS tone hid bursts.** A CTCSS tone in the received audio no longer hides bursts
@@ -127,6 +130,15 @@ to a busy frequency" below.
   channel, so every retry collided. A retry now gives way, as it already did through
   digipeaters, and answers the other end's burst instead. In the simulator this dropped
   1 run in 4 with both ends sending at once. (#35, thanks @mustig)
+- **ABORT's `Disc` could go into the peer's burst.** ABORT sent its one `Disc` at
+  once, even while the peer was sending, and never again: if it was lost, the peer
+  stayed in the session. The `Disc` now goes in our answer slot after the peer's next
+  burst, or else on a clear channel, and is repeated like DISCONNECT's, up to 4 in all,
+  until a `DiscAck`, up to a deadline from the ABORT (the busy timeout, or longer if
+  the 4 `Disc`s need it). A called station that aborts before its `ConnectAck` went
+  out sends none, and does not take the caller's retries of that call as a new call.
+  DISCONNECTED is still reported at once, so the radio may key briefly after it. See
+  section 3.3 of [docs/PROTOCOL.md](docs/PROTOCOL.md). On-air compatible. (#58)
 - **Duplicate `BUFFER` report.** A host write that changed the buffer length gave two
   `BUFFER` lines, the second with nothing new. It now gives one. (#41, thanks @mustig)
 - **PTT on SIGTERM.** On Linux and macOS, `modem`, `tone`, `ptt-test` and `monitor` now
