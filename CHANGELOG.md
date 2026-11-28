@@ -135,11 +135,10 @@ to a busy frequency" below.
   stayed in the session. The `Disc` now goes in our answer slot after the peer's next
   burst, or else on a clear channel, and is repeated like DISCONNECT's, up to 4 in all,
   until a `DiscAck`, up to a deadline from the ABORT (the busy timeout, or longer if
-  the 4 `Disc`s need it). A called station
-  that aborts before its `ConnectAck` went out sends none, and does not take the
-  caller's retries of that call as a new call. DISCONNECTED is still reported at once,
-  so the radio may key briefly after it. See section 3.3 of
-  [docs/PROTOCOL.md](docs/PROTOCOL.md). On-air compatible. (#58)
+  the 4 `Disc`s need it). A called station that aborts before its `ConnectAck` went
+  out sends none, and does not take the caller's retries of that call as a new call.
+  DISCONNECTED is still reported at once, so the radio may key briefly after it. See
+  section 3.3 of [docs/PROTOCOL.md](docs/PROTOCOL.md). On-air compatible. (#58)
 - **Duplicate `BUFFER` report.** A host write that changed the buffer length gave two
   `BUFFER` lines, the second with nothing new. It now gives one. (#41, thanks @mustig)
 - **PTT on SIGTERM.** On Linux and macOS, `modem`, `tone`, `ptt-test` and `monitor` now
